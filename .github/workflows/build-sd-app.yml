@@ -1,0 +1,180 @@
+name: Build and Push SD App Image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "Dockerfile.sd.app"
+      - "entrypoint_sd.sh"
+      - "handler_sd.py"
+      - "pipeline_sd_inpainting.py"
+      - "runtime_download.py"
+      - "utils/sam2_runtime.py"
+      - "models/__init__.py"
+      - "models/face_parsing/**"
+      - "models/segface/**"
+      - "data/**"
+      - ".dockerignore"
+      - ".github/workflows/build-sd-app.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "원하는 버전 태그 (예: v8, v9). 미입력 시 자동번호 사용"
+        required: false
+        default: ""
+        type: string
+      base_image:
+        description: "선택: BASE_IMAGE override (예: username/sd:base-v8)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: build-sd-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Free disk space on runner
+        shell: bash
+        run: |
+          set +e
+          echo "[disk] before cleanup"
+          df -h
+          docker system df || true
+
+          # GitHub-hosted runner의 대형 사전 설치 패키지 제거
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache \
+            /usr/share/swift \
+            /usr/local/.ghcup \
+            /usr/lib/jvm \
+            /opt/google \
+            /opt/microsoft || true
+          sudo apt-get autoremove -y --purge || true
+          sudo apt-get clean || true
+
+          docker buildx prune -af || true
+          docker builder prune -af || true
+          docker system prune -af --volumes || true
+
+          # self-hosted runner 로그/임시 캐시 정리 (없으면 무시)
+          rm -rf /home/runner/actions-runner/cached/_diag/* 2>/dev/null || true
+          rm -rf /home/runner/actions-runner/_diag/* 2>/dev/null || true
+          rm -rf /home/runner/actions-runner/_work/_temp/* 2>/dev/null || true
+
+          echo "[disk] after cleanup"
+          df -h
+          docker system df || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Ensure Docker daemon
+        shell: bash
+        run: |
+          set +e
+          if docker info >/dev/null 2>&1; then
+            echo "[docker] daemon already running"
+          else
+            echo "[docker] daemon not ready, trying to start..."
+            sudo systemctl start docker 2>/dev/null || true
+            sudo service docker start 2>/dev/null || true
+            if ! docker info >/dev/null 2>&1; then
+              sudo nohup dockerd >/tmp/dockerd.log 2>&1 &
+            fi
+          fi
+          for i in $(seq 1 20); do
+            docker info >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker info
+
+      - name: Docker preflight (non-blocking)
+        continue-on-error: true
+        run: |
+          docker version
+          docker info
+          docker buildx version
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Resolve build metadata
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="v${{ github.run_number }}"
+          fi
+          if [[ "${VERSION}" != v* ]]; then
+            VERSION="v${VERSION}"
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.base_image }}" ]; then
+            BASE_IMAGE="${{ github.event.inputs.base_image }}"
+          else
+            BASE_IMAGE="${{ secrets.DOCKER_USERNAME }}/sd:base-latest"
+          fi
+
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "BASE_IMAGE=${BASE_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Check base image existence
+        id: base_exists
+        shell: bash
+        run: |
+          if docker manifest inspect "${{ steps.meta.outputs.BASE_IMAGE }}" >/dev/null 2>&1; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+            echo "[build-sd-app] base image found: ${{ steps.meta.outputs.BASE_IMAGE }}"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+            echo "[build-sd-app] base image missing: ${{ steps.meta.outputs.BASE_IMAGE }}"
+          fi
+
+      - name: Stop when base image is missing
+        if: steps.base_exists.outputs.value == 'false'
+        shell: bash
+        run: |
+          echo "::error::Base image is missing: ${{ steps.meta.outputs.BASE_IMAGE }}"
+          echo "::error::Run 'Build and Push SD Base Image' first, then rerun this workflow."
+          exit 1
+
+      - name: Pre-build cleanup
+        shell: bash
+        run: |
+          docker buildx prune -af || true
+          docker builder prune -af || true
+          docker system prune -af --volumes || true
+
+      - name: Build and push SD app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.sd.app
+          build-args: |
+            BASE_IMAGE=${{ steps.meta.outputs.BASE_IMAGE }}
+          platforms: linux/amd64
+          pull: true
+          push: true
+          provenance: false
+          cache-from: type=gha,scope=sd-app
+          cache-to: type=gha,scope=sd-app,mode=max
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/sd:${{ steps.meta.outputs.VERSION }}
+            ${{ secrets.DOCKER_USERNAME }}/sd:latest
