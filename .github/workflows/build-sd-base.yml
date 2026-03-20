@@ -1,0 +1,129 @@
+name: Build and Push SD Base Image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "Dockerfile.sd.base"
+      - "requirements-sd.txt"
+      - ".dockerignore"
+      - ".github/workflows/build-sd-base.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "원하는 버전 태그 (예: v8, v9). 미입력 시 자동번호 사용"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: build-sd-base-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Free disk space on runner
+        shell: bash
+        run: |
+          set +e
+          echo "[disk] before cleanup"
+          df -h
+          docker system df || true
+
+          # GitHub-hosted runner의 대형 사전 설치 패키지 제거
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache \
+            /usr/share/swift \
+            /usr/local/.ghcup \
+            /usr/lib/jvm \
+            /opt/google \
+            /opt/microsoft || true
+          sudo apt-get autoremove -y --purge || true
+          sudo apt-get clean || true
+
+          docker buildx prune -af || true
+          docker builder prune -af || true
+          docker system prune -af --volumes || true
+
+          # self-hosted runner 로그/임시 캐시 정리 (없으면 무시)
+          rm -rf /home/runner/actions-runner/cached/_diag/* 2>/dev/null || true
+          rm -rf /home/runner/actions-runner/_diag/* 2>/dev/null || true
+          rm -rf /home/runner/actions-runner/_work/_temp/* 2>/dev/null || true
+
+          echo "[disk] after cleanup"
+          df -h
+          docker system df || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Ensure Docker daemon
+        shell: bash
+        run: |
+          set +e
+          if docker info >/dev/null 2>&1; then
+            echo "[docker] daemon already running"
+          else
+            echo "[docker] daemon not ready, trying to start..."
+            sudo systemctl start docker 2>/dev/null || true
+            sudo service docker start 2>/dev/null || true
+            if ! docker info >/dev/null 2>&1; then
+              sudo nohup dockerd >/tmp/dockerd.log 2>&1 &
+            fi
+          fi
+          for i in $(seq 1 20); do
+            docker info >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker info
+
+      - name: Docker preflight (non-blocking)
+        continue-on-error: true
+        run: |
+          docker version
+          docker info
+          docker buildx version
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Resolve version
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="v${{ github.run_number }}"
+          fi
+          if [[ "${VERSION}" != v* ]]; then
+            VERSION="v${VERSION}"
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push SD base image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.sd.base
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          cache-from: type=gha,scope=sd-base
+          cache-to: type=gha,scope=sd-base,mode=max
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/sd:base-${{ steps.meta.outputs.VERSION }}
+            ${{ secrets.DOCKER_USERNAME }}/sd:base-latest
