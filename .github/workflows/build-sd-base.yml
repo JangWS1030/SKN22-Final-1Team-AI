@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - master
+      - develop
+      - develop/**
+      - LBJ/**
     paths:
       - "Dockerfile.sd.base"
       - "requirements-sd.txt"

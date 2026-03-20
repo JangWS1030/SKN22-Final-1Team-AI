@@ -1,0 +1,224 @@
+name: Deploy SD Pipeline (Build → RunPod → Test)
+
+on:
+  # build-sd-app 완료 시 자동 트리거
+  workflow_run:
+    workflows: ["Build and Push SD App Image"]
+    types: [completed]
+    branches: [main, master, develop, develop/**, LBJ/**]
+
+  # 수동 실행 (빌드 스킵하고 배포만 가능)
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "배포할 Docker 이미지 (예: byoungj/sd:v12). 미입력 시 latest 사용"
+        required: false
+        default: ""
+        type: string
+      deploy_mode:
+        description: "배포 모드"
+        required: true
+        default: "update"
+        type: choice
+        options:
+          - update       # 기존 엔드포인트 템플릿 이미지만 업데이트 (롤링)
+          - recreate     # 엔드포인트 삭제 후 재생성
+      skip_test:
+        description: "테스트 스킵"
+        required: false
+        default: false
+        type: boolean
+      test_image_url:
+        description: "테스트용 이미지 URL (미입력 시 헬스체크만)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: deploy-sd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOCKER_IMAGE_DEFAULT: "${{ secrets.DOCKER_USERNAME }}/sd:latest"
+
+jobs:
+  # ────────────────────────────────────────────────────────────
+  # 1. 배포할 이미지 결정
+  # ────────────────────────────────────────────────────────────
+  resolve:
+    runs-on: ubuntu-latest
+    # workflow_run 트리거일 때는 빌드 성공 시에만 진행
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+      deploy_mode: ${{ steps.resolve.outputs.deploy_mode }}
+      skip_test: ${{ steps.resolve.outputs.skip_test }}
+      test_image_url: ${{ steps.resolve.outputs.test_image_url }}
+    steps:
+      - name: Resolve deploy parameters
+        id: resolve
+        shell: bash
+        run: |
+          # 이미지
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.image }}" ]; then
+            IMAGE="${{ inputs.image }}"
+          else
+            IMAGE="${{ env.DOCKER_IMAGE_DEFAULT }}"
+          fi
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+          # 배포 모드
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "deploy_mode=${{ inputs.deploy_mode }}" >> "$GITHUB_OUTPUT"
+            echo "skip_test=${{ inputs.skip_test }}" >> "$GITHUB_OUTPUT"
+            echo "test_image_url=${{ inputs.test_image_url }}" >> "$GITHUB_OUTPUT"
+          else
+            # workflow_run (자동): update 모드, 테스트 실행
+            echo "deploy_mode=update" >> "$GITHUB_OUTPUT"
+            echo "skip_test=false" >> "$GITHUB_OUTPUT"
+            echo "test_image_url=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary
+        run: |
+          echo "### Deploy Parameters" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image**: \`${{ steps.resolve.outputs.image }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Mode**: \`${{ steps.resolve.outputs.deploy_mode }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Skip Test**: \`${{ steps.resolve.outputs.skip_test }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────
+  # 2. RunPod Serverless 배포
+  # ────────────────────────────────────────────────────────────
+  deploy:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      endpoint_id: ${{ steps.deploy.outputs.endpoint_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Deploy to RunPod
+        id: deploy
+        shell: bash
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_ENDPOINT_ID: ${{ secrets.RUNPOD_ENDPOINT_ID }}
+        run: |
+          IMAGE="${{ needs.resolve.outputs.image }}"
+          MODE="${{ needs.resolve.outputs.deploy_mode }}"
+
+          echo "[deploy] image=${IMAGE}  mode=${MODE}"
+
+          if [ "${MODE}" = "recreate" ]; then
+            # 엔드포인트 삭제 후 재생성
+            python scripts/recreate_runpod_endpoint.py \
+              --delete-old \
+              --wait-workers \
+              --env-file /dev/null
+
+            # recreate 스크립트가 stdout에 JSON 출력 → 새 endpoint ID 추출
+            NEW_ID=$(python scripts/recreate_runpod_endpoint.py \
+              --delete-old 2>/dev/null | python3 -c "
+            import sys, json
+            for line in sys.stdin:
+                try:
+                    data = json.loads(line)
+                    if 'created' in data:
+                        print(data['created']['id'])
+                        break
+                except: pass
+            " || echo "")
+
+            if [ -n "${NEW_ID}" ]; then
+              echo "endpoint_id=${NEW_ID}" >> "$GITHUB_OUTPUT"
+              echo "[deploy] new endpoint_id=${NEW_ID}"
+            else
+              echo "endpoint_id=${RUNPOD_ENDPOINT_ID}" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            # 기존 엔드포인트 템플릿 이미지 업데이트 (롤링)
+            python scripts/update_runpod_serverless.py \
+              --image "${IMAGE}" \
+              --wait \
+              --timeout 600
+
+            echo "endpoint_id=${RUNPOD_ENDPOINT_ID}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy summary
+        run: |
+          echo "### Deploy Result" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Endpoint ID**: \`${{ steps.deploy.outputs.endpoint_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image**: \`${{ needs.resolve.outputs.image }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Mode**: \`${{ needs.resolve.outputs.deploy_mode }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────
+  # 3. Smoke Test
+  # ────────────────────────────────────────────────────────────
+  test:
+    needs: [resolve, deploy]
+    if: needs.resolve.outputs.skip_test != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install requests python-dotenv Pillow
+
+      - name: Health check
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_ENDPOINT_ID: ${{ needs.deploy.outputs.endpoint_id }}
+        run: |
+          python test_runpod.py --health-check
+
+      - name: Inference test
+        if: needs.resolve.outputs.test_image_url != ''
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_ENDPOINT_ID: ${{ needs.deploy.outputs.endpoint_id }}
+        run: |
+          python test_runpod.py \
+            --image-url "${{ needs.resolve.outputs.test_image_url }}" \
+            --hairstyle "short bob cut" \
+            --color "natural black" \
+            --top-k 1 \
+            --timeout 600
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: output/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "### Test Result" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Endpoint**: \`${{ needs.deploy.outputs.endpoint_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d output ]; then
+            COUNT=$(ls output/*.jpg 2>/dev/null | wc -l || echo 0)
+            echo "- **Generated Images**: ${COUNT}" >> "$GITHUB_STEP_SUMMARY"
+          fi
