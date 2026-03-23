@@ -127,6 +127,13 @@ def _get_pipeline() -> "MirrAISDPipeline":
 
         _PIPELINE = MirrAISDPipeline(cfg)
         _PIPELINE.load()
+
+        # segface hair threshold override (환경변수로 빌드 없이 조정 가능)
+        _hair_thresh = os.environ.get("SEGFACE_HAIR_THRESHOLD")
+        if _hair_thresh is not None:
+            _PIPELINE._segface_hair_threshold = float(_hair_thresh)
+            logger.info(f"[handler_sd] segface_hair_threshold overridden to {_hair_thresh}")
+
         logger.info("[handler_sd] 파이프라인 준비 완료")
     return _PIPELINE
 

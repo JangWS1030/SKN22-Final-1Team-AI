@@ -238,7 +238,7 @@ class MirrAISDPipeline:
 
         self._segface    = None   # SegFace (Swin-B) face parsing
         self._segface_hair = None # Optional: custom SegFace hair-only model
-        self._segface_hair_threshold = 0.5
+        self._segface_hair_threshold = 0.3
         self._sam2_factory = None  # SAM2 predictor factory (callable)
         self._sd_pipe    = None   # StableDiffusionControlNetInpaintPipeline
         self._mp_face    = None   # MediaPipe FaceDetection
