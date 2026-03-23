@@ -2263,9 +2263,10 @@ class MirrAISDPipeline:
                 bbox_bottom,
             ], dtype=np.float32)
 
-            # Positive points: 정수리/옆머리 + 긴 머리 흘러내리는 옆쪽
+            # Positive points: 정수리/옆머리 + 앞머리 + 긴 머리 흘러내리는 옆쪽
             hair_top_y  = max(5, y1 - int(bh * 0.25))   # 정수리
             side_y      = max(5, y1 - int(bh * 0.05))   # 귀 위쪽
+            bangs_y     = max(5, y1 + int(bh * 0.10))   # 앞머리 (이마 위)
             long_hair_y = min(H - 5, y2 + int(bh * 0.4)) # 턱 아래 긴 머리
             pos_pts = np.array([
                 [cx,                    hair_top_y],   # 정수리 중앙
@@ -2273,6 +2274,8 @@ class MirrAISDPipeline:
                 [cx + int(bw * 0.25),   hair_top_y],   # 정수리 오른쪽
                 [x1 - int(bw * 0.05),   side_y],       # 왼쪽 옆머리
                 [x2 + int(bw * 0.05),   side_y],       # 오른쪽 옆머리
+                [cx - int(bw * 0.15),   bangs_y],      # 앞머리 왼쪽
+                [cx + int(bw * 0.15),   bangs_y],      # 앞머리 오른쪽
                 [x1 - int(bw * 0.2),    long_hair_y],  # 왼쪽 긴 머리
                 [x2 + int(bw * 0.2),    long_hair_y],  # 오른쪽 긴 머리
             ], dtype=np.float32)
