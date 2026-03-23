@@ -451,7 +451,7 @@ class MirrAISDPipeline:
             face_h = max(y2f - y1f, 1)
 
             if hair_length == "short":
-                cutoff_y = int(y2f + face_h * 0.02)   # 턱선 바로 아래
+                cutoff_y = int(y2f + face_h * 0.18)   # 턱선 아래 여유 확보
             else:
                 cutoff_y = int(y2f + face_h * 0.54)   # 어깨 위 (끝선 명확도 강화)
             cutoff_y = min(cutoff_y, H - 1)
@@ -489,17 +489,17 @@ class MirrAISDPipeline:
             gen_mask = long_hair_mask.copy()
             gen_soft_bottom = min(
                 H,
-                cutoff_y + max(8, int(face_h * (0.03 if hair_length == "short" else 0.16))),
+                cutoff_y + max(8, int(face_h * (0.10 if hair_length == "short" else 0.16))),
             )
             gen_mask[gen_soft_bottom:, :] = 0.0
 
             # 직사각 corridor 대신 타원형 head prior를 더해 사각형 artifact를 줄인다.
-            corridor_y_pad = max(8, int(face_h * (0.03 if hair_length == "short" else 0.22)))
+            corridor_y_pad = max(8, int(face_h * (0.12 if hair_length == "short" else 0.22)))
             cx = int(0.5 * (x1f + x2f))
             cy = int(y1f + face_h * (0.34 if hair_length == "short" else 0.40))
             ellipse_axes = (
-                max(24, int(face_w * (0.78 if hair_length == "short" else 1.00))),
-                max(26, int(face_h * (0.78 if hair_length == "short" else 1.10))),
+                max(24, int(face_w * (0.95 if hair_length == "short" else 1.00))),
+                max(26, int(face_h * (0.90 if hair_length == "short" else 1.10))),
             )
             ellipse_u8 = np.zeros((H, W), dtype=np.uint8)
             cv2.ellipse(ellipse_u8, (cx, cy), ellipse_axes, 0, 0, 360, 255, -1)
