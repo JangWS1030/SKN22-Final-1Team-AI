@@ -2047,14 +2047,14 @@ class MirrAISDPipeline:
         face_w = max(int(x2 - x1), 1)
         face_h = max(int(y2 - y1), 1)
 
-        base_u8 = (np.clip(face_region_mask, 0.0, 1.0) > 0.35).astype(np.uint8) * 255
+        base_u8 = (np.clip(face_region_mask, 0.0, 1.0) > 0.50).astype(np.uint8) * 255
         protect_u8 = cv2.dilate(
             base_u8,
             cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE,
                 (
-                    max(9, int(face_w * 0.10)) | 1,
-                    max(9, int(face_h * 0.08)) | 1,
+                    max(7, int(face_w * 0.06)) | 1,
+                    max(7, int(face_h * 0.05)) | 1,
                 ),
             ),
             iterations=1,
