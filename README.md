@@ -45,6 +45,7 @@ python -m pip install -r requirements-train.txt
 
 - `README_release_runbook.md`: 현재 GitHub Actions + RunPod 릴리스 절차
 - `README_runpod_volume.md`: RunPod cold start 완화용 volume 설정 메모
+- `docs/pipeline_runtime_config.md`: 현재 파이프라인이 실제로 읽는 runtime config 기준 문서
 
 ## 실행 예시
 

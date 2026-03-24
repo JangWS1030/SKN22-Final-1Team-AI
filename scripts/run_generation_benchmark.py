@@ -36,7 +36,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--dtype", type=str, default="float16")
     parser.add_argument("--num-inference-steps", type=int, default=28)
-    parser.add_argument("--guidance-scale", type=float, default=7.2)
     parser.add_argument("--controlnet-conditioning-scale", type=float, default=0.24)
     parser.add_argument("--ip-adapter-scale", type=float, default=0.32)
     parser.add_argument("--lora-path", type=str, default=None)
@@ -112,10 +111,8 @@ def main() -> None:
         device=args.device,
         dtype=args.dtype,
         num_inference_steps=args.num_inference_steps,
-        guidance_scale=args.guidance_scale,
         controlnet_conditioning_scale=args.controlnet_conditioning_scale,
         ip_adapter_scale=args.ip_adapter_scale,
-        enable_xformers=True,
         lora_path=args.lora_path,
         lora_scale=args.lora_scale,
     )
@@ -164,7 +161,6 @@ def main() -> None:
         "lora_path": args.lora_path,
         "lora_scale": args.lora_scale,
         "num_inference_steps": args.num_inference_steps,
-        "guidance_scale": args.guidance_scale,
         "controlnet_conditioning_scale": args.controlnet_conditioning_scale,
         "ip_adapter_scale": args.ip_adapter_scale,
     }
