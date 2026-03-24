@@ -27,6 +27,14 @@ def clean_env_value(value: str | None) -> str | None:
     return value
 
 
+def normalize_optional_value(value: str | None) -> str | None:
+    cleaned = clean_env_value(value)
+    if cleaned is None:
+        return None
+    cleaned = cleaned.strip()
+    return cleaned or None
+
+
 def build_headers(api_key: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {api_key}",
@@ -209,6 +217,9 @@ def resolve_target_image(
     image_repo: str | None,
     current_image: str,
 ) -> str:
+    image = normalize_optional_value(image)
+    image_tag = normalize_optional_value(image_tag)
+    image_repo = normalize_optional_value(image_repo)
     if image:
         return image
     if not image_tag:

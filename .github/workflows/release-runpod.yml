@@ -91,6 +91,10 @@ jobs:
             echo "::error::RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID secrets are required."
             exit 1
           fi
+          if [ -z "${{ steps.meta.outputs.image }}" ]; then
+            echo "::error::Resolved release image is empty."
+            exit 1
+          fi
 
           CMD=(python scripts/runpod_release.py --image "${{ steps.meta.outputs.image }}" --timeout 1800)
           if [ "${{ steps.meta.outputs.skip_health }}" = "true" ]; then

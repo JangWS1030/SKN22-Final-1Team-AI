@@ -60,12 +60,24 @@ jobs:
       - name: Resolve deploy parameters
         id: resolve
         shell: bash
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         run: |
           # 이미지
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.image }}" ]; then
             IMAGE="${{ inputs.image }}"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            if [ -z "${DOCKER_USERNAME}" ]; then
+              echo "::error::DOCKER_USERNAME secret is required to resolve the release image."
+              exit 1
+            fi
+            IMAGE="${DOCKER_USERNAME}/sd:run-${{ github.event.workflow_run.run_number }}"
           else
-            IMAGE="${{ env.DOCKER_IMAGE_DEFAULT }}"
+            if [ -z "${DOCKER_USERNAME}" ]; then
+              echo "::error::DOCKER_USERNAME secret is required to resolve the default image."
+              exit 1
+            fi
+            IMAGE="${DOCKER_USERNAME}/sd:latest"
           fi
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
 
@@ -120,6 +132,10 @@ jobs:
           MODE="${{ needs.resolve.outputs.deploy_mode }}"
 
           echo "[deploy] image=${IMAGE}  mode=${MODE}"
+          if [ -z "${IMAGE}" ]; then
+            echo "::error::Resolved deploy image is empty."
+            exit 1
+          fi
 
           if [ "${MODE}" = "recreate" ]; then
             # 엔드포인트 삭제 후 재생성
