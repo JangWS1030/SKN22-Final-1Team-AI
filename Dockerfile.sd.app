@@ -16,11 +16,14 @@ COPY --chmod=755 entrypoint_sd.sh entrypoint.sh
 COPY handler_sd.py             ./
 COPY pipeline_sd_inpainting.py ./
 COPY runtime_download.py       ./
+COPY pretrained_models/        pretrained_models/
 COPY utils/sam2_runtime.py     utils/sam2_runtime.py
 COPY models/__init__.py        models/__init__.py
-COPY models/face_parsing/      models/face_parsing/
 COPY models/segface/           models/segface/
 COPY data/                     data/
+
+# Normalize Windows CRLF line endings so the Linux entrypoint can execute.
+RUN sed -i 's/\r$//' entrypoint.sh
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -28,13 +31,7 @@ ENV PYTHONPATH=/app \
     CUDA_HOME=/usr/local/cuda \
     PATH=/usr/local/cuda/bin:$PATH \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
-    SEG_PTH_GITHUB_OWNER=PracLee \
-    SEG_PTH_GITHUB_REPO=hair_swap_model \
-    SEG_PTH_GITHUB_REF=master \
-    SEG_PTH_GITHUB_PATH=pretrained_models/seg.pth \
     MODEL_DOWNLOAD_TIMEOUT=600 \
-    ENABLE_SAM2=1 \
-    ENABLE_STARTUP_GIT_PULL=0 \
-    GIT_PULL_REF=master
+    ENABLE_SAM2=1
 
-ENTRYPOINT ["python", "/app/handler_sd.py"]
+ENTRYPOINT ["./entrypoint.sh"]

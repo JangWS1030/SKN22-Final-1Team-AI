@@ -1,0 +1,5 @@
+-r requirements.txt
+
+datasets==2.21.0
+bitsandbytes==0.43.3
+tensorboard==2.18.0

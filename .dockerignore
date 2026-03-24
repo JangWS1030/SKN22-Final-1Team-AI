@@ -1,6 +1,15 @@
 # ── 모델 파일 ──────────────────────────────────────────────────────────────
 # pretrained_models는 컨텍스트에서 제외 (seg.pth는 런타임 다운로드)
 pretrained_models/*
+dataset_build/
+cmd/
+tests/
+sd_lora_final_bundle_*/
+sd_lora_final_bundle_*.tar.gz
+hair_swap_backup_all_in_one_*.tar
+docker_build_*.log
+docs/*.docx
+docs/*.docx.docx
 
 # ── 런타임 산출물 ───────────────────────────────────────────────────────────
 output/
@@ -33,7 +42,6 @@ trimap.jpg
 .vscode/
 .idea/
 **/*.ipynb
-tests/
 venv_test/
 images/
 
