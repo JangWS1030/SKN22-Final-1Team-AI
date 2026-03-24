@@ -45,6 +45,7 @@ python -m pip install -r requirements-train.txt
 
 - `README_release_runbook.md`: 현재 GitHub Actions + RunPod 릴리스 절차
 - `README_runpod_volume.md`: RunPod cold start 완화용 volume 설정 메모
+- `docs/trend_pipeline.md`: 통합된 크롤링/RAG 서브시스템 실행 가이드
 
 ## 실행 예시
 
@@ -82,3 +83,21 @@ python tests/test_runpod.py \
 - IP-Adapter face
 
 기존 StyleGAN / HairCLIP 기반 레거시 경로와 미사용 랜드마크·세그멘테이션 호환 경로는 저장소에서 제거했습니다.
+
+## 통합된 트렌드 크롤링/RAG
+
+상위 폴더의 `crawling_git`는 현재 저장소 기준으로 흡수했습니다.
+
+- 코드: `trend_pipeline/`
+- 데이터: `data/trend_pipeline/raw`, `data/trend_pipeline/processed`
+- 벡터 DB: `data/trend_pipeline/chromadb` (gitignore)
+
+기존 RunPod SD 서비스 경로와 충돌하지 않도록 완전히 분리된 네임스페이스로 넣었습니다. 자세한 사용법은 `docs/trend_pipeline.md`를 보면 됩니다.
+
+## 생성 프롬프트와 트렌드 데이터
+
+런타임 헤어 생성은 이제 `data/llm_refined_trends.json`를 기준으로 요청한 `hairstyle_text`를 해석합니다.
+
+- 한국어/영문 스타일명을 트렌드 레코드와 매칭
+- 매칭된 `hairstyle_text` 키워드로 SAM2 힌트, 길이 분류, SD 프롬프트를 보강
+- `color_text`는 사용자가 명시한 경우에만 실제 색상 타깃으로 적용
