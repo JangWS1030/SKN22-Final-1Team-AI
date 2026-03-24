@@ -162,6 +162,12 @@ class SDInpaintConfig:
     # SAM2 사용 여부
     use_sam2: bool = True
 
+    # hair mask refinement mode
+    #   "sam2": current default refinement
+    #   "segface_priority": keep SegFace core and let SAM2 adjust only near the boundary
+    #   "segface_only": skip SAM2 refinement and use SegFace mask only
+    mask_refine_mode: str = "sam2"
+
     # 얼굴 랜드마크/메쉬 백엔드
 
     # 후처리 옵션 (현재 파이프라인에서는 기본 alpha blend 사용)
@@ -187,7 +193,8 @@ class SDInpaintResult:
     image_pil: Image.Image  # PIL RGB
     seed: int
     rank: int
-    mask_used: str          # "sam2" | "segface"
+    mask_used: str          # "sam2" | "sam2_soft" | "segface"
+    mask_refine_mode: str = "sam2"
     clip_score: float = 0.0 # CLIP 점수 (현재는 rank 순서, 향후 CLIP 랭킹 확장용)
     mask: Optional[np.ndarray] = None       # H×W float32 디버그용 마스크
     face_bbox: Optional[Tuple[int, int, int, int]] = None  # (x1, y1, x2, y2)
@@ -257,6 +264,7 @@ class MirrAISDPipeline:
         color_text: str,
         top_k: int = 3,
         return_intermediates: bool = False,
+        mask_refine_mode: Optional[str] = None,
         lora_path: Optional[str] = None,
         lora_scale: Optional[float] = None,
     ) -> List[SDInpaintResult]:
@@ -366,14 +374,24 @@ class MirrAISDPipeline:
             debug_data_common["segface_mask_debug"] = segface_debug["meta"]
 
         # ── Step 3: SAM2 refinement ───────────────────────────────────────────
-        hair_mask, mask_source = self._refine_with_sam2(
-            img_rgb, hair_mask_base, face_bbox, hairstyle_text
+        hair_mask, mask_source, mask_refine_mode_used = self._refine_with_sam2(
+            img_rgb,
+            hair_mask_base,
+            face_bbox,
+            hairstyle_text,
+            mask_refine_mode=mask_refine_mode,
         )
         logger.info(
-            f"[SDPipeline] hair mask source={mask_source}, "
+            f"[SDPipeline] hair mask source={mask_source}, refine_mode={mask_refine_mode_used}, "
             f"pixels={hair_mask.sum():.0f}"
         )
         _store_mask(f"{mask_source}_refined_hair_mask", hair_mask)
+        if debug_data_common is not None:
+            debug_data_common["mask_refine_mode"] = {
+                "requested": self._resolve_mask_refine_mode(mask_refine_mode),
+                "used": mask_refine_mode_used,
+                "mask_used": mask_source,
+            }
 
         if hair_mask.sum() < 300:
             raise ValueError("머리카락 영역이 너무 작습니다.")
@@ -388,21 +406,43 @@ class MirrAISDPipeline:
                 f"[SDPipeline] short internal candidate expansion: requested={requested_top_k}, internal={len(seeds)}"
             )
 
+        lower_tail_support_mask = self._build_lower_hair_tail_support_mask(
+            img_rgb=img_rgb,
+            hair_mask=hair_mask,
+            cloth_mask=cloth_mask,
+            face_bbox=face_bbox,
+            hair_length=hair_length,
+        )
+        if float(lower_tail_support_mask.sum()) > 0.0:
+            hair_mask = np.maximum(hair_mask, lower_tail_support_mask).astype(np.float32)
+            logger.info(
+                "[SDPipeline] lower tail support added: pixels=%.0f merged_pixels=%.0f",
+                lower_tail_support_mask.sum(),
+                hair_mask.sum(),
+            )
+        _store_mask("pipeline_lower_tail_support_mask", lower_tail_support_mask)
+
         protect_mask_for_sd = self._build_generation_protect_mask(
             face_region_mask,
             face_bbox=face_bbox,
             hair_length=hair_length,
         )
+        protect_mask_for_removal = self._build_removal_protect_mask(
+            face_region_mask,
+            face_bbox=face_bbox,
+            hair_length=hair_length,
+        )
         _store_mask("pipeline_generation_protect_mask", protect_mask_for_sd)
+        _store_mask("pipeline_removal_protect_mask", protect_mask_for_removal)
 
         # ── Step 3-c: SegFace 얼굴 픽셀 제거 (bbox 직사각형 대신 픽셀 단위 보정) ─
+        hair_mask_for_removal = np.clip(hair_mask - protect_mask_for_removal, 0.0, 1.0)
         hair_mask = np.clip(hair_mask - protect_mask_for_sd, 0.0, 1.0)
         # short/medium 긴머리 제거 단계에서는 "옷 위로 떨어진 머리카락"도 지워야 하므로
         # cloth 제거 전 마스크를 별도로 보관한다.
-        hair_mask_for_removal = hair_mask.copy()
         _store_mask("pipeline_hair_mask_face_protected", hair_mask_for_removal)
         logger.info(
-            f"[SDPipeline] 얼굴 픽셀 제거 완료, pixels={hair_mask.sum():.0f}"
+            f"[SDPipeline] 얼굴 픽셀 제거 완료, gen_px={hair_mask.sum():.0f}, removal_px={hair_mask_for_removal.sum():.0f}"
         )
 
         # ── Step 3-d: SegFace 옷 픽셀 제거 (옷이 바뀌는 문제 방지) ────────────
@@ -440,15 +480,14 @@ class MirrAISDPipeline:
         shoulder_protect_for_post: Optional[np.ndarray] = None
         neckline_preserve_for_post: Optional[np.ndarray] = None
         if hair_length in ("short", "medium"):
-            x1f, y1f, x2f, y2f = face_bbox
-            face_w = max(x2f - x1f, 1)
-            face_h = max(y2f - y1f, 1)
-
-            if hair_length == "short":
-                cutoff_y = int(y2f + face_h * 0.18)   # 턱선 아래 여유 확보
-            else:
-                cutoff_y = int(y2f + face_h * 0.54)   # 어깨 위 (끝선 명확도 강화)
-            cutoff_y = min(cutoff_y, H - 1)
+            landmark_debug_data = landmark_obs.get("debug_data")
+            head_x1, head_y1, head_x2, head_y2, cutoff_y = self._estimate_head_generation_box(
+                image_shape=(H, W),
+                face_bbox=face_bbox,
+                landmark_face_mask=landmark_face_mask,
+                landmark_debug_data=landmark_debug_data if isinstance(landmark_debug_data, dict) else None,
+                hair_length=hair_length,
+            )
             cutoff_y_for_post = cutoff_y
             shoulder_protect_for_post = self._build_shoulder_protect_mask(
                 cloth_mask=cloth_mask_dilated,
@@ -467,13 +506,6 @@ class MirrAISDPipeline:
                 )
             _store_mask("pipeline_shoulder_protect_mask", shoulder_protect_for_post)
             _store_mask("pipeline_neckline_preserve_mask", neckline_preserve_for_post)
-
-            # ── head box 계산 (gen_mask corridor 범위 산정에 사용) ───────────────
-            margin_x = int(face_w * 0.5)   # 얼굴 폭의 50% 여백 (양 옆 머리 공간)
-            head_x1  = max(0, x1f - margin_x)
-            head_x2  = min(W, x2f + margin_x)
-            head_y1  = max(0, y1f - int(face_h * 0.6))   # 정수리 위까지
-            head_y2  = cutoff_y
 
             # v4 쪽이 더 안정적이었던 핵심:
             # 1) cutoff 아래 long hair를 먼저 실제 hair 기반으로 비운 뒤
@@ -568,7 +600,17 @@ class MirrAISDPipeline:
             gen_mask = np.clip(gen_mask - protect_mask_for_sd, 0.0, 1.0)
             gen_mask = np.clip(gen_mask - cloth_mask_dilated, 0.0, 1.0)
             if shoulder_protect_for_post is not None and shoulder_protect_for_post.shape == (H, W):
-                gen_mask = np.clip(gen_mask - (shoulder_protect_for_post * 0.28), 0.0, 1.0)
+                gen_mask = np.clip(
+                    gen_mask - (shoulder_protect_for_post * (0.42 if hair_length == "short" else 0.28)),
+                    0.0,
+                    1.0,
+                )
+            if neckline_preserve_for_post is not None and neckline_preserve_for_post.shape == (H, W):
+                gen_mask = np.clip(
+                    gen_mask - neckline_preserve_for_post * (0.34 if hair_length == "short" else 0.18),
+                    0.0,
+                    1.0,
+                )
             if hair_length == "short":
                 gen_mask = cv2.erode(
                     gen_mask,
@@ -790,17 +832,17 @@ class MirrAISDPipeline:
                 )
                 if shoulder_protect_for_post is not None and shoulder_protect_for_post.shape == (H, W):
                     regen_tail_mask = np.clip(
-                        regen_tail_mask - shoulder_protect_for_post * 0.10,
+                        regen_tail_mask - shoulder_protect_for_post * 0.18,
                         0.0,
                         1.0,
                     )
                 if neckline_preserve_for_post is not None and neckline_preserve_for_post.shape == (H, W):
                     regen_tail_mask = np.clip(
-                        regen_tail_mask - neckline_preserve_for_post * 0.12,
+                        regen_tail_mask - neckline_preserve_for_post * 0.22,
                         0.0,
                         1.0,
                     )
-                regen_tail_mask = np.clip(regen_tail_mask - cloth_mask_dilated * 0.06, 0.0, 1.0)
+                regen_tail_mask = np.clip(regen_tail_mask - cloth_mask_dilated * 0.12, 0.0, 1.0)
                 regen_tail_u8 = cv2.dilate(
                     (regen_tail_mask > 0.08).astype(np.uint8) * 255,
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
@@ -1041,6 +1083,7 @@ class MirrAISDPipeline:
                 seed=cand["seed"],
                 rank=rank,
                 mask_used=mask_source,
+                mask_refine_mode=mask_refine_mode_used,
                 clip_score=float(cand["color_score"]),
                 mask=hair_mask_for_sd,
                 face_bbox=face_bbox,
@@ -1919,6 +1962,66 @@ class MirrAISDPipeline:
         }
 
     @staticmethod
+    def _mask_bbox(
+        mask: Optional[np.ndarray],
+        *,
+        threshold: float = 0.5,
+    ) -> Optional[Tuple[int, int, int, int]]:
+        if mask is None or mask.ndim != 2:
+            return None
+        ys, xs = np.where(mask > threshold)
+        if len(xs) == 0 or len(ys) == 0:
+            return None
+        return (
+            int(xs.min()),
+            int(ys.min()),
+            int(xs.max()) + 1,
+            int(ys.max()) + 1,
+        )
+
+    def _estimate_head_generation_box(
+        self,
+        *,
+        image_shape: Tuple[int, int],
+        face_bbox: Tuple[int, int, int, int],
+        landmark_face_mask: Optional[np.ndarray],
+        landmark_debug_data: Optional[Dict[str, Any]],
+        hair_length: str,
+    ) -> Tuple[int, int, int, int, int]:
+        H, W = image_shape
+        x1f, y1f, x2f, y2f = [int(v) for v in face_bbox]
+        ref_x1, ref_y1, ref_x2, ref_y2 = x1f, y1f, x2f, y2f
+
+        mask_bbox = self._mask_bbox(landmark_face_mask, threshold=0.20)
+        if mask_bbox is not None:
+            ref_x1, ref_y1, ref_x2, ref_y2 = mask_bbox
+
+        keypoints = landmark_debug_data.get("keypoints", {}) if isinstance(landmark_debug_data, dict) else {}
+        forehead_top = keypoints.get("forehead_top", {}).get("px")
+        chin = keypoints.get("chin", {}).get("px")
+        forehead_y = int(forehead_top[1]) if isinstance(forehead_top, list) and len(forehead_top) >= 2 else ref_y1
+        chin_y = int(chin[1]) if isinstance(chin, list) and len(chin) >= 2 else ref_y2
+
+        ref_w = max(int(ref_x2 - ref_x1), 1)
+        ref_h = max(int(max(ref_y2, chin_y) - min(ref_y1, forehead_y)), 1)
+
+        if hair_length == "short":
+            margin_x = int(ref_w * 0.42)
+            top_pad = int(ref_h * 0.72)
+            cutoff_y = int(chin_y + ref_h * 0.10)
+        else:
+            margin_x = int(ref_w * 0.50)
+            top_pad = int(ref_h * 0.64)
+            cutoff_y = int(chin_y + ref_h * 0.46)
+
+        head_x1 = max(0, ref_x1 - margin_x)
+        head_x2 = min(W, ref_x2 + margin_x)
+        head_y1 = max(0, min(ref_y1, forehead_y) - top_pad)
+        cutoff_y = int(np.clip(cutoff_y, 0, H - 1))
+        head_y2 = max(head_y1 + 1, cutoff_y)
+        return head_x1, head_y1, head_x2, head_y2, cutoff_y
+
+    @staticmethod
     def _build_face_mesh_analysis(
         landmarks_norm: np.ndarray,
         landmarks_px: np.ndarray,
@@ -2398,22 +2501,92 @@ class MirrAISDPipeline:
             px = max(7, min(15, int(round(px * 0.50))))
         return self._dilate_mask_with_px(mask, px)
 
+    def _resolve_mask_refine_mode(
+        self,
+        mask_refine_mode: Optional[str],
+    ) -> str:
+        value = str(
+            mask_refine_mode
+            or getattr(self.config, "mask_refine_mode", "")
+            or os.environ.get("MASK_REFINE_MODE", "sam2")
+        ).strip().lower()
+        if value not in {"sam2", "segface_priority", "segface_only"}:
+            logger.warning(
+                "[SDPipeline] unsupported mask_refine_mode '%s', falling back to sam2",
+                value,
+            )
+            return "sam2"
+        return value
+
+    def _merge_segface_priority_mask(
+        self,
+        *,
+        base_mask: np.ndarray,
+        sam2_mask: np.ndarray,
+        hair_length: str,
+    ) -> np.ndarray:
+        base_u8 = ((np.clip(base_mask, 0.0, 1.0) > 0.5).astype(np.uint8) * 255)
+        sam2_u8 = ((np.clip(sam2_mask, 0.0, 1.0) > 0.5).astype(np.uint8) * 255)
+
+        if hair_length == "short":
+            core_kernel = (5, 5)
+            growth_px = 7
+            close_kernel = (7, 7)
+        elif hair_length == "medium":
+            core_kernel = (7, 7)
+            growth_px = 9
+            close_kernel = (9, 9)
+        else:
+            core_kernel = (9, 9)
+            growth_px = 13
+            close_kernel = (11, 11)
+
+        base_core = cv2.erode(
+            base_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, core_kernel),
+            iterations=1,
+        )
+        allow_growth = (self._dilate_mask_with_px(base_u8.astype(np.float32) / 255.0, growth_px) > 0.5).astype(np.uint8) * 255
+        sam2_local = cv2.bitwise_and(sam2_u8, allow_growth)
+        merged_u8 = cv2.bitwise_or(base_core, sam2_local)
+
+        base_px = int((base_u8 > 0).sum())
+        merged_px = int((merged_u8 > 0).sum())
+        if merged_px < max(60, int(base_px * 0.55)):
+            logger.info(
+                "[SDPipeline] segface_priority fallback to base mask: base_px=%s merged_px=%s",
+                base_px,
+                merged_px,
+            )
+            return (base_u8 > 0).astype(np.float32)
+
+        merged_u8 = cv2.morphologyEx(
+            merged_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, close_kernel),
+        )
+        return (merged_u8 > 0).astype(np.float32)
+
     def _refine_with_sam2(
         self,
         img_rgb: np.ndarray,           # H×W×3 RGB
         base_mask: np.ndarray,          # H×W float32
         face_bbox: Tuple[int, int, int, int],
         prompt_text: str,
-    ) -> Tuple[np.ndarray, str]:
+        mask_refine_mode: Optional[str] = None,
+    ) -> Tuple[np.ndarray, str, str]:
         """
         SAM2로 SegFace 마스크를 정밀 보정.
 
         Returns:
-            (refined_mask H×W float32, source_name)
+            (refined_mask H×W float32, source_name, used_refine_mode)
         """
         hair_length = self._classify_hair_length(prompt_text)
+        refine_mode = self._resolve_mask_refine_mode(mask_refine_mode)
+        if refine_mode == "segface_only":
+            return self._dilate_hair_mask_for_length(base_mask, hair_length), "segface", "segface_only"
         if self._sam2_factory is None:
-            return self._dilate_hair_mask_for_length(base_mask, hair_length), "segface"
+            return self._dilate_hair_mask_for_length(base_mask, hair_length), "segface", refine_mode
 
         try:
             predictor = self._sam2_factory()
@@ -2586,14 +2759,22 @@ class MirrAISDPipeline:
                 
                 if refined_np.sum() < 300:
                     logger.warning("[SDPipeline] SAM2 결과가 너무 작아 SegFace로 폴백")
-                    return self._dilate_hair_mask_for_length(base_mask, hair_length), "segface"
+                    return self._dilate_hair_mask_for_length(base_mask, hair_length), "segface", refine_mode
 
-                return self._dilate_hair_mask_for_length(refined_np, hair_length), "sam2"
+                if refine_mode == "segface_priority":
+                    refined_np = self._merge_segface_priority_mask(
+                        base_mask=base_mask,
+                        sam2_mask=refined_np,
+                        hair_length=hair_length,
+                    )
+                    return self._dilate_hair_mask_for_length(refined_np, hair_length), "sam2_soft", "segface_priority"
+
+                return self._dilate_hair_mask_for_length(refined_np, hair_length), "sam2", "sam2"
 
         except Exception as e:
             logger.warning(f"[SDPipeline] SAM2 refine failed, falling back to SegFace: {e}")
 
-        return self._dilate_hair_mask_for_length(base_mask, hair_length), "segface"
+        return self._dilate_hair_mask_for_length(base_mask, hair_length), "segface", refine_mode
 
     def _dilate_mask(self, mask: np.ndarray) -> np.ndarray:
         """마스크 dilate (경계 확장)"""
@@ -3271,6 +3452,81 @@ class MirrAISDPipeline:
 
         return np.clip(mask, 0.0, 1.0).astype(np.float32)
 
+    def _build_removal_protect_mask(
+        self,
+        protect_mask: np.ndarray,
+        face_bbox: Tuple[int, int, int, int],
+        hair_length: str,
+    ) -> np.ndarray:
+        """
+        긴 머리 제거(pre-clean) 단계에서 사용할 얼굴 보호 마스크.
+        생성 단계보다 목 중앙 보호를 훨씬 약하게 두어, 목 앞쪽으로 내려온 머리 가닥은
+        제거 대상으로 남기고 얼굴/턱 주변만 보수적으로 보호한다.
+        """
+        mask = np.clip(protect_mask.astype(np.float32), 0.0, 1.0).copy()
+        if hair_length not in ("short", "medium"):
+            return mask
+
+        H, W = mask.shape[:2]
+        x1, y1, x2, y2 = face_bbox
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+        cx = int(0.5 * (x1 + x2))
+
+        face_core_u8 = np.zeros((H, W), dtype=np.uint8)
+        face_core_center = (
+            cx,
+            int(y1 + face_h * (0.44 if hair_length == "short" else 0.47)),
+        )
+        face_core_axes = (
+            max(16, int(face_w * (0.44 if hair_length == "short" else 0.48))),
+            max(18, int(face_h * (0.56 if hair_length == "short" else 0.60))),
+        )
+        cv2.ellipse(face_core_u8, face_core_center, face_core_axes, 0, 0, 360, 255, -1)
+        face_core = cv2.GaussianBlur(
+            face_core_u8.astype(np.float32) / 255.0,
+            (0, 0),
+            sigmaX=4.0,
+            sigmaY=4.0,
+        )
+        mask = np.minimum(mask, np.clip(face_core * 1.15, 0.0, 1.0))
+
+        fade_start = max(0, int(y2 - face_h * 0.10))
+        fade_end = min(H, int(y2 + face_h * (0.005 if hair_length == "short" else 0.02)))
+        if fade_end > fade_start:
+            ramp = np.linspace(1.0, 0.0, fade_end - fade_start, dtype=np.float32)
+            mask[fade_start:fade_end, :] *= ramp[:, np.newaxis]
+        cutoff_y = min(H, int(y2 + face_h * (0.015 if hair_length == "short" else 0.03)))
+        if cutoff_y < H:
+            mask[cutoff_y:, :] = 0.0
+
+        neck_cut_u8 = np.zeros((H, W), dtype=np.uint8)
+        neck_cut_center = (
+            cx,
+            int(y2 + face_h * (0.04 if hair_length == "short" else 0.06)),
+        )
+        neck_cut_axes = (
+            max(12, int(face_w * (0.18 if hair_length == "short" else 0.22))),
+            max(10, int(face_h * (0.12 if hair_length == "short" else 0.16))),
+        )
+        cv2.ellipse(neck_cut_u8, neck_cut_center, neck_cut_axes, 0, 0, 360, 255, -1)
+        neck_cut = cv2.GaussianBlur(
+            neck_cut_u8.astype(np.float32) / 255.0,
+            (0, 0),
+            sigmaX=3.6,
+            sigmaY=3.6,
+        )
+        mask = np.clip(mask - neck_cut, 0.0, 1.0)
+
+        erode_k = (5, 5) if hair_length == "short" else (7, 7)
+        mask = cv2.erode(
+            mask,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, erode_k),
+            iterations=1,
+        )
+
+        return np.clip(mask, 0.0, 1.0).astype(np.float32)
+
     def _build_neckline_preserve_mask(
         self,
         face_bbox: Tuple[int, int, int, int],
@@ -3632,6 +3888,117 @@ class MirrAISDPipeline:
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
         )
         return (regen_u8 > 0).astype(np.float32)
+
+    def _build_lower_hair_tail_support_mask(
+        self,
+        *,
+        img_rgb: np.ndarray,
+        hair_mask: np.ndarray,
+        cloth_mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+        hair_length: str,
+    ) -> np.ndarray:
+        """
+        밝은 옷 위로 내려온 얇은 앞머리 가닥이 SegFace/SAM2에서 빠질 때
+        기존 hair mask 하단에 붙은 어두운 세로 성분만 보수적으로 다시 포함한다.
+        """
+        if hair_length not in ("short", "medium"):
+            return np.zeros_like(hair_mask, dtype=np.float32)
+
+        H, W = hair_mask.shape[:2]
+        if img_rgb.shape[:2] != (H, W):
+            return np.zeros((H, W), dtype=np.float32)
+
+        x1, y1, x2, y2 = face_bbox
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+
+        corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+        x_min = max(0, int(x1 - face_w * (1.10 if hair_length == "short" else 1.00)))
+        x_max = min(W, int(x2 + face_w * (1.10 if hair_length == "short" else 1.00)))
+        y_min = max(0, int(y2 - face_h * 0.03))
+        y_max = min(H, int(y2 + face_h * (1.20 if hair_length == "short" else 1.00)))
+        if x_min >= x_max or y_min >= y_max:
+            return np.zeros((H, W), dtype=np.float32)
+        corridor_u8[y_min:y_max, x_min:x_max] = 255
+
+        hair_u8 = (np.clip(hair_mask.astype(np.float32), 0.0, 1.0) > 0.35).astype(np.uint8) * 255
+        anchor_u8 = cv2.dilate(
+            hair_u8,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (29, 29) if hair_length == "short" else (23, 23),
+            ),
+            iterations=1,
+        )
+        anchor_u8[:max(0, int(y2 - face_h * 0.10)), :] = 0
+        anchor_u8 = cv2.bitwise_and(anchor_u8, corridor_u8)
+        if int((anchor_u8 > 0).sum()) < 40:
+            return np.zeros((H, W), dtype=np.float32)
+
+        if cloth_mask is not None and cloth_mask.shape == (H, W):
+            cloth_hint_u8 = cv2.dilate(
+                (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.10).astype(np.uint8) * 255,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+                iterations=1,
+            )
+            support_zone_u8 = cv2.bitwise_and(corridor_u8, cloth_hint_u8)
+        else:
+            support_zone_u8 = corridor_u8.copy()
+
+        gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+        blur = cv2.GaussianBlur(gray, (0, 0), sigmaX=7.0, sigmaY=7.0)
+        bright_bg = blur > (136.0 if hair_length == "short" else 132.0)
+        dark_thresh = 140.0 if hair_length == "short" else 136.0
+        contrast_thresh = 7.0 if hair_length == "short" else 6.0
+
+        dark_u8 = (
+            (gray < dark_thresh)
+            & ((blur - gray) > contrast_thresh)
+            & bright_bg
+        ).astype(np.uint8) * 255
+        dark_u8 = cv2.bitwise_and(dark_u8, support_zone_u8)
+        dark_u8 = cv2.bitwise_and(dark_u8, anchor_u8)
+        if int((dark_u8 > 0).sum()) < 18:
+            return np.zeros((H, W), dtype=np.float32)
+
+        dark_u8 = cv2.morphologyEx(
+            dark_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+        dark_u8 = cv2.dilate(
+            dark_u8,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (11, 17) if hair_length == "short" else (9, 13),
+            ),
+            iterations=1,
+        )
+
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(dark_u8, 8)
+        keep_u8 = np.zeros((H, W), dtype=np.uint8)
+        for idx in range(1, num_labels):
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            if area < 20 or area > int(H * W * 0.012):
+                continue
+            comp_u8 = (labels == idx).astype(np.uint8) * 255
+            if int((cv2.bitwise_and(comp_u8, anchor_u8) > 0).sum()) < 6:
+                continue
+            keep_u8 = cv2.bitwise_or(keep_u8, comp_u8)
+
+        if int((keep_u8 > 0).sum()) < 20:
+            return np.zeros((H, W), dtype=np.float32)
+
+        keep_u8 = cv2.dilate(
+            keep_u8,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (9, 15) if hair_length == "short" else (7, 11),
+            ),
+            iterations=1,
+        )
+        return (keep_u8 > 0).astype(np.float32)
 
     def _build_dark_tail_residual_mask(
         self,

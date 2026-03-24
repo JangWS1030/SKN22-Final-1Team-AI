@@ -9,6 +9,7 @@ MirrAI SD Inpainting — RunPod Serverless Handler
     "hairstyle_text": "wolf cut, layered", // 헤어스타일 설명
     "color_text":     "auburn",            // 헤어 색상 (선택)
     "top_k":          3,                   // 결과 수 (1~5, 기본 3)
+    "mask_refine_mode": "sam2",            // "sam2" | "segface_priority" | "segface_only"
     "return_base64":  true,                // true=base64, false=이미지 없이 메타만
     "return_intermediates": false          // true=중간 산출물(base64) 포함
   }
@@ -21,7 +22,8 @@ MirrAI SD Inpainting — RunPod Serverless Handler
       "rank":         0,          // CLIP score 기준 0=best
       "seed":         42,
       "clip_score":   0.312,
-      "mask_used":    "sam2",     // "sam2" | "segface"
+      "mask_used":    "sam2",     // "sam2" | "sam2_soft" | "segface"
+      "mask_refine_mode": "sam2",
       "image_base64": "..."       // return_base64=true 일 때
     },
     ...
@@ -244,6 +246,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         return_intermediates = _coerce_bool(inp.get("return_intermediates"), default=False)
         mask_debug_only = _coerce_bool(inp.get("mask_debug_only"), default=False)
         bg_fill_mode   = str(inp.get("bg_fill_mode", "cv2")).strip()  # "cv2" | "sd"
+        mask_refine_mode = str(inp.get("mask_refine_mode", "")).strip().lower() or None
         lora_path = str(inp.get("lora_path", "")).strip() or None
         lora_scale = float(inp.get("lora_scale", 1.0))
 
@@ -256,6 +259,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(
             f"[handler_sd] 입력: {w}×{h}, "
             f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}, "
+            f"mask_refine_mode={mask_refine_mode or 'default'}, "
             "landmarks=mediapipe"
         )
 
@@ -271,6 +275,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             color_text=color_text,
             top_k=top_k,
             return_intermediates=return_intermediates,
+            mask_refine_mode=mask_refine_mode,
             lora_path=lora_path,
             lora_scale=lora_scale,
         )
@@ -283,6 +288,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 "seed":       r.seed,
                 "clip_score": round(float(r.clip_score), 4),
                 "mask_used":  r.mask_used,
+                "mask_refine_mode": r.mask_refine_mode,
             }
             if return_base64:
                 item["image_base64"] = _image_to_base64(r.image)

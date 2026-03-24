@@ -89,6 +89,23 @@ python tests/test_runpod.py \
   --top-k 1
 ```
 
+단발/중단발 마스크 비교:
+
+```bash
+python tests/test_runpod.py \
+  --image images/1234.jpeg \
+  --hairstyle "short chin-length bob cut, hush cut" \
+  --top-k 1 \
+  --bg-fill sd \
+  --mask-refine-mode segface_priority
+```
+
+마스크 비교 모드:
+
+- `sam2`: 기본 경로
+- `segface_priority`: SegFace 코어 유지 + SAM2 경계 보정만 약하게 반영
+- `segface_only`: SegFace 마스크만 사용
+
 ## CI/CD
 
 push 시 현재 기준으로 아래 워크플로가 동작합니다.
