@@ -9,7 +9,6 @@ MirrAI SD Inpainting — RunPod Serverless Handler
     "hairstyle_text": "wolf cut, layered", // 헤어스타일 설명
     "color_text":     "auburn",            // 헤어 색상 (선택)
     "top_k":          3,                   // 결과 수 (1~5, 기본 3)
-    "bg_fill_mode":   "lama",             // "lama" | "sd" (기본: "lama")
     "return_base64":  true,                // true=base64, false=이미지 없이 메타만
     "return_intermediates": false          // true=중간 산출물(base64) 포함
   }
@@ -19,13 +18,10 @@ MirrAI SD Inpainting — RunPod Serverless Handler
 {
   "results": [
     {
-      "rank":         0,          // ranking score 기준 0=best
+      "rank":         0,          // CLIP score 기준 0=best
       "seed":         42,
-      "clip_score":   0.312,      // legacy score field (현재는 overall rank score)
-      "color_score":  0.201,
-      "silhouette_score": 0.711,
-      "rank_score":   0.572,
-      "mask_used":    "sam2",     // "sam2" | "bisenet"
+      "clip_score":   0.312,
+      "mask_used":    "sam2",     // "sam2" | "segface"
       "image_base64": "..."       // return_base64=true 일 때
     },
     ...
@@ -67,12 +63,16 @@ DOWNLOAD_TIMEOUT   = 30
 # ── 파이프라인 싱글톤 ───────────────────────────────────────────────────────────
 _PIPELINE = None
 
+MASK_DEBUG_KEYWORDS = (
+    "mask",
+)
+
 _IMPORT_ERROR: Optional[str] = None
 try:
     import cv2
     import numpy as np
     from PIL import Image
-    from pipeline_sd_inpainting import MirrAISDPipeline, SDInpaintConfig, normalize_bg_fill_mode
+    from pipeline_sd_inpainting import MirrAISDPipeline, SDInpaintConfig
 except Exception as _e:
     _IMPORT_ERROR = f"{type(_e).__name__}: {_e}\n{traceback.format_exc()}"
     logger.error(f"[handler_sd] import 실패:\n{_IMPORT_ERROR}")
@@ -99,29 +99,9 @@ def _get_pipeline() -> "MirrAISDPipeline":
             "use_clip_ranking":    True,
             "use_color_match":     True,
             "use_poisson_blend":   True,
-            "enable_xformers":     False,
-            "enable_roi_stronger_inpainter": os.environ.get(
-                "ENABLE_ROI_STRONGER_INPAINTER", "0"
-            ) in {"1", "true", "yes"},
-            "roi_stronger_backend": os.environ.get("ROI_STRONGER_BACKEND", "sdxl"),
-            "roi_stronger_control_mode": os.environ.get(
-                "ROI_STRONGER_CONTROL_MODE", "canny"
-            ),
-            "roi_stronger_target_size": int(os.environ.get("ROI_STRONGER_TARGET_SIZE", "768")),
-            "roi_stronger_steps": int(os.environ.get("ROI_STRONGER_STEPS", "20")),
-            "roi_stronger_guidance_scale": float(
-                os.environ.get("ROI_STRONGER_GUIDANCE_SCALE", "6.5")
-            ),
-            "roi_stronger_conditioning_scale": float(
-                os.environ.get("ROI_STRONGER_CONDITIONING_SCALE", "0.30")
-            ),
-            "roi_stronger_strength": float(os.environ.get("ROI_STRONGER_STRENGTH", "0.72")),
-            "roi_stronger_mask_expand_px": int(
-                os.environ.get("ROI_STRONGER_MASK_EXPAND_PX", "5")
-            ),
-            "roi_stronger_mask_blur_px": int(
-                os.environ.get("ROI_STRONGER_MASK_BLUR_PX", "5")
-            ),
+            "enable_xformers":     True,
+            "lora_path":           os.environ.get("LORA_PATH") or None,
+            "lora_scale":          float(os.environ.get("LORA_SCALE", "1.0")),
         }
         cfg = SDInpaintConfig(**{k: v for k, v in _cfg_kwargs.items() if k in _cfg_fields})
 
@@ -139,6 +119,11 @@ def _coerce_bool(v: Any, default: bool = False) -> bool:
     if isinstance(v, bool):
         return v
     return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_mask_debug_image(name: str) -> bool:
+    key = str(name).strip().lower()
+    return any(token in key for token in MASK_DEBUG_KEYWORDS)
 
 
 def _load_image_from_input(inp: Dict[str, Any]) -> "np.ndarray":
@@ -236,18 +221,11 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     # 헬스체크
     if _coerce_bool(inp.get("health_check")):
         import torch
-        capability = None
-        if torch.cuda.is_available():
-            major, minor = torch.cuda.get_device_capability(0)
-            capability = f"{major}.{minor}"
         return {
             "status": "ok",
             "cuda": {
-                "torch_version": torch.__version__,
-                "cuda_runtime": torch.version.cuda,
                 "available": torch.cuda.is_available(),
                 "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-                "capability": capability,
             },
         }
 
@@ -256,13 +234,12 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         hairstyle_text = str(inp.get("hairstyle_text", "")).strip()
         color_text     = str(inp.get("color_text", "")).strip()
         top_k          = max(1, min(5, int(inp.get("top_k", 3))))
-        seed_input     = inp.get("seed")
         return_base64  = _coerce_bool(inp.get("return_base64"), default=True)
         return_intermediates = _coerce_bool(inp.get("return_intermediates"), default=False)
-        bg_fill_mode   = normalize_bg_fill_mode(inp.get("bg_fill_mode", "lama"))
-
-        # ── cleanup tuning params (런타임 오버라이드) ──────────────────────
-        cleanup_params = inp.get("cleanup_params") or {}
+        mask_debug_only = _coerce_bool(inp.get("mask_debug_only"), default=False)
+        bg_fill_mode   = str(inp.get("bg_fill_mode", "cv2")).strip()  # "cv2" | "sd"
+        lora_path = str(inp.get("lora_path", "")).strip() or None
+        lora_scale = float(inp.get("lora_scale", 1.0))
 
         if not hairstyle_text and not color_text:
             return {"error": "hairstyle_text 또는 color_text 중 하나 이상 필요합니다."}
@@ -272,29 +249,24 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         h, w = img_bgr.shape[:2]
         logger.info(
             f"[handler_sd] 입력: {w}×{h}, "
-            f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}"
+            f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}, "
+            "landmarks=mediapipe"
         )
 
         # ── 파이프라인 실행 ───────────────────────────────────────────────────
         pipeline = _get_pipeline()
         # bg_fill_mode를 런타임에 동적으로 설정 (빌드 없이 테스트 가능)
         pipeline.config.bg_fill_mode = bg_fill_mode
-        # seed가 들어오면 요청 단위로 덮어쓰고, 없으면 deterministic seed 경로를 사용한다.
-        if seed_input is not None:
-            base_seed = max(1, int(seed_input))
-            pipeline.config.seeds = [base_seed + idx for idx in range(top_k)]
-            logger.info(f"[handler_sd] explicit_seeds={pipeline.config.seeds}")
-        else:
-            pipeline.config.seeds = None
-            logger.info("[handler_sd] explicit_seeds=(none) -> deterministic seed mode")
         logger.info(f"[handler_sd] bg_fill_mode={bg_fill_mode}")
+        logger.info(f"[handler_sd] mask_debug_only={mask_debug_only}")
         results = pipeline.run(
             image=img_bgr,
             hairstyle_text=hairstyle_text,
             color_text=color_text,
             top_k=top_k,
             return_intermediates=return_intermediates,
-            cleanup_params=cleanup_params,
+            lora_path=lora_path,
+            lora_scale=lora_scale,
         )
 
         # ── 결과 직렬화 ───────────────────────────────────────────────────────
@@ -304,9 +276,6 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 "rank":       r.rank,
                 "seed":       r.seed,
                 "clip_score": round(float(r.clip_score), 4),
-                "color_score": round(float(r.color_score), 4),
-                "silhouette_score": round(float(r.silhouette_score), 4),
-                "rank_score": round(float(r.rank_score), 4),
                 "mask_used":  r.mask_used,
             }
             if return_base64:
@@ -338,6 +307,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         if return_intermediates and results:
             debug_images = results[0].debug_images or {}
             for name, dbg_bgr in debug_images.items():
+                if mask_debug_only and not _is_mask_debug_image(name):
+                    continue
                 try:
                     intermediates[name] = _image_to_base64(dbg_bgr, quality=90)
                 except Exception as e:
@@ -369,24 +340,4 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
 if __name__ == "__main__":
     import runpod
-
-    print(
-        f"[startup] RUNPOD_POD_ID={os.environ.get('RUNPOD_POD_ID', 'NOT_SET')}",
-        flush=True,
-    )
-    print(
-        f"[startup] RUNPOD_ENDPOINT_ID={os.environ.get('RUNPOD_ENDPOINT_ID', 'NOT_SET')}",
-        flush=True,
-    )
-    print(
-        f"[startup] RUNPOD_WEBHOOK_POST_OUTPUT={os.environ.get('RUNPOD_WEBHOOK_POST_OUTPUT', 'NOT_SET')[:200]}",
-        flush=True,
-    )
-    try:
-        print("[startup] starting runpod.serverless.start", flush=True)
-        runpod.serverless.start({"handler": handler})
-    except Exception as e:
-        tb = traceback.format_exc()
-        print(f"[startup] fatal: {type(e).__name__}: {e}", flush=True)
-        print(tb, flush=True)
-        raise
+    runpod.serverless.start({"handler": handler})

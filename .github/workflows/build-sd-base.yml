@@ -7,7 +7,7 @@ on:
       - master
     paths:
       - "Dockerfile.sd.base"
-      - "requirements-sd.txt"
+      - "requirements.txt"
       - ".dockerignore"
       - ".github/workflows/build-sd-base.yml"
   workflow_dispatch:
@@ -54,7 +54,7 @@ jobs:
           docker builder prune -af || true
           docker system prune -af --volumes || true
 
-          # self-hosted runner 로그/임시 캐시 정리 (없으면 무시)
+          # runner 로그/임시 캐시 정리 (없으면 무시)
           rm -rf /home/runner/actions-runner/cached/_diag/* 2>/dev/null || true
           rm -rf /home/runner/actions-runner/_diag/* 2>/dev/null || true
           rm -rf /home/runner/actions-runner/_work/_temp/* 2>/dev/null || true
@@ -95,6 +95,8 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
 
       - name: Log in to Docker Hub
         run: |
@@ -122,8 +124,6 @@ jobs:
           platforms: linux/amd64
           push: true
           provenance: false
-          cache-from: type=gha,scope=sd-base
-          cache-to: type=gha,scope=sd-base,mode=max
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/sd:base-${{ steps.meta.outputs.VERSION }}
             ${{ secrets.DOCKER_USERNAME }}/sd:base-latest

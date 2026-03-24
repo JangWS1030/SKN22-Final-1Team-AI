@@ -32,6 +32,16 @@ venv.bak/
 
 # Project specific
 images/
+dataset_build/
+cmd/
+tests/
+sd_lora_final_bundle_*/
+sd_lora_final_bundle_*.tar.gz
+hair_swap_backup_all_in_one_*.tar
+docker_build_*.log
+docs/*.docx
+docs/*.docx.docx
+configs/
 # 빌드에 필요한 폴더/파일은 제외 해제
 !models/
 !data/

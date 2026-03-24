@@ -11,7 +11,7 @@ from .resnet import Resnet18
 
 import numpy as np
 
-# SD 파이프라인과의 분리를 위해 runtime_spec 의존 제거 (값 동일)
+# SD 파이프라인에서 직접 쓰도록 상수 의존성을 분리해 둔 상태
 GENERATOR_OUTPUT_SIZE = 1024
 SEGMENTATION_BACKBONE_SIZE = 512
 
