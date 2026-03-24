@@ -12,6 +12,7 @@ on:
       - "Dockerfile.sd.app"
       - "entrypoint_sd.sh"
       - "handler_sd.py"
+      - "handler_runpod_diag.py"
       - "pipeline_sd_inpainting.py"
       - "runtime_download.py"
       - "utils/sam2_runtime.py"

@@ -14,6 +14,7 @@ WORKDIR /app
 # SD 앱 코드만 복사
 COPY --chmod=755 entrypoint_sd.sh entrypoint.sh
 COPY handler_sd.py             ./
+COPY handler_runpod_diag.py    ./
 COPY pipeline_sd_inpainting.py ./
 COPY runtime_download.py       ./
 COPY utils/env_loader.py       utils/env_loader.py
