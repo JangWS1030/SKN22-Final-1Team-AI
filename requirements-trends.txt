@@ -1,0 +1,16 @@
+# Hair trend crawling / RAG pipeline
+# Install separately to avoid bloating the RunPod runtime image.
+
+beautifulsoup4>=4.12
+playwright>=1.49
+google-genai>=1.0
+pydantic>=2.8
+chromadb>=0.5
+sentence-transformers>=3.0
+openai>=1.50
+python-dotenv>=1.0
+
+# Optional analysis step
+matplotlib>=3.9
+wordcloud>=1.9
+konlpy>=0.6

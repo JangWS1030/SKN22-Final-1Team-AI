@@ -50,6 +50,10 @@ try:
     from utils.env_loader import load_project_dotenv
 except Exception:
     load_project_dotenv = None
+try:
+    from utils.trend_prompt import resolve_generation_request
+except Exception:
+    resolve_generation_request = None
 
 if load_project_dotenv is not None:
     load_project_dotenv()
@@ -265,8 +269,8 @@ class MirrAISDPipeline:
 
         Args:
             image:          입력 이미지 (BGR numpy)
-            hairstyle_text: 헤어스타일 텍스트 (트렌드 데이터 hairstyle_text)
-            color_text:     헤어 컬러 텍스트 (트렌드 데이터 color_text)
+            hairstyle_text: 사용자 헤어스타일 텍스트 (런타임에 llm_refined_trends 기반 보강)
+            color_text:     헤어 컬러 텍스트
             top_k:          반환 결과 수 (기본 3)
             return_intermediates: 중간 산출물 디버그 이미지 포함 여부
 
@@ -287,7 +291,33 @@ class MirrAISDPipeline:
         logger.info(f"[SDPipeline] seeds={seeds}")
 
         img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        normalized_color_text = self._normalize_color_text(color_text)
+        trend_request = (
+            resolve_generation_request(hairstyle_text, color_text)
+            if resolve_generation_request is not None
+            else None
+        )
+        effective_hairstyle_text = hairstyle_text
+        effective_color_text = color_text
+        if trend_request is not None:
+            if trend_request.resolved_hairstyle_text:
+                effective_hairstyle_text = trend_request.resolved_hairstyle_text
+            if trend_request.resolved_color_text:
+                effective_color_text = trend_request.resolved_color_text
+            logger.info(
+                "[SDPipeline] trend resolution: requested_style='%s' -> resolved_style='%s', matches=%d",
+                trend_request.requested_hairstyle_text,
+                effective_hairstyle_text,
+                len(trend_request.matches),
+            )
+            if trend_request.matches:
+                logger.info(
+                    "[SDPipeline] top trend match: %s (score=%.3f, source=%s)",
+                    trend_request.matches[0].trend_name,
+                    trend_request.matches[0].score,
+                    trend_request.matches[0].source,
+                )
+
+        normalized_color_text = self._normalize_color_text(effective_color_text)
         has_color_request = bool(normalized_color_text)
         target_hair_lab = self._resolve_target_hair_lab(normalized_color_text) if has_color_request else None
         if not has_color_request:
@@ -298,6 +328,8 @@ class MirrAISDPipeline:
         H, W = image.shape[:2]
         debug_images_common: Optional[Dict[str, np.ndarray]] = {} if return_intermediates else None
         debug_data_common: Optional[Dict[str, Any]] = {} if return_intermediates else None
+        if debug_data_common is not None and trend_request is not None:
+            debug_data_common["trend_resolution"] = trend_request.to_debug_dict()
 
         def _store_mask(name: str, mask: np.ndarray) -> None:
             if debug_images_common is None:
@@ -367,7 +399,7 @@ class MirrAISDPipeline:
 
         # ── Step 3: SAM2 refinement ───────────────────────────────────────────
         hair_mask, mask_source = self._refine_with_sam2(
-            img_rgb, hair_mask_base, face_bbox, hairstyle_text
+            img_rgb, hair_mask_base, face_bbox, effective_hairstyle_text
         )
         logger.info(
             f"[SDPipeline] hair mask source={mask_source}, "
@@ -379,7 +411,7 @@ class MirrAISDPipeline:
             raise ValueError("머리카락 영역이 너무 작습니다.")
 
         # ── Step 3-b: 헤어 길이 분류 ─────────────────────────────────────────
-        hair_length = self._classify_hair_length(hairstyle_text)
+        hair_length = self._classify_hair_length(effective_hairstyle_text)
         logger.info(f"[SDPipeline] 헤어 길이 분류: {hair_length}")
         if hair_length == "short" and len(seeds) < 3:
             extra = 3 - len(seeds)
@@ -852,7 +884,7 @@ class MirrAISDPipeline:
 
         # ── Step 6: 프롬프트 ─────────────────────────────────────────────────
         prompt, neg_prompt, guidance = self._build_prompt(
-            hairstyle_text, normalized_color_text, hair_length
+            effective_hairstyle_text, normalized_color_text, hair_length
         )
         logger.info(f"[SDPipeline] 프롬프트: {prompt}")
         logger.info(f"[SDPipeline] 네거티브: {neg_prompt}")
