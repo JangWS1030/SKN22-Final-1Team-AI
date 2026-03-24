@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - master
+      - develop
+      - develop/**
+      - LBJ/**
     paths:
       - "Dockerfile.sd.app"
       - "entrypoint_sd.sh"
