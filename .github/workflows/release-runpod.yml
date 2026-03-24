@@ -1,0 +1,103 @@
+name: Release RunPod Endpoint
+
+on:
+  workflow_run:
+    workflows:
+      - Build and Push SD App Image
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Optional full Docker image name to release
+        required: false
+        default: ""
+        type: string
+      image_tag:
+        description: Optional tag to release with DOCKER_USERNAME/sd
+        required: false
+        default: ""
+        type: string
+      skip_health_check:
+        description: Skip RunPod health check after the release
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-runpod-${{ github.ref_name || github.event.workflow_run.head_branch || 'default' }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install release dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests python-dotenv
+
+      - name: Resolve release image
+        id: meta
+        shell: bash
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: |
+          if [ -z "${DOCKER_USERNAME}" ]; then
+            echo "::error::DOCKER_USERNAME secret is required for release automation."
+            exit 1
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ github.event.inputs.image }}" ]; then
+              IMAGE="${{ github.event.inputs.image }}"
+            else
+              TAG="${{ github.event.inputs.image_tag }}"
+              if [ -z "${TAG}" ]; then
+                TAG="latest"
+              fi
+              IMAGE="${DOCKER_USERNAME}/sd:${TAG}"
+            fi
+            SKIP_HEALTH="${{ github.event.inputs.skip_health_check }}"
+          else
+            IMAGE="${DOCKER_USERNAME}/sd:run-${{ github.event.workflow_run.run_number }}"
+            SKIP_HEALTH="false"
+          fi
+
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "skip_health=${SKIP_HEALTH}" >> "$GITHUB_OUTPUT"
+          echo "[release-runpod] image=${IMAGE}"
+
+      - name: Release RunPod endpoint
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_ENDPOINT_ID: ${{ secrets.RUNPOD_ENDPOINT_ID }}
+        shell: bash
+        run: |
+          if [ -z "${RUNPOD_API_KEY}" ] || [ -z "${RUNPOD_ENDPOINT_ID}" ]; then
+            echo "::error::RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID secrets are required."
+            exit 1
+          fi
+
+          CMD=(python scripts/runpod_release.py --image "${{ steps.meta.outputs.image }}" --timeout 1800)
+          if [ "${{ steps.meta.outputs.skip_health }}" = "true" ]; then
+            CMD+=(--skip-health-check)
+          fi
+
+          printf '[release-runpod] command:'
+          printf ' %q' "${CMD[@]}"
+          printf '\n'
+          "${CMD[@]}"
