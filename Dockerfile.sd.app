@@ -16,7 +16,9 @@ COPY --chmod=755 entrypoint_sd.sh entrypoint.sh
 COPY handler_sd.py             ./
 COPY pipeline_sd_inpainting.py ./
 COPY runtime_download.py       ./
+COPY utils/env_loader.py       utils/env_loader.py
 COPY utils/sam2_runtime.py     utils/sam2_runtime.py
+COPY utils/trend_prompt.py     utils/trend_prompt.py
 COPY models/__init__.py        models/__init__.py
 COPY models/segface/           models/segface/
 COPY data/                     data/
