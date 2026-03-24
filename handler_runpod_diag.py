@@ -25,7 +25,6 @@ def _normalize_runpod_env() -> None:
 
     replacements = {
         "$RUNPOD_POD_ID": pod_id,
-        "$ID": pod_id,
     }
     if gpu_type_id:
         replacements["$RUNPOD_GPU_TYPE_ID"] = gpu_type_id

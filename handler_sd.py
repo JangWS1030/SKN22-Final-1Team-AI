@@ -370,9 +370,10 @@ def _normalize_runpod_env() -> None:
             gpu_type_id = gpu_size.split(",", 1)[0].strip()
             os.environ["RUNPOD_GPU_TYPE_ID"] = gpu_type_id
 
+    # Leave `$ID` intact so the RunPod SDK can substitute the actual job id
+    # when it posts results back to the serverless API.
     replacements = {
         "$RUNPOD_POD_ID": pod_id,
-        "$ID": pod_id,
     }
     if gpu_type_id:
         replacements["$RUNPOD_GPU_TYPE_ID"] = gpu_type_id
