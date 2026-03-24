@@ -48,6 +48,23 @@ python -m pip install -r requirements.txt
 python -m pip install -r requirements-train.txt
 ```
 
+## 로컬/업로드 제외 범위
+
+아래 항목은 로컬 전용으로 유지하고 업로드 대상에서 제외합니다.
+
+- `tests/`
+- `images/`
+- `output/`, `cmd/`
+- `dataset_build/`
+- `pretrained_models/`
+- 생성된 `.docx`
+
+## 남겨둔 문서
+
+- `README_release_runbook.md`: 현재 GitHub Actions + RunPod 릴리스 절차
+- `README_runpod_volume.md`: RunPod cold start 완화용 volume 설정 메모
+- `docs/pipeline_runtime_config.md`: 현재 파이프라인이 실제로 읽는 runtime config 기준 문서
+
 ## 실행 예시
 
 RunPod handler 로컬 실행:
