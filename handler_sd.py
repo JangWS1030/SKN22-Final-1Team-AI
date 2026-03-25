@@ -46,7 +46,7 @@ import traceback
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logging.basicConfig(
     level=logging.INFO,
@@ -132,6 +132,49 @@ def _coerce_bool(v: Any, default: bool = False) -> bool:
 def _is_mask_debug_image(name: str) -> bool:
     key = str(name).strip().lower()
     return any(token in key for token in MASK_DEBUG_KEYWORDS)
+
+
+def _mask_image_to_float(mask_image: Any) -> Optional["np.ndarray"]:
+    if mask_image is None:
+        return None
+    if not isinstance(mask_image, np.ndarray):
+        return None
+
+    mask_arr = mask_image
+    if mask_arr.ndim == 3:
+        mask_arr = cv2.cvtColor(mask_arr, cv2.COLOR_BGR2GRAY)
+    if mask_arr.ndim != 2:
+        return None
+
+    mask_f = mask_arr.astype(np.float32)
+    if mask_f.max() > 1.0:
+        mask_f /= 255.0
+    return np.clip(mask_f, 0.0, 1.0)
+
+
+def _resolve_display_mask(
+    pipeline_mask: Optional["np.ndarray"],
+    debug_images: Optional[Dict[str, "np.ndarray"]],
+    mask_used: str,
+) -> Tuple[Optional["np.ndarray"], str]:
+    debug_images = debug_images or {}
+    normalized_used = str(mask_used or "").strip().lower()
+
+    candidates: list[Tuple[str, Any]] = []
+    if "pipeline_short_removal_mask" in debug_images:
+        candidates.append(("pipeline_short_removal_mask", debug_images["pipeline_short_removal_mask"]))
+    if normalized_used.startswith("sam2") and "sam2_refined_hair_mask" in debug_images:
+        candidates.append(("sam2_refined_hair_mask", debug_images["sam2_refined_hair_mask"]))
+    if normalized_used == "segface" and "segface_hair_mask" in debug_images:
+        candidates.append(("segface_hair_mask", debug_images["segface_hair_mask"]))
+    if pipeline_mask is not None:
+        candidates.append(("pipeline_sd_inpaint_mask", pipeline_mask))
+
+    for name, source in candidates:
+        mask_f = _mask_image_to_float(source)
+        if mask_f is not None and float(mask_f.sum()) > 0.0:
+            return mask_f, name
+    return None, "none"
 
 
 def _load_image_from_input(inp: Dict[str, Any]) -> "np.ndarray":
@@ -231,11 +274,26 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         import torch
         return {
             "status": "ok",
+            "build_tag": os.environ.get("MIRRAI_BUILD_TAG", "unknown"),
+            "runpod": {
+                "endpoint_id": os.environ.get("RUNPOD_ENDPOINT_ID"),
+                "pod_id": os.environ.get("RUNPOD_POD_ID"),
+                "gpu_type_id": os.environ.get("RUNPOD_GPU_TYPE_ID"),
+            },
             "cuda": {
                 "available": torch.cuda.is_available(),
                 "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
             },
         }
+
+    runtime_meta = {
+        "build_tag": os.environ.get("MIRRAI_BUILD_TAG", "unknown"),
+        "runpod": {
+            "endpoint_id": os.environ.get("RUNPOD_ENDPOINT_ID"),
+            "pod_id": os.environ.get("RUNPOD_POD_ID"),
+            "gpu_type_id": os.environ.get("RUNPOD_GPU_TYPE_ID"),
+        },
+    }
 
     try:
         # ── 입력 파싱 ────────────────────────────────────────────────────────
@@ -292,18 +350,43 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             }
             if return_base64:
                 item["image_base64"] = _image_to_base64(r.image)
-                # 디버그용 마스크 (흰=마스킹 영역, 검=보존 영역)
+                debug_images_for_overlay = r.debug_images or {}
+                display_mask, display_mask_name = _resolve_display_mask(
+                    pipeline_mask=r.mask,
+                    debug_images=debug_images_for_overlay,
+                    mask_used=r.mask_used,
+                )
+                item["mask_display_name"] = display_mask_name
+
                 if r.mask is not None:
-                    mask_uint8 = (r.mask * 255).astype(np.uint8)
+                    pipeline_mask_uint8 = (np.clip(r.mask, 0.0, 1.0) * 255).astype(np.uint8)
+                    pipeline_mask_rgb = cv2.cvtColor(pipeline_mask_uint8, cv2.COLOR_GRAY2BGR)
+                    item["pipeline_mask_name"] = "pipeline_sd_inpaint_mask"
+                    item["pipeline_mask_base64"] = _image_to_base64(pipeline_mask_rgb)
+
+                if display_mask is not None:
+                    mask_uint8 = (np.clip(display_mask, 0.0, 1.0) * 255).astype(np.uint8)
                     mask_rgb = cv2.cvtColor(mask_uint8, cv2.COLOR_GRAY2BGR)
                     item["mask_base64"] = _image_to_base64(mask_rgb)
 
-                    # 오버레이: 원본 위에 마스크 영역을 반투명 빨간색으로 표시
-                    orig_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                    overlay_base_bgr = img_bgr
+                    standardized_bgr = debug_images_for_overlay.get("pipeline_standardized_input_image")
+                    if (
+                        isinstance(standardized_bgr, np.ndarray)
+                        and standardized_bgr.shape[:2] == display_mask.shape[:2]
+                    ):
+                        overlay_base_bgr = standardized_bgr
+                    elif overlay_base_bgr.shape[:2] != display_mask.shape[:2]:
+                        overlay_base_bgr = cv2.resize(
+                            overlay_base_bgr,
+                            (display_mask.shape[1], display_mask.shape[0]),
+                            interpolation=cv2.INTER_AREA,
+                        )
+                    orig_rgb = cv2.cvtColor(overlay_base_bgr, cv2.COLOR_BGR2RGB)
                     overlay = orig_rgb.copy()
                     red_layer = np.zeros_like(overlay)
-                    red_layer[:, :, 0] = 255  # R채널만
-                    alpha = r.mask[..., np.newaxis]  # H×W×1
+                    red_layer[:, :, 0] = 255
+                    alpha = display_mask[..., np.newaxis]
                     overlay = (overlay * (1 - 0.5 * alpha) + red_layer * 0.5 * alpha).astype(np.uint8)
                     overlay_bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
                     item["mask_overlay_base64"] = _image_to_base64(overlay_bgr)
@@ -335,6 +418,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         response = {
             "results":         output_results,
             "elapsed_seconds": round(elapsed, 2),
+            "build_tag":       runtime_meta["build_tag"],
+            "runpod":          runtime_meta["runpod"],
         }
         if intermediates:
             response["intermediates"] = intermediates

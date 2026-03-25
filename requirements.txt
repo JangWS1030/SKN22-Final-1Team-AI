@@ -17,7 +17,7 @@ runpod==1.8.1
 huggingface_hub==0.30.2
 python-dotenv==1.0.1
 
-simple-lama-inpainting>=0.1.0
+simple-lama-inpainting==0.1.1
 onnx==1.16.2
 onnxruntime==1.19.2
 mediapipe==0.10.18
