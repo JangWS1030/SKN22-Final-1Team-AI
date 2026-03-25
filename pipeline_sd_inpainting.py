@@ -227,6 +227,8 @@ class MirrAISDPipeline:
         self._mp_face    = None   # MediaPipe FaceDetection
         self._mp_face_mesh = None # MediaPipe FaceMesh
         self._lama       = None   # LaMa large mask inpainting
+        self._lama_device: Optional[str] = None
+        self._lama_error: Optional[str] = None
         self._segface_load_info: Dict[str, Any] = {}
         self._segface_base_load_info: Dict[str, Any] = {}
         self._segface_custom_binary_hair = False
@@ -1272,10 +1274,60 @@ class MirrAISDPipeline:
         """LaMa (Large Mask Inpainting) 모델 로드"""
         if self._lama is not None:
             return
-        from simple_lama_inpainting import SimpleLama
-        logger.info("[SDPipeline] LaMa 모델 로드 중...")
-        self._lama = SimpleLama()
-        logger.info("[SDPipeline] LaMa 로드 완료")
+        logger.info("[SDPipeline] LaMa 모델 로드 중... preferred_device=%s", self.device)
+
+        try:
+            from simple_lama_inpainting import SimpleLama
+        except Exception as exc:
+            self._lama_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "[SDPipeline] simple_lama_inpainting import 실패. cv2 fallback 사용: %s",
+                self._lama_error,
+            )
+            return
+
+        def _try_load(device: torch.device) -> bool:
+            try:
+                self._lama = SimpleLama(device=device)
+                self._lama_device = str(device)
+                self._lama_error = None
+                logger.info("[SDPipeline] LaMa 로드 완료 (device=%s)", device)
+                return True
+            except Exception as exc:
+                self._lama = None
+                self._lama_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "[SDPipeline] LaMa 로드 실패 (device=%s): %s",
+                    device,
+                    self._lama_error,
+                )
+                return False
+
+        if _try_load(self.device):
+            return
+
+        if self.device.type == "cuda":
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+            logger.warning("[SDPipeline] LaMa CPU fallback 시도")
+            if _try_load(torch.device("cpu")):
+                return
+
+        logger.warning("[SDPipeline] LaMa 비활성화. cv2 fallback 사용")
+
+    @staticmethod
+    def _cv2_inpaint_rgb(img_rgb: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
+        """Fallback inpaint path when LaMa is unavailable or incompatible."""
+        if mask_u8.dtype != np.uint8:
+            mask_u8 = mask_u8.astype(np.uint8)
+        if not np.any(mask_u8):
+            return img_rgb.copy()
+        telea = cv2.inpaint(img_rgb, mask_u8, 3, cv2.INPAINT_TELEA)
+        ns = cv2.inpaint(img_rgb, mask_u8, 4, cv2.INPAINT_NS)
+        return cv2.addWeighted(telea, 0.72, ns, 0.28, 0.0)
 
     def _lama_inpaint(self, img_rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """
@@ -1313,17 +1365,39 @@ class MirrAISDPipeline:
         else:
             mask_u8 = mask.copy()
 
+        if not np.any(mask_u8):
+            return img_rgb.copy()
+
+        def _run_inpaint_step(source_rgb: np.ndarray, step_mask_u8: np.ndarray, label: str) -> np.ndarray:
+            if self._lama is None:
+                logger.info("[SDPipeline] LaMa unavailable (%s). cv2 fallback 사용", label)
+                return self._cv2_inpaint_rgb(source_rgb, step_mask_u8)
+
+            try:
+                result_pil = self._lama(Image.fromarray(source_rgb), Image.fromarray(step_mask_u8))
+                return _match_source_size(np.array(result_pil))
+            except Exception as exc:
+                self._lama_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "[SDPipeline] LaMa inpaint 실패 (%s, device=%s). cv2 fallback 사용: %s",
+                    label,
+                    self._lama_device or "unknown",
+                    self._lama_error,
+                )
+                self._lama = None
+                self._lama_device = None
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                return self._cv2_inpaint_rgb(source_rgb, step_mask_u8)
+
         total_pixels = int((mask_u8 > 0).sum())
         image_pixels = mask_u8.shape[0] * mask_u8.shape[1]
 
-        # PIL Image 변환 (simple-lama-inpainting 호환성 보장)
-        img_pil = Image.fromarray(img_rgb)
-
         # 작은 마스크(이미지의 15% 미만)는 단일 패스
         if total_pixels < image_pixels * 0.15:
-            mask_pil = Image.fromarray(mask_u8)
-            result_pil = self._lama(img_pil, mask_pil)
-            return _match_source_size(np.array(result_pil))
+            return _run_inpaint_step(img_rgb, mask_u8, "single-pass")
 
         # ── Progressive inpainting: 바깥→안쪽 단계적 처리 ──────────────
         # 큰 마스크를 3단계로 나눠서 테두리부터 인페인팅
@@ -1361,11 +1435,11 @@ class MirrAISDPipeline:
                 f"pixels={stage_pixels}"
             )
 
-            # 이 단계의 마스크로 인페인팅
-            img_pil_stage = Image.fromarray(current_img)
-            mask_pil_stage = Image.fromarray(stage_mask)
-            result_pil = self._lama(img_pil_stage, mask_pil_stage)
-            current_img = _match_source_size(np.array(result_pil))
+            current_img = _run_inpaint_step(
+                current_img,
+                stage_mask,
+                f"progressive-stage-{stage_i+1}",
+            )
 
             # 처리 완료된 부분 제거
             remaining_mask = np.clip(
