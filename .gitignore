@@ -52,6 +52,8 @@ models/*/*.pth
 output/
 runpod_inputs/
 criteria/
+data/trend_pipeline/chromadb/
+data/trend_pipeline/analysis/
 
 # Generated files
 *.jpg

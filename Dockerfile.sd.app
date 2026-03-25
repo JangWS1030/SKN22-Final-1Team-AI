@@ -18,7 +18,6 @@ COPY --chmod=755 entrypoint_sd.sh entrypoint.sh
 COPY handler_sd.py             ./
 COPY pipeline_sd_inpainting.py ./
 COPY runtime_download.py       ./
-COPY pretrained_models/        pretrained_models/
 COPY utils/sam2_runtime.py     utils/sam2_runtime.py
 COPY models/__init__.py        models/__init__.py
 COPY models/segface/           models/segface/
@@ -26,6 +25,10 @@ COPY data/                     data/
 
 # Normalize Windows CRLF line endings so the Linux entrypoint can execute.
 RUN sed -i 's/\r$//' entrypoint.sh
+
+# `pretrained_models/` contains local-only assets in some environments.
+# The runtime creates/downloads the required files on demand.
+RUN mkdir -p pretrained_models
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
