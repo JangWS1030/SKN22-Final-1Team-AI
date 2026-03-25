@@ -45,6 +45,7 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -435,6 +436,56 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
 # ── Entrypoint ─────────────────────────────────────────────────────────────────
 
+def _normalize_runpod_env() -> None:
+    """
+    Normalize RunPod webhook placeholders for older runpod runtimes.
+
+    Recent RunPod worker envs can expose webhook URLs with placeholders like
+    `$RUNPOD_POD_ID` and `$RUNPOD_GPU_TYPE_ID` while omitting the matching env vars.
+    `runpod==1.8.1` does not fully resolve those values on its own, so fresh workers
+    can fail to start pinging and get reaped before they ever accept a job.
+    """
+    if not os.environ.get("RUNPOD_ENDPOINT_ID"):
+        return
+
+    pod_id = os.environ.get("RUNPOD_POD_ID")
+    if not pod_id:
+        pod_id = os.environ.get("HOSTNAME") or f"local-{uuid.uuid4().hex}"
+        os.environ["RUNPOD_POD_ID"] = pod_id
+        logger.info("[handler_sd] synthesized RUNPOD_POD_ID for worker startup compatibility")
+
+    gpu_type_id = os.environ.get("RUNPOD_GPU_TYPE_ID")
+    if not gpu_type_id:
+        gpu_size = str(os.environ.get("RUNPOD_GPU_SIZE", "")).strip()
+        if gpu_size:
+            gpu_type_id = gpu_size.split(",", 1)[0].strip()
+            os.environ["RUNPOD_GPU_TYPE_ID"] = gpu_type_id
+
+    # Leave `$ID` intact so the RunPod SDK can substitute the actual job id
+    # when it posts results back to the serverless API.
+    replacements = {
+        "$RUNPOD_POD_ID": pod_id,
+    }
+    if gpu_type_id:
+        replacements["$RUNPOD_GPU_TYPE_ID"] = gpu_type_id
+
+    for env_key in (
+        "RUNPOD_WEBHOOK_GET_JOB",
+        "RUNPOD_WEBHOOK_PING",
+        "RUNPOD_WEBHOOK_POST_OUTPUT",
+        "RUNPOD_WEBHOOK_POST_STREAM",
+    ):
+        raw = os.environ.get(env_key)
+        if not raw:
+            continue
+        normalized = raw
+        for needle, replacement in replacements.items():
+            normalized = normalized.replace(needle, replacement)
+        if normalized != raw:
+            os.environ[env_key] = normalized
+            logger.info("[handler_sd] normalized %s", env_key)
+
 if __name__ == "__main__":
+    _normalize_runpod_env()
     import runpod
     runpod.serverless.start({"handler": handler})

@@ -34,5 +34,7 @@ normalize_runpod_webhook_env RUNPOD_WEBHOOK_PING
 normalize_runpod_webhook_env RUNPOD_WEBHOOK_POST_OUTPUT
 normalize_runpod_webhook_env RUNPOD_WEBHOOK_POST_STREAM
 
-echo "[entrypoint_sd] Starting SD Inpainting handler..."
-exec python handler_sd.py
+HANDLER_FILE="${RUNPOD_HANDLER_FILE:-handler_sd.py}"
+
+echo "[entrypoint_sd] Starting handler: ${HANDLER_FILE}"
+exec python "${HANDLER_FILE}" "$@"

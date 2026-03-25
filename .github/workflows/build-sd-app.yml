@@ -12,6 +12,7 @@ on:
       - "Dockerfile.sd.app"
       - "entrypoint_sd.sh"
       - "handler_sd.py"
+      - "handler_runpod_diag.py"
       - "pipeline_sd_inpainting.py"
       - "runtime_download.py"
       - "utils/sam2_runtime.py"
@@ -114,9 +115,23 @@ jobs:
         with:
           driver: docker
 
-      - name: Log in to Docker Hub
+      - name: Validate Docker Hub secrets
+        shell: bash
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
         run: |
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          if [ -z "${DOCKER_USERNAME}" ] || [ -z "${DOCKER_PASSWORD}" ]; then
+            echo "::error::DOCKER_USERNAME and DOCKER_PASSWORD secrets are required."
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
 
       - name: Resolve build metadata
         id: meta

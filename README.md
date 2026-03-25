@@ -77,7 +77,8 @@ python -m pip install -r requirements-trends.txt
 
 - `README_release_runbook.md`: 현재 GitHub Actions + RunPod 릴리스 절차
 - `README_runpod_volume.md`: RunPod cold start 완화용 volume 설정 메모
-- `docs/trend_pipeline.md`: 통합된 크롤링/RAG 서브시스템 실행 가이드
+- `docs/rag_pipeline.md`: 통합된 크롤링/RAG 서브시스템 실행 가이드
+- `docs/rag_evaluation.md`: stylist-rag와 no-rag 비교 평가 결과
 - `docs/pipeline_runtime_config.md`: 현재 파이프라인이 실제로 읽는 runtime config 기준 문서
 
 ## 실행 예시
@@ -153,11 +154,18 @@ push 시 현재 기준으로 아래 워크플로가 동작합니다.
 
 상위 폴더의 `crawling_git`는 현재 저장소 기준으로 흡수했습니다.
 
-- 코드: `trend_pipeline/`
-- 데이터: `data/trend_pipeline/raw`, `data/trend_pipeline/processed`
-- 벡터 DB: `data/trend_pipeline/chromadb` (gitignore)
+- 코드: `rag_pipeline/`
+- 데이터: `data/rag/`
+- 원본 PDF: `data/rag/sources/ncs/`
+- 벡터 DB:
+  `data/rag/stores/chromadb_trends`
+  `data/rag/stores/chromadb_ncs`
+- 통합 질의:
+  `python -m rag_pipeline.main stylist-rag --query "요즘 유행하는 단발 추천하고 시술 포인트도 알려줘"`
+- 평가:
+  `python -m rag_pipeline.main stylist-eval --top-k 3`
 
-기존 RunPod SD 서비스 경로와 충돌하지 않도록 완전히 분리된 네임스페이스로 넣었습니다. 자세한 사용법은 `docs/trend_pipeline.md`를 보면 됩니다.
+기존 RunPod SD 서비스 경로와 충돌하지 않도록 완전히 분리된 네임스페이스로 넣었습니다. 자세한 사용법은 `docs/rag_pipeline.md`를 보면 됩니다.
 
 ## 생성 프롬프트와 트렌드 데이터
 

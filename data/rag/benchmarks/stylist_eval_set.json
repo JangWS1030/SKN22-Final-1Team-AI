@@ -1,0 +1,872 @@
+[
+  {
+    "id": "cut_bob",
+    "service_type": "커트",
+    "user_input": "요즘 유행하는 단발 추천하고 그 스타일 시술 포인트도 정리해줘",
+    "reference": "현재는 블런트 밥, 페이지보이 밥, 파워 밥 같은 단발이 유효하다. 시술은 커트 베이스를 2~3cm로 잡고 온 더 베이스로 균일한 길이를 만든 뒤 질감 처리를 필요한 부위만 조절한다. 아웃라인의 무게감을 살리고 드라이와 텍스처 제품으로 마무리한다.",
+    "required_terms": [
+      "블런트 밥",
+      "페이지보이 밥",
+      "2~3cm",
+      "온 더 베이스",
+      "질감 처리",
+      "드라이"
+    ],
+    "expected_sources": [
+      "헤어커트_원렝스"
+    ],
+    "expected_pages": [
+      100,
+      103
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어커트_원렝스",
+        "pages": [
+          100,
+          103
+        ]
+      }
+    ],
+    "expected_steps": [
+      "커트 베이스 설정",
+      "온 더 베이스로 길이 정리",
+      "질감 처리",
+      "드라이 또는 텍스처 마무리"
+    ],
+    "expected_trend_terms": [
+      "blunt bob",
+      "pageboy bob",
+      "power bob"
+    ]
+  },
+  {
+    "id": "cut_french_bob",
+    "service_type": "커트",
+    "user_input": "요즘 유행하는 프렌치 밥 추천하고 커트 포인트도 정리해줘",
+    "reference": "프렌치 밥과 텍스처드 보브 계열이 유효하다. 턱선 부근 아웃라인을 무겁게 두고 온 더 베이스로 길이를 정리한 뒤 시술각과 질감 처리를 필요한 부분만 넣어 페이스 라인을 살린다. 드라이로 끝선 방향을 정돈하고 가벼운 텍스처 제품으로 마무리한다.",
+    "required_terms": [
+      "프렌치 밥",
+      "텍스처드 보브",
+      "온 더 베이스",
+      "시술각",
+      "질감 처리",
+      "드라이"
+    ],
+    "expected_sources": [
+      "헤어커트_원렝스"
+    ],
+    "expected_pages": [
+      100,
+      103
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어커트_원렝스",
+        "pages": [
+          100,
+          103
+        ]
+      }
+    ],
+    "expected_steps": [
+      "아웃라인 무게 설정",
+      "온 더 베이스 길이 정리",
+      "시술각 또는 질감 처리",
+      "드라이 마무리"
+    ],
+    "expected_trend_terms": [
+      "french bob",
+      "textured bob",
+      "blunt bob"
+    ]
+  },
+  {
+    "id": "cut_bixie",
+    "service_type": "커트",
+    "user_input": "요즘 유행하는 빅시 추천하고 커트 설계 포인트 정리해줘",
+    "reference": "빅시는 밥과 픽시의 하이브리드라 페이스 프레이밍과 프린지가 핵심이다. 커트는 온 더 베이스로 기본 길이를 맞춘 뒤 앞쪽 레이어와 질감 처리를 조절해 가볍게 연결한다. 프린지와 옆선은 드라이로 방향을 정리해 마무리한다.",
+    "required_terms": [
+      "빅시",
+      "페이스 프레이밍",
+      "프린지",
+      "온 더 베이스",
+      "질감 처리",
+      "드라이"
+    ],
+    "expected_sources": [
+      "헤어커트_원렝스"
+    ],
+    "expected_pages": [
+      100,
+      103
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어커트_원렝스",
+        "pages": [
+          100,
+          103
+        ]
+      }
+    ],
+    "expected_steps": [
+      "베이스 길이 설정",
+      "앞쪽 레이어 또는 프린지 정리",
+      "질감 처리",
+      "드라이 마무리"
+    ],
+    "expected_trend_terms": [
+      "bixie",
+      "pixie",
+      "face-framing"
+    ]
+  },
+  {
+    "id": "cut_fine_hair_bob",
+    "service_type": "커트",
+    "user_input": "얇은 모발에 어울리는 보브 커트 추천하고 설계 포인트 정리해줘",
+    "reference": "가는 모발에는 블런트 밥이나 그라데이션 보브가 유효하다. 끝선 무게를 살리기 위해 무거운 아웃라인과 최소한의 내부 레이어로 베이스를 잡고, 질감 처리는 과하지 않게 한다. 드라이와 스프레이로 모근 볼륨을 보강한다.",
+    "required_terms": [
+      "블런트 밥",
+      "그라데이션 보브",
+      "무거운 아웃라인",
+      "내부 레이어",
+      "모근 볼륨",
+      "스프레이"
+    ],
+    "expected_sources": [
+      "헤어커트_원렝스"
+    ],
+    "expected_pages": [
+      100,
+      103
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어커트_원렝스",
+        "pages": [
+          100,
+          103
+        ]
+      }
+    ],
+    "expected_steps": [
+      "무거운 아웃라인 유지",
+      "내부 레이어 최소화",
+      "질감 처리 최소화",
+      "모근 볼륨 드라이 또는 스프레이"
+    ],
+    "expected_trend_terms": [
+      "blunt bob",
+      "graduated bob",
+      "volume"
+    ]
+  },
+  {
+    "id": "perm_layered",
+    "service_type": "펌",
+    "user_input": "요즘 유행하는 레이어드 펌 추천하고 시술 포인트 정리해줘",
+    "reference": "자연스러운 레이어드 웨이브가 핵심이다. 상담에서 컬 굵기와 원하는 무드를 정한 뒤 모발 수분 함량 20~30% 상태에서 1제를 도포하고, 두피 1cm 정도 띄워 약제를 바른다. 와인딩과 처리 후 중화, 헹굼, 건조로 마무리하고 홈케어를 안내한다.",
+    "required_terms": [
+      "레이어드 웨이브",
+      "20~30%",
+      "1cm",
+      "와인딩",
+      "중화",
+      "홈케어"
+    ],
+    "expected_sources": [
+      "헤어펌_콜드펌"
+    ],
+    "expected_pages": [
+      55,
+      58
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어펌_콜드펌",
+        "pages": [
+          55,
+          58
+        ]
+      }
+    ],
+    "expected_steps": [
+      "상담으로 컬 굵기와 무드 결정",
+      "1제 도포 또는 연화",
+      "와인딩",
+      "중화 또는 헹굼",
+      "홈케어 안내"
+    ],
+    "expected_trend_terms": [
+      "effortless hair",
+      "soft waves",
+      "tailored styles"
+    ]
+  },
+  {
+    "id": "perm_volume_magic_curl",
+    "service_type": "펌",
+    "user_input": "요즘 유행하는 볼륨매직 C컬 추천하고 시술 포인트 정리해줘",
+    "reference": "볼륨매직 C컬은 깔끔한 실루엣과 자연스러운 끝선이 핵심이다. 극손상모는 아이론 온도를 120℃ 이하로 두고, C컬 위치에서 아이론을 180° 회전시켜 1cm씩 미끄러지듯 내리며 3~5초 뜸을 들인다. 중간부는 직선 프레스로 정리하고 끝선만 컬을 만든다.",
+    "required_terms": [
+      "볼륨매직",
+      "C컬",
+      "120℃",
+      "180° 회전",
+      "1cm",
+      "3~5초"
+    ],
+    "expected_sources": [
+      "헤어펌_콜드펌"
+    ],
+    "expected_pages": [
+      74,
+      75,
+      76
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어펌_콜드펌",
+        "pages": [
+          74,
+          75,
+          76
+        ]
+      }
+    ],
+    "expected_steps": [
+      "아이론 온도 설정",
+      "직선 프레스",
+      "180도 회전",
+      "1cm씩 이동하며 뜸 들이기",
+      "C컬 마무리"
+    ],
+    "expected_trend_terms": [
+      "soft waves",
+      "effortless hair",
+      "blowout with volume"
+    ]
+  },
+  {
+    "id": "perm_heating_wave",
+    "service_type": "펌",
+    "user_input": "요즘 유행하는 히팅펌이나 디지털펌 추천하고 시술 포인트 정리해줘",
+    "reference": "히팅펌과 디지털펌은 부드러운 웨이브와 정돈된 마무리가 유효하다. 상담 후 모발 상태를 보고 1제를 도포해 연화하고, 와인딩과 열처리 뒤 중화와 헹굼으로 마무리한다. 스타일링은 수분 30% 정도 남긴 상태에서 제품을 써 컬을 정리한다.",
+    "required_terms": [
+      "히팅펌",
+      "1제",
+      "연화",
+      "와인딩",
+      "중화",
+      "수분 30%"
+    ],
+    "expected_sources": [
+      "헤어펌_콜드펌"
+    ],
+    "expected_pages": [
+      55,
+      58,
+      78
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어펌_콜드펌",
+        "pages": [
+          55,
+          58,
+          78
+        ]
+      }
+    ],
+    "expected_steps": [
+      "상담 및 손상도 확인",
+      "1제 도포와 연화",
+      "와인딩 또는 열처리",
+      "중화 또는 헹굼",
+      "수분 30% 상태 스타일링"
+    ],
+    "expected_trend_terms": [
+      "soft waves",
+      "effortless hair",
+      "blowout with volume"
+    ]
+  },
+  {
+    "id": "perm_aftercare",
+    "service_type": "펌",
+    "user_input": "펌 후 홈케어를 요즘 스타일 기준으로 정리해줘",
+    "reference": "자연스럽고 부드러운 컬 유지가 핵심이다. 샴푸 후에는 비비지 말고 눌러서 타월드라이하고, 핸드드라이로 수분을 조절한다. 콜드펌은 젖은 상태에서 수분 보유 제품을, 히팅펌은 열보호 제품을 사용한다. 컬을 손으로 정리해 말리고 강한 열과 과도한 브러싱을 피하도록 안내한다.",
+    "required_terms": [
+      "타월드라이",
+      "핸드드라이",
+      "수분 보유",
+      "열보호",
+      "강한 열",
+      "브러싱"
+    ],
+    "expected_sources": [
+      "헤어펌_콜드펌"
+    ],
+    "expected_pages": [
+      78,
+      82,
+      83
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어펌_콜드펌",
+        "pages": [
+          78,
+          82,
+          83
+        ]
+      }
+    ],
+    "expected_steps": [
+      "타월드라이",
+      "적절한 건조",
+      "펌 전용 또는 산성 제품 사용",
+      "강한 열 또는 브러싱 회피",
+      "홈케어 안내"
+    ],
+    "expected_trend_terms": [
+      "effortless hair",
+      "soft waves",
+      "timeless style"
+    ]
+  },
+  {
+    "id": "color_ash_brown",
+    "service_type": "컬러",
+    "user_input": "요즘 유행하는 애쉬 브라운 컬러 추천하고 시술 포인트 정리해줘",
+    "reference": "애쉬 브라운과 차분한 브라운 계열이 트렌드다. 상담에서 피부톤과 기존 베이스를 보고 브랜드별 컬러 차트와 제품 설명서를 비교해 염모제를 고른다. 필요시 탈색 여부를 먼저 판단하고 도포, 방치, 헹굼, 후처리 순으로 진행하며 컬러 전용 샴푸와 컨디셔너로 유지 관리를 안내한다.",
+    "required_terms": [
+      "애쉬 브라운",
+      "컬러 차트",
+      "제품 설명서",
+      "탈색 여부",
+      "도포",
+      "후처리"
+    ],
+    "expected_sources": [
+      "헤어컬러+디자인"
+    ],
+    "expected_pages": [
+      91,
+      95,
+      102
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어컬러+디자인",
+        "pages": [
+          91,
+          95,
+          102
+        ]
+      }
+    ],
+    "expected_steps": [
+      "피부톤과 베이스 진단",
+      "컬러 차트 또는 제품 설명서 확인",
+      "탈색 여부 판단",
+      "도포와 방치",
+      "후처리와 유지 관리"
+    ],
+    "expected_trend_terms": [
+      "ash-brown",
+      "brown"
+    ]
+  },
+  {
+    "id": "color_copper",
+    "service_type": "컬러",
+    "user_input": "요즘 유행하는 코퍼 컬러 추천하고 시술 포인트 정리해줘",
+    "reference": "루티드 코퍼나 시나몬 코퍼 계열이 트렌드다. 상담에서 피부톤과 기존 베이스를 보고 탈색 여부를 먼저 판단한 뒤, 컬러 차트와 제품 설명서를 기준으로 염모제를 고른다. 도포, 방치, 헹굼, 후처리 순으로 진행하고 색 빠짐을 줄이는 관리법을 안내한다.",
+    "required_terms": [
+      "루티드 코퍼",
+      "시나몬 코퍼",
+      "탈색 여부",
+      "컬러 차트",
+      "도포",
+      "후처리"
+    ],
+    "expected_sources": [
+      "헤어컬러+디자인"
+    ],
+    "expected_pages": [
+      91,
+      95,
+      102
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어컬러+디자인",
+        "pages": [
+          91,
+          95,
+          102
+        ]
+      }
+    ],
+    "expected_steps": [
+      "피부톤과 베이스 진단",
+      "컬러 차트 또는 제품 설명서 확인",
+      "탈색 여부 판단",
+      "도포와 방치",
+      "후처리와 유지 관리"
+    ],
+    "expected_trend_terms": [
+      "cinnamon copper",
+      "cowboy copper",
+      "copper"
+    ]
+  },
+  {
+    "id": "color_milky_brunette",
+    "service_type": "컬러",
+    "user_input": "요즘 유행하는 밀키 브루넷이나 톤다운 브라운 추천하고 시술 포인트 정리해줘",
+    "reference": "밀키 브루넷이나 올리브 브라운 같은 톤다운 브라운이 유효하다. 피부톤과 잔여 색소를 보고 베이스 톤을 정한 뒤 브랜드별 특징과 제품 설명서를 비교해 제품을 선택한다. 도포와 후처리를 안정적으로 하고 컬러 샴푸와 컨디셔너를 안내한다.",
+    "required_terms": [
+      "밀키 브루넷",
+      "올리브 브라운",
+      "베이스 톤",
+      "브랜드별 특징",
+      "제품 설명서",
+      "컬러 샴푸"
+    ],
+    "expected_sources": [
+      "헤어컬러+디자인"
+    ],
+    "expected_pages": [
+      91,
+      94,
+      102
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어컬러+디자인",
+        "pages": [
+          91,
+          94,
+          102
+        ]
+      }
+    ],
+    "expected_steps": [
+      "피부톤과 잔여 색소 확인",
+      "베이스 톤 설정",
+      "제품 선택",
+      "도포",
+      "후처리 또는 컬러 샴푸 안내"
+    ],
+    "expected_trend_terms": [
+      "milky brunette",
+      "brown hair color",
+      "caramel undertones"
+    ]
+  },
+  {
+    "id": "color_highlight_dimension",
+    "service_type": "컬러",
+    "user_input": "하이라이트가 들어간 요즘 컬러 추천하고 시술 포인트 정리해줘",
+    "reference": "하이라이트나 입체감 컬러는 보브나 롱레이어에 잘 맞는다. 컬러 설계에서 밝기 차와 강조 부위를 먼저 정하고, 탈색 여부를 판단한 뒤 도포와 방치, 후처리 순으로 진행한다. 하이라이트와 로우라이트의 대비는 자연스럽게 유지 관리가 가능해야 한다.",
+    "required_terms": [
+      "하이라이트",
+      "로우라이트",
+      "탈색 여부",
+      "도포",
+      "방치",
+      "후처리"
+    ],
+    "expected_sources": [
+      "헤어컬러+디자인"
+    ],
+    "expected_pages": [
+      94,
+      101,
+      102
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어컬러+디자인",
+        "pages": [
+          94,
+          101,
+          102
+        ]
+      }
+    ],
+    "expected_steps": [
+      "밝기 차와 강조 부위 설계",
+      "탈색 여부 판단",
+      "도포와 방치",
+      "후처리",
+      "유지 관리 안내"
+    ],
+    "expected_trend_terms": [
+      "highlights",
+      "dimensional blonde",
+      "auburn"
+    ]
+  },
+  {
+    "id": "upstyle_modern",
+    "service_type": "업스타일",
+    "user_input": "요즘 유행하는 업스타일 추천하고 시술 포인트 정리해줘",
+    "reference": "슬릭한 번이나 브레이드 포인트 업스타일이 유효하다. 작업 전 빗, 핀, 밴드, 고정 제품을 준비하고 블로킹 후 볼륨 위치를 설계한다. 핀 고정과 형태 정리를 단계적으로 진행하고, 무너짐이 생기지 않도록 고정력과 무게 중심을 확인한다.",
+    "required_terms": [
+      "슬릭",
+      "브레이드",
+      "블로킹",
+      "핀",
+      "고정력",
+      "무게 중심"
+    ],
+    "expected_sources": [
+      "특수머리+스타일_가발"
+    ],
+    "expected_pages": [
+      131,
+      134,
+      145
+    ],
+    "expected_source_pages": [
+      {
+        "source": "특수머리+스타일_가발",
+        "pages": [
+          131,
+          134,
+          145
+        ]
+      }
+    ],
+    "expected_steps": [
+      "도구 준비",
+      "블로킹",
+      "핀 고정",
+      "형태 정리",
+      "고정력과 무게 중심 확인"
+    ],
+    "expected_trend_terms": [
+      "updo",
+      "bun",
+      "braids"
+    ]
+  },
+  {
+    "id": "upstyle_braid_crown",
+    "service_type": "업스타일",
+    "user_input": "요즘 유행하는 브레이드 업스타일 추천하고 작업 포인트 정리해줘",
+    "reference": "브레이드 크라운이나 브레이드 포인트 업스타일이 유효하다. 작업 전 브러시, 빗, 핀, 고정 제품을 준비하고 블로킹으로 형태를 나눈다. 브레이드 후 핀 고정과 형태 정리를 단계적으로 하고, 고정력과 무게 중심을 확인한다.",
+    "required_terms": [
+      "브레이드",
+      "브러시",
+      "빗",
+      "핀",
+      "블로킹",
+      "무게 중심"
+    ],
+    "expected_sources": [
+      "특수머리+스타일_가발"
+    ],
+    "expected_pages": [
+      143,
+      144,
+      145
+    ],
+    "expected_source_pages": [
+      {
+        "source": "특수머리+스타일_가발",
+        "pages": [
+          143,
+          144,
+          145
+        ]
+      }
+    ],
+    "expected_steps": [
+      "브러시와 빗 준비",
+      "블로킹",
+      "브레이드 작업",
+      "핀 고정",
+      "형태 정리"
+    ],
+    "expected_trend_terms": [
+      "braid crown",
+      "updo",
+      "braid"
+    ]
+  },
+  {
+    "id": "upstyle_sleek_bun",
+    "service_type": "업스타일",
+    "user_input": "슬릭 번 스타일을 요즘 느낌으로 추천하고 작업 포인트 정리해줘",
+    "reference": "슬릭 번은 매끈한 면 처리와 안정적인 고정이 핵심이다. 준비 단계에서 브러시, 핀, 밴드, 고정 제품을 갖추고 블로킹으로 결을 정리한다. 묶는 위치를 정한 뒤 핀 고정과 형태 정리를 하고, 잔머리와 윤기 표현을 마지막에 조정한다.",
+    "required_terms": [
+      "슬릭 번",
+      "브러시",
+      "핀",
+      "밴드",
+      "고정 제품",
+      "형태 정리"
+    ],
+    "expected_sources": [
+      "특수머리+스타일_가발"
+    ],
+    "expected_pages": [
+      143,
+      144,
+      145
+    ],
+    "expected_source_pages": [
+      {
+        "source": "특수머리+스타일_가발",
+        "pages": [
+          143,
+          144,
+          145
+        ]
+      }
+    ],
+    "expected_steps": [
+      "브러시와 핀 준비",
+      "블로킹으로 결 정리",
+      "묶는 위치 설정",
+      "핀 고정",
+      "잔머리와 윤기 마무리"
+    ],
+    "expected_trend_terms": [
+      "bun",
+      "updo",
+      "slicked-back bun"
+    ]
+  },
+  {
+    "id": "upstyle_volume_updo",
+    "service_type": "업스타일",
+    "user_input": "볼륨 있는 업스타일 추천하고 체형별 연출 포인트도 정리해줘",
+    "reference": "티징이 들어간 볼륨 업스타일은 정수리 볼륨과 체형 균형이 중요하다. 블로킹 후 볼륨 위치를 먼저 설계하고 브러시와 핀으로 기초 형태를 만든다. 고정력과 무게 중심을 확인하면서 얼굴형과 체형에 맞게 잔머리와 가닥을 조정한다.",
+    "required_terms": [
+      "티징",
+      "볼륨 위치",
+      "브러시",
+      "핀",
+      "고정력",
+      "무게 중심"
+    ],
+    "expected_sources": [
+      "특수머리+스타일_가발"
+    ],
+    "expected_pages": [
+      134,
+      145,
+      152
+    ],
+    "expected_source_pages": [
+      {
+        "source": "특수머리+스타일_가발",
+        "pages": [
+          134,
+          145,
+          152
+        ]
+      }
+    ],
+    "expected_steps": [
+      "볼륨 위치 설계",
+      "브러시와 핀으로 기초 형태 만들기",
+      "고정력 확보",
+      "무게 중심 확인",
+      "체형 또는 얼굴형에 맞게 조정"
+    ],
+    "expected_trend_terms": [
+      "updo",
+      "volume",
+      "teased"
+    ]
+  },
+  {
+    "id": "clinic_damaged",
+    "service_type": "샴푸/클리닉",
+    "user_input": "손상모 클리닉 트렌드랑 시술 포인트 정리해줘",
+    "reference": "케어 중심 트렌드와 맞춤 상담이 중요하다. 시술은 상담·진단 후 프레 샴푸, 전처리제 도포, 핸들링, 재생 성분 도포, 미스트나 스티머 처리, 후처리, 마무리, 홈케어 안내 순으로 간다. 손상도와 열·화학 시술 이력을 보고 제품을 선택하고 과한 마찰과 열 손상을 피해야 한다.",
+    "required_terms": [
+      "프레 샴푸",
+      "전처리제",
+      "핸들링",
+      "미스트",
+      "후처리",
+      "열 손상"
+    ],
+    "expected_sources": [
+      "헤어 샴푸와 클리닉"
+    ],
+    "expected_pages": [
+      132,
+      136,
+      141,
+      161
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어 샴푸와 클리닉",
+        "pages": [
+          132,
+          136,
+          141,
+          161
+        ]
+      }
+    ],
+    "expected_steps": [
+      "상담과 진단",
+      "프레 샴푸 또는 전처리",
+      "핸들링 또는 재생 성분 도포",
+      "미스트 또는 열 처리",
+      "후처리",
+      "홈케어 안내"
+    ],
+    "expected_trend_terms": [
+      "personalized looks",
+      "tailored styles",
+      "effortless hair"
+    ]
+  },
+  {
+    "id": "clinic_aftercare",
+    "service_type": "샴푸/클리닉",
+    "user_input": "손상모 클리닉 후 홈케어를 어떻게 안내하면 좋을지 정리해줘",
+    "reference": "손상모 클리닉 후에는 시술 직후 관리와 홈케어 설명이 중요하다. 후처리와 마무리 후 고객 상태를 다시 확인하고, 열 손상과 과한 마찰을 피하도록 안내한다. 집에서는 트리트먼트나 헤어팩으로 보습과 단백질 보충을 하고 제품 선택 기준을 설명한다.",
+    "required_terms": [
+      "후처리",
+      "홈케어",
+      "열 손상",
+      "마찰",
+      "트리트먼트",
+      "헤어팩"
+    ],
+    "expected_sources": [
+      "헤어 샴푸와 클리닉"
+    ],
+    "expected_pages": [
+      139,
+      141,
+      161
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어 샴푸와 클리닉",
+        "pages": [
+          139,
+          141,
+          161
+        ]
+      }
+    ],
+    "expected_steps": [
+      "후처리와 마무리",
+      "고객 상태 재확인",
+      "열 손상과 마찰 회피 안내",
+      "트리트먼트 또는 헤어팩 안내",
+      "제품 선택 기준 설명"
+    ],
+    "expected_trend_terms": [
+      "personalized looks",
+      "tailored styles",
+      "effortless hair"
+    ]
+  },
+  {
+    "id": "thin_hair_volume",
+    "service_type": "스타일링",
+    "user_input": "얇은 모발에 어울리는 볼륨 스타일 추천하고 손질 포인트 설명해줘",
+    "reference": "블런트 밥, 파워 밥, 가벼운 웨이브가 얇은 모발에 적합하다. 커트는 끝선 무게를 살리고 스타일링은 모근 볼륨을 드라이로 세운 뒤 스프레이로 고정한다. 무거운 오일류는 피하고 텍스처 제품을 가볍게 사용한다.",
+    "required_terms": [
+      "블런트 밥",
+      "파워 밥",
+      "모근 볼륨",
+      "스프레이",
+      "무거운 오일",
+      "텍스처 제품"
+    ],
+    "expected_sources": [
+      "헤어 샴푸와 클리닉"
+    ],
+    "expected_pages": [
+      171
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어 샴푸와 클리닉",
+        "pages": [
+          171
+        ]
+      }
+    ],
+    "expected_steps": [
+      "끝선 무게 유지",
+      "모근 볼륨 드라이",
+      "스프레이 고정",
+      "무거운 오일 회피",
+      "텍스처 제품 가볍게 사용"
+    ],
+    "expected_trend_terms": [
+      "blunt bob",
+      "power bob",
+      "volume"
+    ]
+  },
+  {
+    "id": "styling_blowdry_volume",
+    "service_type": "스타일링",
+    "user_input": "블로우드라이로 볼륨 살리는 방법을 요즘 스타일 기준으로 정리해줘",
+    "reference": "볼륨 블로우드라이는 모근 방향과 도구 선택이 핵심이다. 드라이기와 브러시로 뿌리 볼륨을 먼저 세우고, 냉온풍을 조절해 형태를 고정한다. 마무리에서는 가벼운 스프레이나 텍스처 제품으로 유지력을 보강한다.",
+    "required_terms": [
+      "블로우드라이",
+      "드라이기",
+      "브러시",
+      "모근 볼륨",
+      "냉온풍",
+      "스프레이"
+    ],
+    "expected_sources": [
+      "헤어스타일_디자인",
+      "헤어 샴푸와 클리닉"
+    ],
+    "expected_pages": [
+      109,
+      173,
+      174
+    ],
+    "expected_source_pages": [
+      {
+        "source": "헤어스타일_디자인",
+        "pages": [
+          109
+        ]
+      },
+      {
+        "source": "헤어 샴푸와 클리닉",
+        "pages": [
+          173,
+          174
+        ]
+      }
+    ],
+    "expected_steps": [
+      "드라이기와 브러시 준비",
+      "모근 볼륨 세우기",
+      "냉온풍 조절",
+      "형태 고정",
+      "스프레이 또는 텍스처 마무리"
+    ],
+    "expected_trend_terms": [
+      "blowout with volume",
+      "volume",
+      "effortless hair"
+    ]
+  }
+]

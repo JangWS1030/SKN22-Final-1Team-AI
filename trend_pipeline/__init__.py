@@ -1,9 +1,0 @@
-from .paths import ANALYSIS_DIR, CHROMA_DIR, PROCESSED_DATA_DIR, RAW_DATA_DIR, TREND_DATA_DIR
-
-__all__ = [
-    "ANALYSIS_DIR",
-    "CHROMA_DIR",
-    "PROCESSED_DATA_DIR",
-    "RAW_DATA_DIR",
-    "TREND_DATA_DIR",
-]

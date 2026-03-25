@@ -54,6 +54,10 @@ runpod_inputs/
 criteria/
 data/trend_pipeline/chromadb/
 data/trend_pipeline/analysis/
+data/rag_pipeline/chromadb_trends/
+data/rag_pipeline/chromadb_ncs/
+data/rag/analysis/
+data/rag/stores/
 
 # Generated files
 *.jpg

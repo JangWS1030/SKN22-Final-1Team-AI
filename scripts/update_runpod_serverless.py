@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--api-key", default=None, help="RunPod API key.")
     parser.add_argument("--endpoint-id", default=None, help="RunPod endpoint ID.")
-    parser.add_argument("--image", required=True, help="New Docker image.")
+    parser.add_argument("--image", default=None, help="New Docker image. Defaults to the current repository with :latest.")
     parser.add_argument("--wait", action="store_true", help="Wait for rollout to start.")
     parser.add_argument("--timeout", type=int, default=900, help="Rollout timeout in seconds.")
     parser.add_argument("--poll-interval", type=int, default=10, help="Polling interval in seconds.")
@@ -30,7 +30,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
-    forwarded = ["runpod_release.py", "--image", args.image, "--timeout", str(args.timeout), "--poll-interval", str(args.poll_interval)]
+    image = (args.image or "").strip()
+    forwarded = ["runpod_release.py", "--timeout", str(args.timeout), "--poll-interval", str(args.poll_interval)]
+    if image:
+        forwarded += ["--image", image]
+    else:
+        # Legacy callers often passed an empty --image expecting a latest-tag rollout.
+        forwarded += ["--image-tag", "latest"]
     if args.api_key:
         forwarded += ["--api-key", args.api_key]
     if args.endpoint_id:
