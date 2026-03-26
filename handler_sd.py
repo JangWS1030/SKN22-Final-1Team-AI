@@ -410,7 +410,7 @@ def _fetch_rag_context_for_styles(recommendations) -> Optional[str]:
 
 def _generate_per_recommendation(
     pipeline, img_bgr, recommendations, color_text,
-    return_intermediates, mask_refine_mode, lora_path, lora_scale, rag_context,
+    return_intermediates, mask_refine_mode, subject_gender, lora_path, lora_scale, rag_context,
 ):
     """추천된 각 스타일마다 1장씩 생성."""
     all_results = []
@@ -433,6 +433,7 @@ def _generate_per_recommendation(
                 top_k=1,
                 return_intermediates=return_intermediates if idx == 0 else False,
                 mask_refine_mode=mask_refine_mode,
+                subject_gender=subject_gender,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
             )
@@ -519,6 +520,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         mask_debug_only = _coerce_bool(inp.get("mask_debug_only"), default=False)
         bg_fill_mode   = str(inp.get("bg_fill_mode", "cv2")).strip()  # "cv2" | "sd"
         mask_refine_mode = str(inp.get("mask_refine_mode", "")).strip().lower() or None
+        subject_gender = str(inp.get("subject_gender", inp.get("gender", ""))).strip() or None
         lora_path = str(inp.get("lora_path", "")).strip() or None
         lora_scale = float(inp.get("lora_scale", 1.0))
 
@@ -556,7 +558,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             f"[handler_sd] 입력: {w}×{h}, "
             f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}, "
             f"mask_refine_mode={mask_refine_mode or 'default'}, "
-            f"recommend_mode={is_recommend_mode}"
+            f"recommend_mode={is_recommend_mode}, subject_gender={subject_gender or 'auto'}"
         )
 
         # ── 파이프라인 실행 ───────────────────────────────────────────────────
@@ -573,6 +575,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 color_text=color_text,
                 return_intermediates=return_intermediates,
                 mask_refine_mode=mask_refine_mode,
+                subject_gender=subject_gender,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
                 rag_context=rag_context_str,
@@ -585,6 +588,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 top_k=top_k,
                 return_intermediates=return_intermediates,
                 mask_refine_mode=mask_refine_mode,
+                subject_gender=subject_gender,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
             )
