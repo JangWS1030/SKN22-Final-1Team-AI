@@ -5675,6 +5675,9 @@ class MirrAISDPipeline:
             "area_ratio": area_ratio,
             "upper_density": upper_density,
             "crown_density": crown_density,
+            "center_offset": float(((0.5 * (hx1 + hx2)) - (0.5 * (x1 + x2))) / float(face_w)),
+            "side_balance": float(abs(max(hx2 - x2, 0) - max(x1 - hx1, 0)) / float(face_w)),
+            "mass_center_offset": float(self._estimate_mask_mass_center_offset(work, face_bbox)),
         }
 
     def _estimate_male_medium_fit_penalty(
@@ -5708,16 +5711,63 @@ class MirrAISDPipeline:
         area_penalty = _oversize("area_ratio", allowance=0.18, scale=0.44)
         upper_penalty = _oversize("upper_density", allowance=0.08, scale=0.28)
         crown_penalty = _oversize("crown_density", allowance=0.08, scale=0.28)
+        side_balance_penalty = _oversize("side_balance", allowance=0.07, scale=0.18)
+
+        base_center_bias = abs(float(source_profile.get("center_offset", 0.0)))
+        current_center_bias = abs(float(candidate_profile.get("center_offset", 0.0)))
+        center_offset_penalty = float(
+            np.clip((current_center_bias - base_center_bias - 0.03) / 0.14, 0.0, 1.0)
+        )
+
+        base_mass_bias = abs(float(source_profile.get("mass_center_offset", 0.0)))
+        current_mass_bias = abs(float(candidate_profile.get("mass_center_offset", 0.0)))
+        mass_center_penalty = float(
+            np.clip((current_mass_bias - base_mass_bias - 0.03) / 0.12, 0.0, 1.0)
+        )
+
+        current_side_bias = abs(float(candidate_profile.get("right_overhang", 0.0)) - float(candidate_profile.get("left_overhang", 0.0)))
+        absolute_side_bias_penalty = float(np.clip((current_side_bias - 0.10) / 0.22, 0.0, 1.0))
+        absolute_center_bias_penalty = float(np.clip((current_center_bias - 0.08) / 0.18, 0.0, 1.0))
+        absolute_mass_bias_penalty = float(np.clip((current_mass_bias - 0.08) / 0.16, 0.0, 1.0))
 
         return float(
-            0.26 * width_penalty
-            + 0.20 * top_penalty
-            + 0.14 * left_penalty
-            + 0.14 * right_penalty
-            + 0.14 * area_penalty
-            + 0.06 * upper_penalty
-            + 0.06 * crown_penalty
+            0.18 * width_penalty
+            + 0.14 * top_penalty
+            + 0.09 * left_penalty
+            + 0.09 * right_penalty
+            + 0.10 * area_penalty
+            + 0.05 * upper_penalty
+            + 0.05 * crown_penalty
+            + 0.11 * center_offset_penalty
+            + 0.08 * side_balance_penalty
+            + 0.07 * mass_center_penalty
+            + 0.02 * absolute_side_bias_penalty
+            + 0.01 * absolute_center_bias_penalty
+            + 0.01 * absolute_mass_bias_penalty
         )
+
+    @staticmethod
+    def _estimate_mask_mass_center_offset(
+        mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+    ) -> float:
+        if mask is None:
+            return 0.0
+
+        work = np.clip(mask.astype(np.float32), 0.0, 1.0)
+        if work.ndim != 2:
+            return 0.0
+
+        x1, _, x2, _ = [int(v) for v in face_bbox]
+        face_w = max(int(x2 - x1), 1)
+        total = float(work.sum())
+        if total <= 1e-6:
+            return 0.0
+
+        xs = np.arange(work.shape[1], dtype=np.float32)[np.newaxis, :]
+        mass_center_x = float(np.sum(work * xs) / total)
+        face_center_x = 0.5 * (x1 + x2)
+        return float((mass_center_x - face_center_x) / float(face_w))
 
     def _preserve_original_hair_tone(
         self,
@@ -5826,12 +5876,15 @@ class MirrAISDPipeline:
             pos_suffix = (
                 ", masculine medium haircut, controlled side silhouette, natural masculine hairline, "
                 "balanced forehead coverage, soft front movement, hairstyle proportional to face size, "
-                "moderate crown height, restrained top lift, no oversized fluffy crown, no jewelry"
+                "moderate crown height, restrained top lift, balanced left-right volume, centered crown placement, "
+                "even side distribution, no heavy one-sided sweep, no oversized fluffy crown, no jewelry"
             )
             neg_prefix = (
                 "feminine bob, rounded lob, dangling earrings, hoop earrings, necklace, jewelry, "
                 "oversized exposed forehead, exaggerated high hairline, receding hairline, severe slicked-back hair, "
                 "oversized fluffy crown, exaggerated pompadour, towering top volume, bulky side volume, oversized hair mass, "
+                "hair pushed entirely to the right, hair pushed entirely to the left, heavy right sweep, heavy left sweep, "
+                "off-center hair bulk, lopsided side volume, "
             )
             guidance = 8.9
         elif hair_length == "medium":
