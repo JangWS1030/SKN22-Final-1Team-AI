@@ -65,6 +65,8 @@ data/rag/stores/
 *.jpeg
 *.mp4
 test_input.json
+tmp/
+.tmp-py/
 
 # IDEs
 .idea/
