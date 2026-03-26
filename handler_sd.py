@@ -365,7 +365,7 @@ def _invalidate_collection_caches(replaced: list) -> None:
 
 # ── 추천 + RAG 컨텍스트 ────────────────────────────────────────────────────────
 
-def _run_recommendation(face_ratios, preference, preference_text, age, color_text, top_k):
+def _run_recommendation(face_ratios, preference, preference_text, age, color_text, top_k, weights=None):
     """추천 엔진 실행 → (recommendations_data, rag_context, hairstyle_text, color_text)"""
     from style_recommender import recommend_top_k, recommend_to_dict
 
@@ -375,6 +375,7 @@ def _run_recommendation(face_ratios, preference, preference_text, age, color_tex
         preference_text=preference_text or None,
         age=age,
         top_k=top_k,
+        weights=weights,
     )
     recommendations_data = recommend_to_dict(recommendations)
     rag_context_str = _fetch_rag_context_for_styles(recommendations)
@@ -536,6 +537,9 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         recommendations_data = None
         rag_context_str = None
 
+        # 가중치: 서버에서 동적 조절 가능 (미전달 시 기본 40/20/40)
+        weights = inp.get("weights")  # {"face": 0.4, "golden": 0.2, "preference": 0.4}
+
         if is_recommend_mode:
             recommendations_data, rag_context_str, hairstyle_text, color_text = (
                 _run_recommendation(
@@ -545,6 +549,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     age=age,
                     color_text=color_text,
                     top_k=top_k,
+                    weights=weights,
                 )
             )
         elif not hairstyle_text and not color_text:
