@@ -445,7 +445,9 @@ def _generate_per_recommendation(
                 }
                 all_results.append(r)
         except Exception as e:
-            logger.error(f"[handler_sd] 추천 #{idx} 생성 실패: {e}")
+            logger.error(f"[handler_sd] 추천 #{idx} 생성 실패: {e}\n{traceback.format_exc()}")
+            # 실패해도 에러 정보를 포함한 placeholder 반환
+            recommendations[idx]["generation_error"] = f"{type(e).__name__}: {e}"
     return all_results
 
 
