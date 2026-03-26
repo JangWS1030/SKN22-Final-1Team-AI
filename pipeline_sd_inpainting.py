@@ -103,13 +103,37 @@ _COMMON_STYLE_BLOCK_NEGATIVE = (
 # ── 헤어 길이 키워드 ────────────────────────────────────────────────────────────
 _SHORT_HAIR_KEYWORDS = frozenset([
     "short", "bob", "pixie", "buzz", "hush", "crop", "cropped",
-    "undercut", "bowl", "chin length", "chin-length",
+    "undercut", "crew cut", "crew", "fade", "taper", "bowl", "chin length", "chin-length",
     "above ear", "above shoulder", "ear length", "single",
     "단발", "숏컷", "픽시",
 ])
 _MEDIUM_HAIR_KEYWORDS = frozenset([
     "lob", "midi", "medium", "shoulder length", "shoulder-length",
     "collarbone", "clavicle", "mid length", "mid-length",
+    "wolf cut", "soft mullet", "mullet", "baby mullet", "mini mullet",
+    "two block", "two-block", "comma hair", "comma", "dandy cut", "dandy",
+    "regent cut", "regent", "side part", "side-part", "swept-back", "swept back",
+    "shorter back and sides", "back and sides",
+])
+
+_MALE_SUBJECT_HINTS = frozenset([
+    "male", "man", "men", "boy", "masculine", "gentleman", "guy",
+    "남자", "남성",
+])
+_FEMALE_SUBJECT_HINTS = frozenset([
+    "female", "woman", "women", "girl", "feminine", "lady",
+    "여자", "여성",
+])
+_MALE_STYLE_HINTS = frozenset([
+    "mullet", "wolf cut", "soft mullet", "baby mullet", "mini mullet",
+    "crop", "cropped", "buzz", "crew", "fade", "taper", "undercut",
+    "two block", "two-block", "comma", "dandy", "regent",
+    "barber", "side part", "side-part", "swept-back", "swept back",
+    "shorter back and sides", "back and sides",
+])
+_FEMALE_STYLE_HINTS = frozenset([
+    "bob", "lob", "bixie", "pixie bob", "hydro bob",
+    "ponytail", "braid", "bun", "updo",
 ])
 
 _NO_COLOR_HINTS = frozenset([
@@ -199,6 +223,9 @@ class SDInpaintConfig:
     standardize_face_width_ratio_min: float = 0.18
     standardized_width: int = 768
     standardized_height: int = 1024
+    enable_portrait_reframe: bool = False
+    portrait_reframe_face_height_ratio_max: float = 0.40
+    portrait_reframe_top_gap_ratio_min: float = 0.06
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -286,6 +313,7 @@ class MirrAISDPipeline:
         top_k: int = 3,
         return_intermediates: bool = False,
         mask_refine_mode: Optional[str] = None,
+        subject_gender: Optional[str] = None,
         lora_path: Optional[str] = None,
         lora_scale: Optional[float] = None,
         sd_prompt_data: Optional[Dict[str, Any]] = None,
@@ -320,35 +348,47 @@ class MirrAISDPipeline:
 
         image_bgr = image.copy()
         img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-
-        # ── 트렌드 해상도 (resolve_generation_request) ─────────────────────
-        trend_request = (
-            resolve_generation_request(hairstyle_text, color_text)
-            if resolve_generation_request is not None
-            else None
-        )
-        effective_hairstyle_text = hairstyle_text
-        effective_color_text = color_text
-        if trend_request is not None:
-            if trend_request.resolved_hairstyle_text:
-                effective_hairstyle_text = trend_request.resolved_hairstyle_text
-            if trend_request.resolved_color_text:
-                effective_color_text = trend_request.resolved_color_text
-            logger.info(
-                "[SDPipeline] trend resolution: requested_style='%s' -> resolved_style='%s', matches=%d",
-                trend_request.requested_hairstyle_text,
-                effective_hairstyle_text,
-                len(trend_request.matches),
-            )
-            if trend_request.matches:
-                logger.info(
-                    "[SDPipeline] top trend match: %s (score=%.3f, source=%s)",
-                    trend_request.matches[0].trend_name,
-                    trend_request.matches[0].score,
-                    trend_request.matches[0].source,
+        requested_hairstyle_text = " ".join(str(hairstyle_text or "").strip().split())
+        requested_color_text = self._normalize_color_text(color_text)
+        trend_request = None
+        effective_hairstyle_text = requested_hairstyle_text
+        effective_color_text = requested_color_text
+        if resolve_generation_request is not None and (requested_hairstyle_text or requested_color_text):
+            try:
+                trend_request = resolve_generation_request(
+                    requested_hairstyle_text,
+                    requested_color_text,
+                    top_k=3,
                 )
-
+                resolved_style = " ".join(
+                    str(trend_request.resolved_hairstyle_text or "").strip().split()
+                )
+                resolved_color = self._normalize_color_text(trend_request.resolved_color_text)
+                if resolved_style:
+                    effective_hairstyle_text = resolved_style
+                if resolved_color:
+                    effective_color_text = resolved_color
+                logger.info(
+                    "[SDPipeline] trend resolution: requested_style='%s' -> resolved_style='%s', matches=%d",
+                    requested_hairstyle_text,
+                    effective_hairstyle_text,
+                    len(trend_request.matches),
+                )
+                if trend_request.matches:
+                    logger.info(
+                        "[SDPipeline] top trend match: %s (score=%.3f, source=%s)",
+                        trend_request.matches[0].trend_name,
+                        trend_request.matches[0].score,
+                        trend_request.matches[0].source,
+                    )
+            except Exception as e:
+                logger.warning(f"[SDPipeline] trend resolution skipped: {e}")
+                trend_request = None
         normalized_color_text = self._normalize_color_text(effective_color_text)
+        subject_gender_mode = self._infer_subject_gender(
+            effective_hairstyle_text,
+            subject_gender=subject_gender,
+        )
         has_color_request = bool(normalized_color_text)
         target_hair_lab = self._resolve_target_hair_lab(normalized_color_text) if has_color_request else None
         if not has_color_request:
@@ -359,6 +399,8 @@ class MirrAISDPipeline:
         H, W = image_bgr.shape[:2]
         debug_images_common: Optional[Dict[str, np.ndarray]] = {} if return_intermediates else None
         debug_data_common: Optional[Dict[str, Any]] = {} if return_intermediates else None
+        if debug_data_common is not None:
+            debug_data_common["subject_gender"] = subject_gender_mode
         if debug_data_common is not None and trend_request is not None:
             debug_data_common["trend_resolution"] = trend_request.to_debug_dict()
 
@@ -437,6 +479,8 @@ class MirrAISDPipeline:
         base_hair_mask = segface_debug.get("base_hair_mask")
         base_hair_support_mask = segface_debug.get("base_hair_support_mask")
         glasses_mask = segface_debug.get("glasses_mask")
+        earring_mask = segface_debug.get("earring_mask")
+        necklace_mask = segface_debug.get("necklace_mask")
         if isinstance(custom_hair_mask, np.ndarray):
             _store_mask("segface_custom_hair_mask", custom_hair_mask)
         if isinstance(base_hair_mask, np.ndarray):
@@ -445,12 +489,19 @@ class MirrAISDPipeline:
             _store_mask("segface_base_hair_support_mask", base_hair_support_mask)
         if isinstance(glasses_mask, np.ndarray):
             _store_mask("segface_glasses_mask", glasses_mask)
+        if isinstance(earring_mask, np.ndarray):
+            _store_mask("segface_earring_mask", earring_mask)
+        if isinstance(necklace_mask, np.ndarray):
+            _store_mask("segface_necklace_mask", necklace_mask)
         if debug_data_common is not None and segface_debug.get("meta"):
             debug_data_common["segface_mask_debug"] = segface_debug["meta"]
 
         # ── Step 3: SAM2 refinement ───────────────────────────────────────────
         hair_mask, mask_source, mask_refine_mode_used = self._refine_with_sam2(
-            img_rgb, hair_mask_base, face_bbox, effective_hairstyle_text,
+            img_rgb,
+            hair_mask_base,
+            face_bbox,
+            effective_hairstyle_text,
             mask_refine_mode=mask_refine_mode,
         )
         logger.info(
@@ -470,12 +521,20 @@ class MirrAISDPipeline:
 
         # ── Step 3-b: 헤어 길이 분류 ─────────────────────────────────────────
         hair_length = self._classify_hair_length(effective_hairstyle_text)
-        logger.info(f"[SDPipeline] 헤어 길이 분류: {hair_length}")
+        logger.info(
+            f"[SDPipeline] 헤어 길이 분류: {hair_length}, subject_gender={subject_gender_mode}"
+        )
         if hair_length == "short" and len(seeds) < 5:
             extra = 5 - len(seeds)
             seeds.extend(random.randint(0, 2**31 - 1) for _ in range(extra))
             logger.info(
                 f"[SDPipeline] short internal candidate expansion: requested={requested_top_k}, internal={len(seeds)}"
+            )
+        elif subject_gender_mode == "male" and hair_length in ("short", "medium") and len(seeds) < 3:
+            extra = 3 - len(seeds)
+            seeds.extend(random.randint(0, 2**31 - 1) for _ in range(extra))
+            logger.info(
+                f"[SDPipeline] male internal candidate expansion: requested={requested_top_k}, internal={len(seeds)}"
             )
         landmark_debug_data = landmark_obs.get("debug_data")
         if not isinstance(landmark_debug_data, dict):
@@ -507,6 +566,16 @@ class MirrAISDPipeline:
             face_bbox=face_bbox,
             hair_length=hair_length,
         )
+        accessory_protect_mask = self._build_accessory_protect_mask(
+            face_bbox=face_bbox,
+            earring_mask=earring_mask,
+            necklace_mask=necklace_mask,
+            hair_length=hair_length,
+        )
+        if float(accessory_protect_mask.sum()) > 0.0:
+            protect_mask_for_sd = np.maximum(protect_mask_for_sd, accessory_protect_mask).astype(np.float32)
+            protect_mask_for_removal = np.maximum(protect_mask_for_removal, accessory_protect_mask).astype(np.float32)
+            _store_mask("pipeline_accessory_protect_mask", accessory_protect_mask)
         _store_mask("pipeline_generation_protect_mask", protect_mask_for_sd)
         _store_mask("pipeline_removal_protect_mask", protect_mask_for_removal)
 
@@ -1624,7 +1693,10 @@ class MirrAISDPipeline:
 
         # ── Step 6: 프롬프트 ─────────────────────────────────────────────────
         prompt, neg_prompt, guidance = self._build_prompt(
-            effective_hairstyle_text, normalized_color_text, hair_length,
+            effective_hairstyle_text,
+            normalized_color_text,
+            hair_length,
+            subject_gender=subject_gender_mode,
             sd_prompt_data=sd_prompt_data,
         )
         logger.info(f"[SDPipeline] 프롬프트: {prompt}")
@@ -1641,6 +1713,13 @@ class MirrAISDPipeline:
         # 전략 2는 원본 위에 short 생성물을 합성한 뒤, cutoff 아래 잔여 긴머리만 정리한다.
         composite_base_rgb = img_rgb_cleaned
         composite_base_bgr = cv2.cvtColor(composite_base_rgb, cv2.COLOR_RGB2BGR)
+        male_medium_source_profile: Optional[Dict[str, float]] = None
+        if hair_length == "medium" and subject_gender_mode == "male":
+            male_medium_source_profile = self._estimate_hair_shape_profile(
+                hair_mask_base,
+                face_bbox,
+                hair_length="medium",
+            )
 
         candidates: List[Dict[str, Any]] = []
         for gen_idx, (gen_pil, seed) in enumerate(zip(gen_images, seeds)):
@@ -1740,6 +1819,18 @@ class MirrAISDPipeline:
             except Exception as e:
                 logger.warning(f"[SDPipeline] accessory penalty 계산 실패(무시): {e}")
 
+            male_medium_fit_penalty: Optional[float] = None
+            if hair_length == "medium" and subject_gender_mode == "male":
+                try:
+                    post_rgb = cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB)
+                    male_medium_fit_penalty = self._estimate_male_medium_fit_penalty(
+                        img_rgb=post_rgb,
+                        face_bbox=face_bbox,
+                        source_profile=male_medium_source_profile,
+                    )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] male medium fit penalty 怨꾩궛 ?ㅽ뙣(臾댁떆): {e}")
+
             candidates.append({
                 "seed": seed,
                 "image_bgr": composited_bgr,
@@ -1748,6 +1839,7 @@ class MirrAISDPipeline:
                 "color_score": color_score,
                 "tail_penalty": tail_penalty,
                 "accessory_penalty": accessory_penalty,
+                "male_medium_fit_penalty": male_medium_fit_penalty,
                 "gen_idx": gen_idx,
             })
 
@@ -1758,6 +1850,8 @@ class MirrAISDPipeline:
                     key=lambda c: (
                         c["accessory_penalty"] is None,
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                        c["male_medium_fit_penalty"] is None,
+                        c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
                         c["color_distance"] is None,
                         c["color_distance"] if c["color_distance"] is not None else 1e9,
                         c["gen_idx"],
@@ -1768,15 +1862,21 @@ class MirrAISDPipeline:
                 logger.info("[SDPipeline] 컬러 유사도 재정렬 스킵 (유효 샘플 부족)")
         elif len(candidates) > 1:
             accessory_sortable = sum(c["accessory_penalty"] is not None for c in candidates)
-            if accessory_sortable >= 2:
+            fit_sortable = sum(c["male_medium_fit_penalty"] is not None for c in candidates)
+            if accessory_sortable >= 2 or fit_sortable >= 2:
                 candidates.sort(
                     key=lambda c: (
                         c["accessory_penalty"] is None,
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                        c["male_medium_fit_penalty"] is None,
+                        c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
                         c["gen_idx"],
                     )
                 )
-                logger.info("[SDPipeline] accessory penalty ranking applied")
+                if fit_sortable >= 2:
+                    logger.info("[SDPipeline] male medium fit ranking applied")
+                else:
+                    logger.info("[SDPipeline] accessory penalty ranking applied")
 
         if hair_length == "short" and len(candidates) > 1:
             tail_sortable = sum(c["tail_penalty"] is not None for c in candidates)
@@ -3437,51 +3537,63 @@ class MirrAISDPipeline:
         face_h = max(y2 - y1, 1)
         face_w_ratio = face_w / max(float(W), 1.0)
         face_h_ratio = face_h / max(float(H), 1.0)
+        top_gap_ratio = y1 / max(float(H), 1.0)
         is_landscape = W > H
+        enable_reframe = bool(getattr(self.config, "enable_portrait_reframe", True))
+        needs_reframe = (
+            enable_reframe
+            and not is_landscape
+            and (
+                face_h_ratio > float(getattr(self.config, "portrait_reframe_face_height_ratio_max", 0.40))
+                or top_gap_ratio < float(getattr(self.config, "portrait_reframe_top_gap_ratio_min", 0.06))
+            )
+        )
 
         if (
             face_h_ratio >= float(self.config.standardize_face_height_ratio_min)
             and face_w_ratio >= float(self.config.standardize_face_width_ratio_min)
             and not is_landscape
+            and not needs_reframe
         ):
             return meta
 
-        target_w = int(getattr(self.config, "standardized_width", 768))
-        target_h = int(getattr(self.config, "standardized_height", 1024))
+        if needs_reframe:
+            target_w = int(W)
+            target_h = int(H)
+        else:
+            target_w = int(getattr(self.config, "standardized_width", 768))
+            target_h = int(getattr(self.config, "standardized_height", 1024))
+            crop_top = int(round(y1 - face_h * 0.95))
+            crop_bottom = int(round(y2 + face_h * 2.15))
         target_aspect = target_w / max(float(target_h), 1.0)
 
         cx = 0.5 * (x1 + x2)
-        crop_top = int(round(y1 - face_h * 0.95))
-        crop_bottom = int(round(y2 + face_h * 2.15))
-        crop_h = max(crop_bottom - crop_top, face_h + 1)
-        crop_w = max(int(round(crop_h * target_aspect)), face_w + 1)
+        if needs_reframe:
+            scale_candidates = [1.0]
+            max_face_ratio = float(getattr(self.config, "portrait_reframe_face_height_ratio_max", 0.40))
+            min_top_gap = float(getattr(self.config, "portrait_reframe_top_gap_ratio_min", 0.06))
+            if max_face_ratio > 0.0:
+                scale_candidates.append(face_h_ratio / max_face_ratio)
+            if min_top_gap > 0.0 and top_gap_ratio > 1e-6:
+                scale_candidates.append(min_top_gap / top_gap_ratio)
+            reframe_scale = float(np.clip(max(scale_candidates) * 1.04, 1.02, 1.18))
+            crop_h = max(int(round(H * reframe_scale)), face_h + 1)
+            crop_w = max(int(round(crop_h * target_aspect)), W + 1)
+            extra_h = max(0, crop_h - H)
+            crop_top = int(round(-extra_h * 0.58))
+            crop_bottom = crop_top + crop_h
+        else:
+            crop_h = max(crop_bottom - crop_top, face_h + 1)
+            crop_w = max(int(round(crop_h * target_aspect)), face_w + 1)
         crop_left = int(round(cx - crop_w * 0.5))
         crop_right = crop_left + crop_w
-
-        if crop_left < 0:
-            crop_right -= crop_left
-            crop_left = 0
-        if crop_right > W:
-            crop_left -= (crop_right - W)
-            crop_right = W
-        if crop_left < 0:
-            crop_left = 0
-
-        if crop_top < 0:
-            crop_bottom -= crop_top
-            crop_top = 0
-        if crop_bottom > H:
-            crop_top -= (crop_bottom - H)
-            crop_bottom = H
-        if crop_top < 0:
-            crop_top = 0
-
-        crop_left = max(0, min(crop_left, W - 1))
-        crop_top = max(0, min(crop_top, H - 1))
-        crop_right = max(crop_left + 1, min(crop_right, W))
-        crop_bottom = max(crop_top + 1, min(crop_bottom, H))
-
-        crop_rgb = img_rgb[crop_top:crop_bottom, crop_left:crop_right]
+        crop_rgb = self._crop_with_soft_padding(
+            img_rgb,
+            crop_left=crop_left,
+            crop_top=crop_top,
+            crop_right=crop_right,
+            crop_bottom=crop_bottom,
+        )
         if crop_rgb.size == 0:
             return meta
 
@@ -3495,7 +3607,9 @@ class MirrAISDPipeline:
             "reason": {
                 "face_h_ratio": round(face_h_ratio, 4),
                 "face_w_ratio": round(face_w_ratio, 4),
+                "top_gap_ratio": round(top_gap_ratio, 4),
                 "is_landscape": bool(is_landscape),
+                "reframe_applied": bool(needs_reframe),
             },
             "crop_box": [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)],
             "original_shape": [int(H), int(W)],
@@ -3503,6 +3617,53 @@ class MirrAISDPipeline:
             "image_rgb": standardized_rgb,
         })
         return meta
+
+    @staticmethod
+    def _crop_with_soft_padding(
+        img_rgb: np.ndarray,
+        crop_left: int,
+        crop_top: int,
+        crop_right: int,
+        crop_bottom: int,
+    ) -> np.ndarray:
+        H, W = img_rgb.shape[:2]
+        pad_left = max(0, -int(crop_left))
+        pad_top = max(0, -int(crop_top))
+        pad_right = max(0, int(crop_right) - W)
+        pad_bottom = max(0, int(crop_bottom) - H)
+
+        padded = img_rgb
+        if pad_left or pad_top or pad_right or pad_bottom:
+            padded = cv2.copyMakeBorder(
+                img_rgb,
+                pad_top,
+                pad_bottom,
+                pad_left,
+                pad_right,
+                cv2.BORDER_REFLECT_101,
+            )
+            pad_mask = np.zeros(padded.shape[:2], dtype=np.float32)
+            if pad_top:
+                pad_mask[:pad_top, :] = 1.0
+            if pad_bottom:
+                pad_mask[-pad_bottom:, :] = 1.0
+            if pad_left:
+                pad_mask[:, :pad_left] = 1.0
+            if pad_right:
+                pad_mask[:, -pad_right:] = 1.0
+            pad_mask = cv2.GaussianBlur(pad_mask, (0, 0), sigmaX=7.0, sigmaY=7.0)
+            blurred = cv2.GaussianBlur(padded, (0, 0), sigmaX=18.0, sigmaY=18.0)
+            padded = (
+                padded.astype(np.float32) * (1.0 - pad_mask[..., np.newaxis])
+                + blurred.astype(np.float32) * pad_mask[..., np.newaxis]
+            )
+            padded = np.clip(padded, 0, 255).astype(np.uint8)
+
+        x1 = int(crop_left) + pad_left
+        y1 = int(crop_top) + pad_top
+        x2 = int(crop_right) + pad_left
+        y2 = int(crop_bottom) + pad_top
+        return padded[y1:y2, x1:x2]
 
     def _detect_face(
         self, img_rgb: np.ndarray
@@ -4138,6 +4299,59 @@ class MirrAISDPipeline:
                 return merged.astype(np.float32)
 
         return clipped_f
+
+    def _build_accessory_protect_mask(
+        self,
+        face_bbox: Tuple[int, int, int, int],
+        earring_mask: Optional[np.ndarray],
+        necklace_mask: Optional[np.ndarray],
+        hair_length: str,
+    ) -> np.ndarray:
+        base_mask = earring_mask if isinstance(earring_mask, np.ndarray) else necklace_mask
+        if not isinstance(base_mask, np.ndarray):
+            return np.zeros((1, 1), dtype=np.float32)
+
+        H, W = base_mask.shape[:2]
+        x1, y1, x2, y2 = face_bbox
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+
+        corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+        top = max(0, int(y1 - face_h * 0.18))
+        bottom = min(H, int(y2 + face_h * (0.72 if hair_length == "short" else 0.92)))
+        left = max(0, int(x1 - face_w * 0.90))
+        right = min(W, int(x2 + face_w * 0.90))
+        if top >= bottom or left >= right:
+            return np.zeros((H, W), dtype=np.float32)
+        corridor_u8[top:bottom, left:right] = 255
+
+        protect_u8 = np.zeros((H, W), dtype=np.uint8)
+        if isinstance(earring_mask, np.ndarray) and earring_mask.shape == (H, W):
+            earring_u8 = cv2.dilate(
+                (np.clip(earring_mask.astype(np.float32), 0.0, 1.0) > 0.06).astype(np.uint8) * 255,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9) if hair_length == "short" else (7, 7)),
+                iterations=1,
+            )
+            protect_u8 = cv2.bitwise_or(protect_u8, earring_u8)
+        if isinstance(necklace_mask, np.ndarray) and necklace_mask.shape == (H, W):
+            necklace_u8 = cv2.dilate(
+                (np.clip(necklace_mask.astype(np.float32), 0.0, 1.0) > 0.06).astype(np.uint8) * 255,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+                iterations=1,
+            )
+            protect_u8 = cv2.bitwise_or(protect_u8, necklace_u8)
+
+        protect_u8 = cv2.bitwise_and(protect_u8, corridor_u8)
+        if int((protect_u8 > 0).sum()) == 0:
+            return np.zeros((H, W), dtype=np.float32)
+
+        protect_f = cv2.GaussianBlur(
+            protect_u8.astype(np.float32) / 255.0,
+            (0, 0),
+            sigmaX=4.2,
+            sigmaY=4.2,
+        )
+        return np.clip(protect_f, 0.0, 1.0).astype(np.float32)
 
     def _sanitize_cloth_mask(
         self,
@@ -5081,6 +5295,197 @@ class MirrAISDPipeline:
             return ""
         return text
 
+    @staticmethod
+    def _normalize_subject_gender(subject_gender: Optional[str]) -> str:
+        lowered = str(subject_gender or "").strip().lower()
+        if not lowered:
+            return ""
+        if lowered in {"m", "male", "man", "men", "boy", "masculine", "남자", "남성"}:
+            return "male"
+        if lowered in {"f", "female", "woman", "women", "girl", "feminine", "여자", "여성"}:
+            return "female"
+        return ""
+
+    @staticmethod
+    def _infer_subject_gender(
+        hairstyle_text: str,
+        subject_gender: Optional[str] = None,
+    ) -> str:
+        explicit = MirrAISDPipeline._normalize_subject_gender(subject_gender)
+        if explicit:
+            return explicit
+
+        lowered = " ".join(str(hairstyle_text or "").strip().lower().split())
+        if not lowered:
+            return "neutral"
+
+        male_hits = sum(1 for token in _MALE_STYLE_HINTS if token in lowered)
+        female_hits = sum(1 for token in _FEMALE_STYLE_HINTS if token in lowered)
+        male_hits += sum(1 for token in _MALE_SUBJECT_HINTS if token in lowered)
+        female_hits += sum(1 for token in _FEMALE_SUBJECT_HINTS if token in lowered)
+
+        if male_hits >= max(1, female_hits + 1):
+            return "male"
+        if female_hits >= max(1, male_hits + 1):
+            return "female"
+        return "neutral"
+
+    @staticmethod
+    def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
+        raw = " ".join(str(hairstyle_text or "").strip().split())
+        lowered = raw.lower()
+        hints: List[str] = []
+
+        if any(token in lowered for token in ("mullet", "wolf cut", "soft mullet")):
+            base_style = "modern masculine layered wolf cut with controlled soft mullet balance"
+            hints.extend([
+                "textured crown and top layers",
+                "controlled nape length",
+                "soft temple coverage",
+            ])
+        elif any(
+            token in lowered
+            for token in ("swept-back", "swept back", "side part", "side-part", "dandy", "two block", "two-block", "comma", "regent")
+        ):
+            base_style = "clean masculine layered haircut with shorter back and sides"
+            hints.extend([
+                "controlled top volume",
+                "soft front movement",
+                "balanced side silhouette",
+            ])
+        elif any(token in lowered for token in ("buzz", "crew", "fade", "taper", "undercut", "crop", "cropped", "short")):
+            base_style = "clean masculine short crop haircut"
+            hints.extend([
+                "textured top",
+                "clean tapered sides",
+            ])
+        else:
+            base_style = "clean masculine short layered haircut"
+            hints.extend([
+                "balanced side shape",
+                "controlled top texture",
+            ])
+
+        if "bang" in lowered or "fringe" in lowered:
+            hints.append("soft masculine fringe with natural forehead coverage")
+        else:
+            hints.append("natural masculine hairline with balanced forehead coverage")
+
+        if any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
+            hints.append("light natural texture")
+        elif any(token in lowered for token in ("straight", "sleek")):
+            hints.append("soft natural finish")
+
+        hints.append("clean ear contour")
+        hints.append("no feminine bob silhouette")
+        hints.append("no dangling side locks")
+
+        parts = [base_style]
+        for hint in hints:
+            if hint not in parts:
+                parts.append(hint)
+        return ", ".join(parts)
+
+    @staticmethod
+    def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
+        raw = " ".join(str(hairstyle_text or "").strip().split())
+        lowered = raw.lower()
+        hints: List[str] = []
+
+        if any(token in lowered for token in ("mullet", "wolf cut", "soft mullet", "baby mullet", "mini mullet")):
+            base_style = "masculine medium layered wolf cut with restrained volume"
+            hints.extend([
+                "moderate crown height",
+                "controlled nape length",
+                "proportional silhouette around the face",
+            ])
+        elif any(
+            token in lowered
+            for token in ("swept-back", "swept back", "side part", "side-part", "dandy", "two block", "two-block", "comma", "regent")
+        ):
+            base_style = "masculine medium layered haircut with shorter back and sides"
+            hints.extend([
+                "moderate crown height",
+                "restrained top lift",
+                "compact temple volume",
+                "soft front movement",
+            ])
+        else:
+            base_style = "masculine medium layered haircut with proportional volume"
+            hints.extend([
+                "moderate top volume",
+                "controlled side silhouette",
+            ])
+
+        if any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
+            hints.append("light natural texture")
+        elif any(token in lowered for token in ("straight", "sleek")):
+            hints.append("soft natural finish")
+
+        if "bang" in lowered or "fringe" in lowered:
+            hints.append("soft masculine fringe with natural forehead coverage")
+        else:
+            hints.append("natural masculine hairline with balanced forehead coverage")
+
+        hints.append("hairstyle proportional to face size")
+        hints.append("no oversized fluffy crown")
+        hints.append("no exaggerated side expansion")
+        hints.append("clean ear contour")
+
+        parts = [base_style]
+        for hint in hints:
+            if hint not in parts:
+                parts.append(hint)
+        return ", ".join(parts)
+
+    @staticmethod
+    def _normalize_hairstyle_prompt_text(
+        hairstyle_text: str,
+        hair_length: str,
+        subject_gender: Optional[str] = None,
+    ) -> str:
+        raw = " ".join(str(hairstyle_text or "").strip().split())
+        if not raw:
+            return ""
+        gender_mode = MirrAISDPipeline._infer_subject_gender(raw, subject_gender)
+        if gender_mode == "male":
+            if hair_length == "short":
+                return MirrAISDPipeline._normalize_male_short_hairstyle_prompt_text(raw)
+            if hair_length == "medium":
+                return MirrAISDPipeline._normalize_male_medium_hairstyle_prompt_text(raw)
+        if hair_length != "short":
+            return raw
+
+        lowered = raw.lower()
+        hints: List[str] = []
+        if "hush" in lowered or "layer" in lowered:
+            hints.append("soft internal bob layers above the jawline")
+            hints.append("rounded jaw-length bob silhouette")
+        if "blunt" in lowered:
+            hints.append("clean blunt bob outline")
+        if "bang" in lowered or "fringe" in lowered:
+            hints.append("soft see-through bangs")
+        if any(token in lowered for token in ("wave", "wavy", "curl", "curly")):
+            hints.append("light natural texture")
+        if any(token in lowered for token in ("straight", "sleek")):
+            hints.append("sleek straight finish")
+        if "tuck" in lowered:
+            hints.append("tucked nape silhouette")
+        else:
+            hints.append("tucked inward ends at the jawline")
+        if any(token in lowered for token in ("bob", "short", "chin")):
+            hints.append("clear neckline and shoulders")
+            hints.append("no lower side tails below the jawline")
+
+        base_style = "strict short chin-length bob haircut with a compact side silhouette"
+        if "pixie" in lowered or "buzz" in lowered:
+            base_style = "strict short cropped haircut"
+
+        parts = [base_style]
+        for hint in hints:
+            if hint not in parts:
+                parts.append(hint)
+        return ", ".join(parts)
 
     @staticmethod
     def _resolve_target_hair_lab(color_text: str) -> Optional[np.ndarray]:
@@ -5207,12 +5612,12 @@ class MirrAISDPipeline:
 
         earring_u8 = cv2.dilate(
             (np.clip(earring_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
             iterations=1,
         )
         necklace_u8 = cv2.dilate(
             (np.clip(necklace_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
             iterations=1,
         )
         earring_u8 = cv2.bitwise_and(earring_u8, corridor_u8)
@@ -5220,13 +5625,171 @@ class MirrAISDPipeline:
 
         earring_px = int((earring_u8 > 0).sum())
         necklace_px = int((necklace_u8 > 0).sum())
-        if earring_px < 4 and necklace_px < 8:
+        if earring_px < 2 and necklace_px < 6:
             return 0.0
 
         norm = float(max(face_w * face_h, 1))
-        earring_penalty = min(float(earring_px) / norm * 28.0, 1.0)
-        necklace_penalty = min(float(necklace_px) / norm * 16.0, 1.0)
+        earring_penalty = min(float(earring_px) / norm * 36.0, 1.0)
+        necklace_penalty = min(float(necklace_px) / norm * 20.0, 1.0)
         return 0.74 * earring_penalty + 0.26 * necklace_penalty
+
+    def _estimate_hair_shape_profile(
+        self,
+        hair_mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+        *,
+        hair_length: str = "medium",
+    ) -> Optional[Dict[str, float]]:
+        if hair_mask is None:
+            return None
+
+        H, W = hair_mask.shape[:2]
+        x1, y1, x2, y2 = [int(v) for v in face_bbox]
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+
+        work = np.clip(hair_mask.astype(np.float32), 0.0, 1.0).copy()
+        corridor_top = max(0, int(y1 - face_h * 0.78))
+        corridor_bottom = min(H, int(y2 + face_h * (0.26 if hair_length == "medium" else 0.22)))
+        corridor_left = max(0, int(x1 - face_w * 0.90))
+        corridor_right = min(W, int(x2 + face_w * 0.90))
+        if corridor_top >= corridor_bottom or corridor_left >= corridor_right:
+            return None
+
+        corridor = np.zeros((H, W), dtype=np.float32)
+        corridor[corridor_top:corridor_bottom, corridor_left:corridor_right] = 1.0
+        work *= corridor
+        if float(work.sum()) < 20.0:
+            return None
+
+        bbox = self._mask_bbox(work, threshold=0.20)
+        if bbox is None:
+            return None
+        hx1, hy1, hx2, hy2 = [int(v) for v in bbox]
+
+        upper_top = max(0, int(y1 - face_h * 0.62))
+        upper_bottom = min(H, int(y1 + face_h * 0.14))
+        upper_left = max(0, int(x1 - face_w * 0.56))
+        upper_right = min(W, int(x2 + face_w * 0.56))
+        upper_band = work[upper_top:upper_bottom, upper_left:upper_right]
+        upper_density = 0.0
+        if upper_band.size > 0:
+            upper_density = float(np.mean(upper_band > 0.20))
+
+        crown_top = max(0, int(y1 - face_h * 0.62))
+        crown_bottom = max(crown_top + 1, int(y1 - face_h * 0.04))
+        crown_left = max(0, int(x1 + face_w * 0.10))
+        crown_right = min(W, int(x2 - face_w * 0.10))
+        crown_density = 0.0
+        if crown_top < crown_bottom and crown_left < crown_right:
+            crown_band = work[crown_top:crown_bottom, crown_left:crown_right]
+            if crown_band.size > 0:
+                crown_density = float(np.mean(crown_band > 0.20))
+
+        face_area = float(max(face_w * face_h, 1))
+        area_ratio = float(np.sum(work > 0.20)) / face_area
+
+        return {
+            "width_ratio": float(max(hx2 - hx1, 1)) / float(face_w),
+            "top_lift": float(max(y1 - hy1, 0)) / float(face_h),
+            "left_overhang": float(max(x1 - hx1, 0)) / float(face_w),
+            "right_overhang": float(max(hx2 - x2, 0)) / float(face_w),
+            "area_ratio": area_ratio,
+            "upper_density": upper_density,
+            "crown_density": crown_density,
+            "center_offset": float(((0.5 * (hx1 + hx2)) - (0.5 * (x1 + x2))) / float(face_w)),
+            "side_balance": float(abs(max(hx2 - x2, 0) - max(x1 - hx1, 0)) / float(face_w)),
+            "mass_center_offset": float(self._estimate_mask_mass_center_offset(work, face_bbox)),
+        }
+
+    def _estimate_male_medium_fit_penalty(
+        self,
+        img_rgb: np.ndarray,
+        face_bbox: Tuple[int, int, int, int],
+        source_profile: Optional[Dict[str, float]],
+    ) -> Optional[float]:
+        if source_profile is None:
+            return None
+
+        hair_now, _, _ = self._segface_hair_mask(img_rgb, face_bbox)
+        candidate_profile = self._estimate_hair_shape_profile(
+            hair_now,
+            face_bbox,
+            hair_length="medium",
+        )
+        if candidate_profile is None:
+            return None
+
+        def _oversize(metric: str, allowance: float, scale: float) -> float:
+            base = float(source_profile.get(metric, 0.0))
+            current = float(candidate_profile.get(metric, 0.0))
+            excess = max(0.0, current - base - allowance)
+            return float(np.clip(excess / max(scale, 1e-6), 0.0, 1.0))
+
+        width_penalty = _oversize("width_ratio", allowance=0.08, scale=0.26)
+        top_penalty = _oversize("top_lift", allowance=0.05, scale=0.18)
+        left_penalty = _oversize("left_overhang", allowance=0.06, scale=0.18)
+        right_penalty = _oversize("right_overhang", allowance=0.06, scale=0.18)
+        area_penalty = _oversize("area_ratio", allowance=0.18, scale=0.44)
+        upper_penalty = _oversize("upper_density", allowance=0.08, scale=0.28)
+        crown_penalty = _oversize("crown_density", allowance=0.08, scale=0.28)
+        side_balance_penalty = _oversize("side_balance", allowance=0.07, scale=0.18)
+
+        base_center_bias = abs(float(source_profile.get("center_offset", 0.0)))
+        current_center_bias = abs(float(candidate_profile.get("center_offset", 0.0)))
+        center_offset_penalty = float(
+            np.clip((current_center_bias - base_center_bias - 0.03) / 0.14, 0.0, 1.0)
+        )
+
+        base_mass_bias = abs(float(source_profile.get("mass_center_offset", 0.0)))
+        current_mass_bias = abs(float(candidate_profile.get("mass_center_offset", 0.0)))
+        mass_center_penalty = float(
+            np.clip((current_mass_bias - base_mass_bias - 0.03) / 0.12, 0.0, 1.0)
+        )
+
+        current_side_bias = abs(float(candidate_profile.get("right_overhang", 0.0)) - float(candidate_profile.get("left_overhang", 0.0)))
+        absolute_side_bias_penalty = float(np.clip((current_side_bias - 0.10) / 0.22, 0.0, 1.0))
+        absolute_center_bias_penalty = float(np.clip((current_center_bias - 0.08) / 0.18, 0.0, 1.0))
+        absolute_mass_bias_penalty = float(np.clip((current_mass_bias - 0.08) / 0.16, 0.0, 1.0))
+
+        return float(
+            0.18 * width_penalty
+            + 0.14 * top_penalty
+            + 0.09 * left_penalty
+            + 0.09 * right_penalty
+            + 0.10 * area_penalty
+            + 0.05 * upper_penalty
+            + 0.05 * crown_penalty
+            + 0.11 * center_offset_penalty
+            + 0.08 * side_balance_penalty
+            + 0.07 * mass_center_penalty
+            + 0.02 * absolute_side_bias_penalty
+            + 0.01 * absolute_center_bias_penalty
+            + 0.01 * absolute_mass_bias_penalty
+        )
+
+    @staticmethod
+    def _estimate_mask_mass_center_offset(
+        mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+    ) -> float:
+        if mask is None:
+            return 0.0
+
+        work = np.clip(mask.astype(np.float32), 0.0, 1.0)
+        if work.ndim != 2:
+            return 0.0
+
+        x1, _, x2, _ = [int(v) for v in face_bbox]
+        face_w = max(int(x2 - x1), 1)
+        total = float(work.sum())
+        if total <= 1e-6:
+            return 0.0
+
+        xs = np.arange(work.shape[1], dtype=np.float32)[np.newaxis, :]
+        mass_center_x = float(np.sum(work * xs) / total)
+        face_center_x = 0.5 * (x1 + x2)
+        return float((mass_center_x - face_center_x) / float(face_w))
 
     def _preserve_original_hair_tone(
         self,
@@ -5270,6 +5833,7 @@ class MirrAISDPipeline:
         hairstyle_text: str,
         color_text: str,
         hair_length: str = "long",
+        subject_gender: Optional[str] = None,
         sd_prompt_data: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, str, float]:
         """
@@ -5280,6 +5844,15 @@ class MirrAISDPipeline:
         없으면 hairstyle_text 기반으로 폴백.
         """
         normalized_color = MirrAISDPipeline._normalize_color_text(color_text)
+        gender_mode = MirrAISDPipeline._infer_subject_gender(
+            hairstyle_text,
+            subject_gender=subject_gender,
+        )
+        normalized_style = MirrAISDPipeline._normalize_hairstyle_prompt_text(
+            hairstyle_text,
+            hair_length,
+            subject_gender=gender_mode,
+        )
 
         # ── DB 프롬프트 데이터가 있으면 우선 사용 ─────────────────────────────
         if sd_prompt_data and sd_prompt_data.get("sd_positive"):
@@ -5287,12 +5860,11 @@ class MirrAISDPipeline:
             sd_neg = sd_prompt_data.get("sd_negative", "")
             guidance = float(sd_prompt_data.get("sd_guidance", 8.5))
 
-            # 색상 보강
             color_pos_hint = ""
             color_neg_hint = ""
+            lowered_color = normalized_color.lower()
             if normalized_color:
                 style_part = f"{style_part}, {normalized_color.strip()} hair color"
-                lowered_color = normalized_color.lower()
                 if "ash" in lowered_color:
                     color_pos_hint = ", cool-toned ash color, smoky neutral undertone, no brassiness"
                     color_neg_hint = "warm orange cast, yellow brassiness, copper tint, reddish tint, "
@@ -5315,17 +5887,32 @@ class MirrAISDPipeline:
 
             return positive, negative, guidance
 
-        # ── 폴백: 기존 hairstyle_text 기반 (직접 입력 모드) ──────────────────
-        normalized_style = " ".join(str(hairstyle_text or "").strip().split())
         parts = []
         if normalized_style:
             parts.append(normalized_style)
         if normalized_color:
             parts.append(f"{normalized_color.strip()} hair color")
         style = ", ".join(parts) if parts else "natural hairstyle"
+        subject_noun = "person"
+        if gender_mode == "male":
+            subject_noun = "man"
+        elif gender_mode == "female":
+            subject_noun = "woman"
 
-        # 길이별 기본 보강 (직접 입력 시에만 사용)
-        if hair_length == "short":
+        # 길이별 기본 보강 (직접 입력/DB 프롬프트 폴백 시 사용)
+        if hair_length == "short" and gender_mode == "male":
+            pos_suffix = (
+                ", masculine short haircut silhouette, natural masculine hairline, "
+                "balanced forehead coverage, controlled temple coverage, clean sideburn transition, "
+                "no feminine bob shape, no dangling side tails, no jewelry"
+            )
+            neg_prefix = (
+                "feminine bob, chin-length bob, rounded bob, bixie, pixie bob, "
+                "oversized exposed forehead, exaggerated high hairline, receding hairline, severe slicked-back hair, "
+                "earring, earrings, hoop earrings, stud earrings, ear cuff, jewelry, necklace, makeup, "
+            )
+            guidance = 10.9
+        elif hair_length == "short":
             pos_suffix = (
                 ", strict short jaw-length bob silhouette, compact side shape, tucked nape line, "
                 "ends stopping at or above the jawline, fully visible neck and shoulders, "
@@ -5345,6 +5932,21 @@ class MirrAISDPipeline:
                 "blunt horizontal cut line, helmet hair, bowl-shaped edge, "
             )
             guidance = 11.2
+        elif hair_length == "medium" and gender_mode == "male":
+            pos_suffix = (
+                ", masculine medium haircut, controlled side silhouette, natural masculine hairline, "
+                "balanced forehead coverage, soft front movement, hairstyle proportional to face size, "
+                "moderate crown height, restrained top lift, balanced left-right volume, centered crown placement, "
+                "even side distribution, no heavy one-sided sweep, no oversized fluffy crown, no jewelry"
+            )
+            neg_prefix = (
+                "feminine bob, rounded lob, dangling earrings, hoop earrings, necklace, jewelry, "
+                "oversized exposed forehead, exaggerated high hairline, receding hairline, severe slicked-back hair, "
+                "oversized fluffy crown, exaggerated pompadour, towering top volume, bulky side volume, oversized hair mass, "
+                "hair pushed entirely to the right, hair pushed entirely to the left, heavy right sweep, heavy left sweep, "
+                "off-center hair bulk, lopsided side volume, "
+            )
+            guidance = 8.9
         elif hair_length == "medium":
             pos_suffix = (
                 ", medium length hair, shoulder-length hair, "
@@ -5353,8 +5955,13 @@ class MirrAISDPipeline:
             neg_prefix = "very long hair, very short hair, "
             guidance = 8.5
         else:
-            pos_suffix = ""
-            neg_prefix = ""
+            pos_suffix = ", natural masculine hairline, balanced forehead coverage, no jewelry" if gender_mode == "male" else ""
+            neg_prefix = (
+                "earring, earrings, hoop earrings, stud earrings, ear cuff, necklace, jewelry, "
+                "oversized exposed forehead, exaggerated high hairline, receding hairline, "
+                if gender_mode == "male"
+                else ""
+            )
             guidance = 7.5
 
         color_pos_hint = ""
@@ -5367,17 +5974,23 @@ class MirrAISDPipeline:
             color_pos_hint = ", consistent natural hair color tone, coherent root-to-end color"
 
         positive_parts = [
-            f"professional portrait photo of a person with {style}{pos_suffix}",
+            f"professional portrait photo of a {subject_noun} with {style}{pos_suffix}",
         ]
         if color_pos_hint:
             positive_parts.append(color_pos_hint.lstrip(", ").strip())
         positive_parts.extend([
+            "hairstyle proportional to face size, realistic crown height, natural portrait framing",
             "same outfit, preserved shirt or blouse fabric texture, clean neckline and collar continuity, natural sleeve folds",
             "photorealistic, high quality, natural lighting, 8k",
             "studio photography, sharp focus, beautiful hair",
         ])
         positive = ", ".join(positive_parts)
-        negative_base = _NEGATIVE_BASE + ", " + _COMMON_STYLE_BLOCK_NEGATIVE
+        negative_base = (
+            _NEGATIVE_BASE
+            + ", cropped head, cropped hair, cut off hair, top of head out of frame, tight close-up portrait, clipped hairstyle"
+            + ", "
+            + _COMMON_STYLE_BLOCK_NEGATIVE
+        )
         negative = neg_prefix + color_neg_hint + negative_base
 
         return positive, negative, guidance

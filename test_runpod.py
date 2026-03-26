@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-url", default="", help="Remote image URL")
     parser.add_argument("--hairstyle", default="", help="Hairstyle text")
     parser.add_argument("--color", default="", help="Color text")
+    parser.add_argument("--gender", default="", help="Optional subject gender hint: male/female")
     parser.add_argument("--top-k", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--health-check", action="store_true")
@@ -106,6 +107,8 @@ def build_payload(args: argparse.Namespace) -> dict:
         "top_k": args.top_k,
         "return_base64": True,
     }
+    if args.gender:
+        payload["subject_gender"] = args.gender
     if args.image:
         payload["image"] = image_to_base64(args.image)
     elif args.image_url:

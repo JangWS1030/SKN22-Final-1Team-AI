@@ -53,6 +53,27 @@ gh run view <run-id> --log-failed
 
 자동 릴리스 대신 직접 실행하려면 아래 둘 중 하나를 사용합니다.
 
+빠른 로컬 빌드:
+
+```bash
+python scripts/build_sd_image.py \
+  --image-repo sikersiker/sd \
+  --tag manual-20260326-170000 \
+  --push
+```
+
+`Dockerfile.sd.app` 기반이라 코드 변경만 있을 때는 전체 의존성을 다시 빌드하지 않아 훨씬 빠릅니다.
+처음 한 번 `base-latest`가 없으면 아래처럼 base를 같이 만들 수 있습니다.
+
+```bash
+python scripts/build_sd_image.py \
+  --image-repo sikersiker/sd \
+  --tag manual-20260326-170000 \
+  --ensure-base \
+  --base-tag v1 \
+  --push
+```
+
 ```bash
 python scripts/runpod_release.py --image-tag latest
 ```
