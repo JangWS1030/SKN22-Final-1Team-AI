@@ -439,8 +439,15 @@ def _get_style_collection():
             name="hairstyle_features",
         )
         if collection.count() > 0:
+            # sd_positive 필드가 있는지 확인 → 없으면 리빌드
+            sample = collection.peek(limit=1)
+            sample_meta = (sample.get("metadatas") or [{}])[0]
+            if "sd_positive" not in sample_meta:
+                logger.info("Style collection missing sd_positive field, rebuilding...")
+                collection = build_style_collection(client)
+            else:
+                logger.info("Loaded existing style collection (%d items)", collection.count())
             _collection_cache = collection
-            logger.info("Loaded existing style collection (%d items)", collection.count())
             return collection
     except Exception:
         pass
