@@ -346,28 +346,51 @@ def encode_user_vector(
     face_scores: Dict[str, float],
     golden_score: float,
     preference: Dict[str, Any],
+    weights: Optional[Dict[str, float]] = None,
 ) -> np.ndarray:
     """
     유저 3개 벡터를 가중 결합하여 23차원 쿼리 벡터 생성.
 
-    가중치: face 40%, golden 20%, preference 40%
+    Args:
+        weights: {"face": 0.4, "golden": 0.2, "preference": 0.4}
+                 서버에서 동적으로 가중치 조절 가능. 미전달 시 기본값 사용.
+                 합이 1.0이 아니면 정규화됨.
     """
+    # 가중치 결정
+    w_face = W_FACE
+    w_golden = W_GOLDEN
+    w_pref = W_PREF
+    if weights:
+        w_face = float(weights.get("face", W_FACE))
+        w_golden = float(weights.get("golden", W_GOLDEN))
+        w_pref = float(weights.get("preference", W_PREF))
+        # 정규화: 합이 1.0이 되도록 (모두 0이면 기본값 복원)
+        total = w_face + w_golden + w_pref
+        if total > 0:
+            w_face /= total
+            w_golden /= total
+            w_pref /= total
+        else:
+            w_face, w_golden, w_pref = W_FACE, W_GOLDEN, W_PREF
+            logger.warning("All weights are 0, falling back to defaults")
+        logger.info("Custom weights: face=%.2f, golden=%.2f, pref=%.2f", w_face, w_golden, w_pref)
+
     vec = np.zeros(VEC_DIM, dtype=np.float32)
 
-    # --- Face shape (40%) ---
+    # --- Face shape ---
     face_vec = np.array(
         [face_scores.get(s, 0.0) for s in FACE_SHAPES], dtype=np.float32
     )
     norm = np.linalg.norm(face_vec)
     if norm > 1e-6:
         face_vec = face_vec / norm
-    vec[_IDX_FACE:_IDX_FACE + len(FACE_SHAPES)] = face_vec * math.sqrt(W_FACE)
+    vec[_IDX_FACE:_IDX_FACE + len(FACE_SHAPES)] = face_vec * math.sqrt(w_face)
 
-    # --- Golden ratio (20%) ---
-    vec[_IDX_GOLDEN] = golden_score * math.sqrt(W_GOLDEN)
+    # --- Golden ratio ---
+    vec[_IDX_GOLDEN] = golden_score * math.sqrt(w_golden)
 
-    # --- Preferences (40%) ---
-    pref_scale = math.sqrt(W_PREF)
+    # --- Preferences ---
+    pref_scale = math.sqrt(w_pref)
 
     # Length
     length_vec = _one_hot(preference.get("length", "medium"), LENGTHS)
@@ -529,6 +552,7 @@ def recommend_top_k(
     preference_text: Optional[str] = None,
     age: Optional[int] = None,
     top_k: int = 5,
+    weights: Optional[Dict[str, float]] = None,
 ) -> List[StyleRecommendation]:
     """
     얼굴 비율 + 취향 → Top-K 헤어스타일 추천.
@@ -540,6 +564,8 @@ def recommend_top_k(
         preference_text: 자연어 취향 텍스트 (preference 없을 때 파싱)
         age: 나이 (preference_text 파싱 시 분위기 추론에 사용)
         top_k: 추천 개수 (기본 5)
+        weights: {"face": 0.4, "golden": 0.2, "preference": 0.4}
+                 Django 서버에서 동적으로 가중치 조절 가능.
 
     Returns:
         List[StyleRecommendation] 상위 K개
@@ -559,8 +585,8 @@ def recommend_top_k(
         else:
             preference = parse_preference_text("", age=age)
 
-    # 4. 유저 벡터 인코딩
-    user_vec = encode_user_vector(face_scores, g_score, preference)
+    # 4. 유저 벡터 인코딩 (가중치 적용)
+    user_vec = encode_user_vector(face_scores, g_score, preference, weights=weights)
 
     # 5. ChromaDB 쿼리
     collection = _get_style_collection()
