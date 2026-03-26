@@ -1,13 +1,13 @@
 name: Build and Push SD App Image
 
 on:
-  push:
+  # PR이 develop/main에 머지될 때만 자동 빌드
+  pull_request:
+    types: [closed]
     branches:
       - main
       - master
       - develop
-      - develop/**
-      - LBJ/**
     paths:
       - "Dockerfile.sd.app"
       - "entrypoint_sd.sh"
@@ -24,6 +24,8 @@ on:
       - "data/**"
       - ".dockerignore"
       - ".github/workflows/build-sd-app.yml"
+
+  # 수동 트리거
   workflow_dispatch:
     inputs:
       version:
@@ -43,6 +45,10 @@ concurrency:
 
 jobs:
   build:
+    # PR 이벤트일 경우 실제 머지된 경우만 실행 (닫기만 한 경우 스킵)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
