@@ -418,8 +418,9 @@ class MirrAISDPipeline:
             debug_data_common["segface_mask_debug"] = segface_debug["meta"]
 
         # ── Step 3: SAM2 refinement ───────────────────────────────────────────
-        hair_mask, mask_source = self._refine_with_sam2(
-            img_rgb, hair_mask_base, face_bbox, effective_hairstyle_text
+        hair_mask, mask_source, mask_refine_mode_used = self._refine_with_sam2(
+            img_rgb, hair_mask_base, face_bbox, effective_hairstyle_text,
+            mask_refine_mode=mask_refine_mode,
         )
         logger.info(
             f"[SDPipeline] hair mask source={mask_source}, refine_mode={mask_refine_mode_used}, "
