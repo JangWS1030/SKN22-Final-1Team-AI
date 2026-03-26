@@ -495,6 +495,9 @@ def build_style_collection(client=None):
             "maintenance": style.get("maintenance", "medium"),
             "popularity_score": style.get("popularity_score", 0.5),
             "freshness_score": style.get("freshness_score", 0.5),
+            "sd_positive": style.get("sd_positive", ""),
+            "sd_negative": style.get("sd_negative", ""),
+            "sd_guidance": style.get("sd_guidance", 8.5),
         })
         documents.append(
             f"{style['style_name']}: {style['description']} "
@@ -623,6 +626,9 @@ def recommend_top_k(
                 "freshness_score": meta.get("freshness_score"),
                 "face_shape_detected": face_shape,
                 "golden_ratio_score": round(g_score, 4),
+                "sd_positive": meta.get("sd_positive", ""),
+                "sd_negative": meta.get("sd_negative", ""),
+                "sd_guidance": meta.get("sd_guidance", 8.5),
             },
         ))
 

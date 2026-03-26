@@ -425,7 +425,16 @@ def _generate_per_recommendation(
             if rag_kw:
                 enriched_prompt = f"{enriched_prompt}, {rag_kw}"
 
-        logger.info(f"[handler_sd] 추천 #{idx}: '{enriched_prompt}'")
+        # DB에 저장된 SD 프롬프트 데이터 전달
+        sd_prompt_data = None
+        if rec.get("sd_positive"):
+            sd_prompt_data = {
+                "sd_positive": rec["sd_positive"],
+                "sd_negative": rec.get("sd_negative", ""),
+                "sd_guidance": rec.get("sd_guidance", 8.5),
+            }
+
+        logger.info(f"[handler_sd] 추천 #{idx}: '{enriched_prompt}' (sd_prompt_data={'yes' if sd_prompt_data else 'no'})")
         try:
             results = pipeline.run(
                 image=img_bgr,
@@ -436,6 +445,7 @@ def _generate_per_recommendation(
                 mask_refine_mode=mask_refine_mode,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
+                sd_prompt_data=sd_prompt_data,
             )
             for r in results:
                 r.rank = idx
