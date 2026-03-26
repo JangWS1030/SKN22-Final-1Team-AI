@@ -15,7 +15,10 @@
     "popularity_score": 0.91,
     "freshness_score": 0.88,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "soft wolf cut with airy layered texture, face-framing disconnected layers, medium length hair, shoulder-length hair, hair just above or at shoulder",
+    "sd_negative": "very long hair, very short hair, blunt ends, no layers",
+    "sd_guidance": 8.5
   },
   {
     "id": "butterfly-layers",
@@ -33,7 +36,10 @@
     "popularity_score": 0.95,
     "freshness_score": 0.84,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "butterfly layers with long cascading face-framing layers, cheek-opening movement, voluminous long hair with natural flow",
+    "sd_negative": "blunt one-length hair, very short hair, bob, pixie",
+    "sd_guidance": 7.5
   },
   {
     "id": "bixie-cut",
@@ -51,7 +57,10 @@
     "popularity_score": 0.86,
     "freshness_score": 0.83,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "strict short bixie cut, bob-pixie hybrid with crown lift and soft tapered ends, strict short jaw-length bob silhouette, compact side shape, tucked nape line, ends stopping at or above the jawline, fully visible neck and shoulders, clear neckline and shoulders",
+    "sd_negative": "very long hair, medium hair, medium length hair, shoulder-length hair, shoulder grazing hair, flowing long hair, hair below shoulders, hair touching shoulders, overly voluminous hair, puffy hair, helmet hair",
+    "sd_guidance": 11.2
   },
   {
     "id": "hush-cut",
@@ -69,7 +78,10 @@
     "popularity_score": 0.93,
     "freshness_score": 0.9,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "hush cut with soft feathered long layers, face-framing jaw-line layers, light natural texture, Korean-style layered long hair",
+    "sd_negative": "blunt heavy hair, very short hair, bob, pixie, bulky volume",
+    "sd_guidance": 7.5
   },
   {
     "id": "curtain-bob",
@@ -87,7 +99,10 @@
     "popularity_score": 0.82,
     "freshness_score": 0.8,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "strict short jaw-skimming curtain bob with soft see-through bangs, clean blunt bob outline, strict short jaw-length bob silhouette, compact side shape, tucked inward ends at the jawline, fully visible neck and shoulders, clear neckline and shoulders, no lower side tails below the chin line",
+    "sd_negative": "very long hair, medium hair, medium length hair, shoulder-length hair, shoulder grazing hair, flowing long hair, hair below shoulders, hair touching shoulders, long layers below jawline, overly voluminous hair, helmet hair",
+    "sd_guidance": 11.2
   },
   {
     "id": "sleek-lob",
@@ -105,7 +120,10 @@
     "popularity_score": 0.8,
     "freshness_score": 0.72,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "sleek polished lob, clean shoulder-length straight hair, smooth center part or soft side part, medium length hair, shoulder-length hair, hair just above or at shoulder",
+    "sd_negative": "very long hair, very short hair, wavy texture, curly hair, messy texture",
+    "sd_guidance": 8.5
   },
   {
     "id": "shaggy-midi",
@@ -123,7 +141,10 @@
     "popularity_score": 0.84,
     "freshness_score": 0.86,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "shaggy midi cut with crown texture, cheekbone-emphasizing choppy layers, medium length hair, shoulder-length hair, hair just above or at shoulder, textured wavy finish",
+    "sd_negative": "very long hair, very short hair, sleek straight hair, blunt ends",
+    "sd_guidance": 8.5
   },
   {
     "id": "air-perm-layers",
@@ -141,7 +162,10 @@
     "popularity_score": 0.89,
     "freshness_score": 0.87,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "air perm layers with soft bouncy curls, light natural bend, volume-adding soft waves, medium length hair, shoulder-length hair, hair just above or at shoulder",
+    "sd_negative": "very long hair, very short hair, flat straight hair, tight ringlet curls",
+    "sd_guidance": 8.5
   },
   {
     "id": "italian-bob",
@@ -159,7 +183,10 @@
     "popularity_score": 0.83,
     "freshness_score": 0.76,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "strict short italian bob, clean blunt bob outline, luxurious volume around jawline, strict short jaw-length bob silhouette, compact side shape, tucked inward ends at the jawline, fully visible neck and shoulders, clear neckline and shoulders, no lower side tails below the chin line",
+    "sd_negative": "very long hair, medium hair, medium length hair, shoulder-length hair, shoulder grazing hair, flowing long hair, hair below shoulders, hair touching shoulders, thin wispy ends, overly voluminous hair, helmet hair",
+    "sd_guidance": 11.2
   },
   {
     "id": "side-swept-long-layers",
@@ -177,7 +204,10 @@
     "popularity_score": 0.78,
     "freshness_score": 0.74,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "side-swept long layers with off-center volume, deep side part, face-framing long layered hair, profile-elongating silhouette",
+    "sd_negative": "very short hair, bob, pixie, center part, blunt one-length",
+    "sd_guidance": 7.5
   },
   {
     "id": "textured-crop",
@@ -195,7 +225,10 @@
     "popularity_score": 0.79,
     "freshness_score": 0.77,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "strict short cropped haircut, textured crop with broken fringe and crown lift, strict short jaw-length silhouette, compact side shape, tucked nape line, fully visible neck and shoulders, clear neckline and shoulders",
+    "sd_negative": "very long hair, medium hair, medium length hair, shoulder-length hair, shoulder grazing hair, flowing long hair, hair below shoulders, hair touching shoulders, overly voluminous hair, helmet hair",
+    "sd_guidance": 11.2
   },
   {
     "id": "modern-mullet-soft",
@@ -213,7 +246,10 @@
     "popularity_score": 0.8,
     "freshness_score": 0.89,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "soft modern mullet with refined softened edges, controlled nape length, textured crown layers, medium length hair, shoulder-length hair, hair just above or at shoulder",
+    "sd_negative": "very long hair, very short hair, classic traditional mullet, harsh angular edges",
+    "sd_guidance": 8.5
   },
   {
     "id": "soft-c-curled-lob",
@@ -231,7 +267,10 @@
     "popularity_score": 0.81,
     "freshness_score": 0.82,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "soft C-curled lob with subtle inward curled ends, jaw-softening shoulder-length cut, medium length hair, shoulder-length hair, hair just above or at shoulder, Korean-style soft finish",
+    "sd_negative": "very long hair, very short hair, outward flipped ends, tight curls",
+    "sd_guidance": 8.5
   },
   {
     "id": "volumized-pixie",
@@ -249,7 +288,10 @@
     "popularity_score": 0.77,
     "freshness_score": 0.73,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "strict short cropped haircut, volumized pixie with crown lift and soft ear taper, strict short compact silhouette, fully visible neck and shoulders, clear neckline and ears",
+    "sd_negative": "very long hair, medium hair, medium length hair, shoulder-length hair, shoulder grazing hair, flowing long hair, hair below shoulders, hair touching shoulders, bob length, overly voluminous hair, helmet hair",
+    "sd_guidance": 11.2
   },
   {
     "id": "layered-midi-waves",
@@ -267,6 +309,9 @@
     "popularity_score": 0.85,
     "freshness_score": 0.79,
     "source": "local_bootstrap_seed",
-    "last_updated": "2026-03-01"
+    "last_updated": "2026-03-01",
+    "sd_positive": "layered midi waves with soft natural wave texture, width-adding layered volume, medium length hair, shoulder-length hair, hair just above or at shoulder, light natural texture",
+    "sd_negative": "very long hair, very short hair, sleek straight hair, tight curls",
+    "sd_guidance": 8.5
   }
 ]

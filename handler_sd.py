@@ -365,7 +365,7 @@ def _invalidate_collection_caches(replaced: list) -> None:
 
 # ── 추천 + RAG 컨텍스트 ────────────────────────────────────────────────────────
 
-def _run_recommendation(face_ratios, preference, preference_text, age, color_text, top_k):
+def _run_recommendation(face_ratios, preference, preference_text, age, color_text, top_k, weights=None):
     """추천 엔진 실행 → (recommendations_data, rag_context, hairstyle_text, color_text)"""
     from style_recommender import recommend_top_k, recommend_to_dict
 
@@ -375,6 +375,7 @@ def _run_recommendation(face_ratios, preference, preference_text, age, color_tex
         preference_text=preference_text or None,
         age=age,
         top_k=top_k,
+        weights=weights,
     )
     recommendations_data = recommend_to_dict(recommendations)
     rag_context_str = _fetch_rag_context_for_styles(recommendations)
@@ -424,7 +425,16 @@ def _generate_per_recommendation(
             if rag_kw:
                 enriched_prompt = f"{enriched_prompt}, {rag_kw}"
 
-        logger.info(f"[handler_sd] 추천 #{idx}: '{enriched_prompt}'")
+        # DB에 저장된 SD 프롬프트 데이터 전달
+        sd_prompt_data = None
+        if rec.get("sd_positive"):
+            sd_prompt_data = {
+                "sd_positive": rec["sd_positive"],
+                "sd_negative": rec.get("sd_negative", ""),
+                "sd_guidance": rec.get("sd_guidance", 8.5),
+            }
+
+        logger.info(f"[handler_sd] 추천 #{idx}: '{enriched_prompt}' (sd_prompt_data={'yes' if sd_prompt_data else 'no'})")
         try:
             results = pipeline.run(
                 image=img_bgr,
@@ -436,6 +446,7 @@ def _generate_per_recommendation(
                 subject_gender=subject_gender,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
+                sd_prompt_data=sd_prompt_data,
             )
             for r in results:
                 r.rank = idx
@@ -446,7 +457,9 @@ def _generate_per_recommendation(
                 }
                 all_results.append(r)
         except Exception as e:
-            logger.error(f"[handler_sd] 추천 #{idx} 생성 실패: {e}")
+            logger.error(f"[handler_sd] 추천 #{idx} 생성 실패: {e}\n{traceback.format_exc()}")
+            # 실패해도 에러 정보를 포함한 placeholder 반환
+            recommendations[idx]["generation_error"] = f"{type(e).__name__}: {e}"
     return all_results
 
 
@@ -536,6 +549,9 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         recommendations_data = None
         rag_context_str = None
 
+        # 가중치: 서버에서 동적 조절 가능 (미전달 시 기본 40/20/40)
+        weights = inp.get("weights")  # {"face": 0.4, "golden": 0.2, "preference": 0.4}
+
         if is_recommend_mode:
             recommendations_data, rag_context_str, hairstyle_text, color_text = (
                 _run_recommendation(
@@ -545,6 +561,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     age=age,
                     color_text=color_text,
                     top_k=top_k,
+                    weights=weights,
                 )
             )
         elif not hairstyle_text and not color_text:

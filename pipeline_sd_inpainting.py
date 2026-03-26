@@ -316,6 +316,7 @@ class MirrAISDPipeline:
         subject_gender: Optional[str] = None,
         lora_path: Optional[str] = None,
         lora_scale: Optional[float] = None,
+        sd_prompt_data: Optional[Dict[str, Any]] = None,
     ) -> List[SDInpaintResult]:
         """
         헤어 스타일 변환 실행.
@@ -326,6 +327,8 @@ class MirrAISDPipeline:
             color_text:     헤어 컬러 텍스트
             top_k:          반환 결과 수 (기본 3)
             return_intermediates: 중간 산출물 디버그 이미지 포함 여부
+            sd_prompt_data: DB에서 가져온 SD 프롬프트 데이터
+                            {"sd_positive", "sd_negative", "sd_guidance"}
 
         Returns:
             SDInpaintResult 리스트 (rank 0이 first)
@@ -346,24 +349,42 @@ class MirrAISDPipeline:
         image_bgr = image.copy()
         img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         requested_hairstyle_text = " ".join(str(hairstyle_text or "").strip().split())
-        normalized_color_text = self._normalize_color_text(color_text)
+        requested_color_text = self._normalize_color_text(color_text)
         trend_request = None
         effective_hairstyle_text = requested_hairstyle_text
-        if resolve_generation_request is not None and (requested_hairstyle_text or normalized_color_text):
+        effective_color_text = requested_color_text
+        if resolve_generation_request is not None and (requested_hairstyle_text or requested_color_text):
             try:
                 trend_request = resolve_generation_request(
                     requested_hairstyle_text,
-                    normalized_color_text,
+                    requested_color_text,
                     top_k=3,
                 )
                 resolved_style = " ".join(
                     str(trend_request.resolved_hairstyle_text or "").strip().split()
                 )
+                resolved_color = self._normalize_color_text(trend_request.resolved_color_text)
                 if resolved_style:
                     effective_hairstyle_text = resolved_style
+                if resolved_color:
+                    effective_color_text = resolved_color
+                logger.info(
+                    "[SDPipeline] trend resolution: requested_style='%s' -> resolved_style='%s', matches=%d",
+                    requested_hairstyle_text,
+                    effective_hairstyle_text,
+                    len(trend_request.matches),
+                )
+                if trend_request.matches:
+                    logger.info(
+                        "[SDPipeline] top trend match: %s (score=%.3f, source=%s)",
+                        trend_request.matches[0].trend_name,
+                        trend_request.matches[0].score,
+                        trend_request.matches[0].source,
+                    )
             except Exception as e:
                 logger.warning(f"[SDPipeline] trend resolution skipped: {e}")
                 trend_request = None
+        normalized_color_text = self._normalize_color_text(effective_color_text)
         subject_gender_mode = self._infer_subject_gender(
             effective_hairstyle_text,
             subject_gender=subject_gender,
@@ -1676,6 +1697,7 @@ class MirrAISDPipeline:
             normalized_color_text,
             hair_length,
             subject_gender=subject_gender_mode,
+            sd_prompt_data=sd_prompt_data,
         )
         logger.info(f"[SDPipeline] 프롬프트: {prompt}")
         logger.info(f"[SDPipeline] 네거티브: {neg_prompt}")
@@ -5812,10 +5834,14 @@ class MirrAISDPipeline:
         color_text: str,
         hair_length: str = "long",
         subject_gender: Optional[str] = None,
+        sd_prompt_data: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, str, float]:
         """
         Returns:
             positive_prompt, negative_prompt, guidance_scale
+
+        sd_prompt_data가 제공되면 DB에 저장된 SD 프롬프트를 우선 사용.
+        없으면 hairstyle_text 기반으로 폴백.
         """
         normalized_color = MirrAISDPipeline._normalize_color_text(color_text)
         gender_mode = MirrAISDPipeline._infer_subject_gender(
@@ -5827,6 +5853,40 @@ class MirrAISDPipeline:
             hair_length,
             subject_gender=gender_mode,
         )
+
+        # ── DB 프롬프트 데이터가 있으면 우선 사용 ─────────────────────────────
+        if sd_prompt_data and sd_prompt_data.get("sd_positive"):
+            style_part = sd_prompt_data["sd_positive"]
+            sd_neg = sd_prompt_data.get("sd_negative", "")
+            guidance = float(sd_prompt_data.get("sd_guidance", 8.5))
+
+            color_pos_hint = ""
+            color_neg_hint = ""
+            lowered_color = normalized_color.lower()
+            if normalized_color:
+                style_part = f"{style_part}, {normalized_color.strip()} hair color"
+                if "ash" in lowered_color:
+                    color_pos_hint = ", cool-toned ash color, smoky neutral undertone, no brassiness"
+                    color_neg_hint = "warm orange cast, yellow brassiness, copper tint, reddish tint, "
+                else:
+                    color_pos_hint = ", consistent natural hair color tone, coherent root-to-end color"
+
+            positive_parts = [
+                f"professional portrait photo of a person with {style_part}",
+            ]
+            if color_pos_hint:
+                positive_parts.append(color_pos_hint.lstrip(", ").strip())
+            positive_parts.extend([
+                "same outfit, preserved shirt or blouse fabric texture, clean neckline and collar continuity, natural sleeve folds",
+                "photorealistic, high quality, natural lighting, 8k",
+                "studio photography, sharp focus, beautiful hair",
+            ])
+            positive = ", ".join(positive_parts)
+            negative_base = _NEGATIVE_BASE + ", " + _COMMON_STYLE_BLOCK_NEGATIVE
+            negative = sd_neg + (", " if sd_neg else "") + color_neg_hint + negative_base
+
+            return positive, negative, guidance
+
         parts = []
         if normalized_style:
             parts.append(normalized_style)
@@ -5839,7 +5899,7 @@ class MirrAISDPipeline:
         elif gender_mode == "female":
             subject_noun = "woman"
 
-        # ── 길이별 positive/negative 보강 ────────────────────────────────────
+        # 길이별 기본 보강 (직접 입력/DB 프롬프트 폴백 시 사용)
         if hair_length == "short" and gender_mode == "male":
             pos_suffix = (
                 ", masculine short haircut silhouette, natural masculine hairline, "
