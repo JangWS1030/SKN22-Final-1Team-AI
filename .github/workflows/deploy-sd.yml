@@ -1,12 +1,6 @@
 name: Deploy SD Pipeline (Build → RunPod → Test)
 
 on:
-  # build-sd-app 완료 시 자동 트리거
-  workflow_run:
-    workflows: ["Build and Push SD App Image"]
-    types: [completed]
-    branches: [main, master, develop, develop/**, LBJ/**]
-
   # 수동 실행 (빌드 스킵하고 배포만 가능)
   workflow_dispatch:
     inputs:
@@ -47,10 +41,6 @@ jobs:
   # ────────────────────────────────────────────────────────────
   resolve:
     runs-on: ubuntu-latest
-    # workflow_run 트리거일 때는 빌드 성공 시에만 진행
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     outputs:
       image: ${{ steps.resolve.outputs.image }}
       deploy_mode: ${{ steps.resolve.outputs.deploy_mode }}
@@ -64,14 +54,8 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         run: |
           # 이미지
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.image }}" ]; then
+          if [ -n "${{ inputs.image }}" ]; then
             IMAGE="${{ inputs.image }}"
-          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
-            if [ -z "${DOCKER_USERNAME}" ]; then
-              echo "::error::DOCKER_USERNAME secret is required to resolve the release image."
-              exit 1
-            fi
-            IMAGE="${DOCKER_USERNAME}/sd:run-${{ github.event.workflow_run.run_number }}"
           else
             if [ -z "${DOCKER_USERNAME}" ]; then
               echo "::error::DOCKER_USERNAME secret is required to resolve the default image."
@@ -82,16 +66,9 @@ jobs:
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
 
           # 배포 모드
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "deploy_mode=${{ inputs.deploy_mode }}" >> "$GITHUB_OUTPUT"
-            echo "skip_test=${{ inputs.skip_test }}" >> "$GITHUB_OUTPUT"
-            echo "test_image_url=${{ inputs.test_image_url }}" >> "$GITHUB_OUTPUT"
-          else
-            # workflow_run (자동): update 모드, 테스트 실행
-            echo "deploy_mode=update" >> "$GITHUB_OUTPUT"
-            echo "skip_test=false" >> "$GITHUB_OUTPUT"
-            echo "test_image_url=" >> "$GITHUB_OUTPUT"
-          fi
+          echo "deploy_mode=${{ inputs.deploy_mode }}" >> "$GITHUB_OUTPUT"
+          echo "skip_test=${{ inputs.skip_test }}" >> "$GITHUB_OUTPUT"
+          echo "test_image_url=${{ inputs.test_image_url }}" >> "$GITHUB_OUTPUT"
 
       - name: Summary
         run: |
