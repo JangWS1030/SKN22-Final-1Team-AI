@@ -762,5 +762,14 @@ def _normalize_runpod_env() -> None:
 
 if __name__ == "__main__":
     _normalize_runpod_env()
+
+    # ── Cold Start 해소: 요청 받기 전에 모델 미리 로드 ─────────────────────
+    logger.info("[handler_sd] 서버 시작 전 모델 프리로드 시작...")
+    try:
+        _get_pipeline()
+        logger.info("[handler_sd] 모델 프리로드 완료 — ready to serve")
+    except Exception as e:
+        logger.error(f"[handler_sd] 모델 프리로드 실패: {e}\n{traceback.format_exc()}")
+
     import runpod
     runpod.serverless.start({"handler": handler})
