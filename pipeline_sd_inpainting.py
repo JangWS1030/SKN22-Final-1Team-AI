@@ -288,6 +288,7 @@ class MirrAISDPipeline:
         mask_refine_mode: Optional[str] = None,
         lora_path: Optional[str] = None,
         lora_scale: Optional[float] = None,
+        sd_prompt_data: Optional[Dict[str, Any]] = None,
     ) -> List[SDInpaintResult]:
         """
         헤어 스타일 변환 실행.
@@ -298,6 +299,8 @@ class MirrAISDPipeline:
             color_text:     헤어 컬러 텍스트
             top_k:          반환 결과 수 (기본 3)
             return_intermediates: 중간 산출물 디버그 이미지 포함 여부
+            sd_prompt_data: DB에서 가져온 SD 프롬프트 데이터
+                            {"sd_positive", "sd_negative", "sd_guidance"}
 
         Returns:
             SDInpaintResult 리스트 (rank 0이 first)
@@ -1620,7 +1623,8 @@ class MirrAISDPipeline:
 
         # ── Step 6: 프롬프트 ─────────────────────────────────────────────────
         prompt, neg_prompt, guidance = self._build_prompt(
-            effective_hairstyle_text, normalized_color_text, hair_length
+            effective_hairstyle_text, normalized_color_text, hair_length,
+            sd_prompt_data=sd_prompt_data,
         )
         logger.info(f"[SDPipeline] 프롬프트: {prompt}")
         logger.info(f"[SDPipeline] 네거티브: {neg_prompt}")
@@ -5076,44 +5080,6 @@ class MirrAISDPipeline:
             return ""
         return text
 
-    @staticmethod
-    def _normalize_hairstyle_prompt_text(hairstyle_text: str, hair_length: str) -> str:
-        raw = " ".join(str(hairstyle_text or "").strip().split())
-        if not raw:
-            return ""
-        if hair_length != "short":
-            return raw
-
-        lowered = raw.lower()
-        hints: List[str] = []
-        if "hush" in lowered or "layer" in lowered:
-            hints.append("soft internal bob layers above the jawline")
-            hints.append("rounded jaw-length bob silhouette")
-        if "blunt" in lowered:
-            hints.append("clean blunt bob outline")
-        if "bang" in lowered or "fringe" in lowered:
-            hints.append("soft see-through bangs")
-        if any(token in lowered for token in ("wave", "wavy", "curl", "curly")):
-            hints.append("light natural texture")
-        if any(token in lowered for token in ("straight", "sleek")):
-            hints.append("sleek straight finish")
-        if "tuck" in lowered:
-            hints.append("tucked nape silhouette")
-        else:
-            hints.append("tucked inward ends at the jawline")
-        if any(token in lowered for token in ("bob", "short", "chin")):
-            hints.append("clear neckline and shoulders")
-            hints.append("no lower side tails below the jawline")
-
-        base_style = "strict short chin-length bob haircut with a compact side silhouette"
-        if "pixie" in lowered or "buzz" in lowered:
-            base_style = "strict short cropped haircut"
-
-        parts = [base_style]
-        for hint in hints:
-            if hint not in parts:
-                parts.append(hint)
-        return ", ".join(parts)
 
     @staticmethod
     def _resolve_target_hair_lab(color_text: str) -> Optional[np.ndarray]:
@@ -5303,16 +5269,53 @@ class MirrAISDPipeline:
         hairstyle_text: str,
         color_text: str,
         hair_length: str = "long",
+        sd_prompt_data: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, str, float]:
         """
         Returns:
             positive_prompt, negative_prompt, guidance_scale
+
+        sd_prompt_data가 제공되면 DB에 저장된 SD 프롬프트를 우선 사용.
+        없으면 hairstyle_text 기반으로 폴백.
         """
         normalized_color = MirrAISDPipeline._normalize_color_text(color_text)
-        normalized_style = MirrAISDPipeline._normalize_hairstyle_prompt_text(
-            hairstyle_text,
-            hair_length,
-        )
+
+        # ── DB 프롬프트 데이터가 있으면 우선 사용 ─────────────────────────────
+        if sd_prompt_data and sd_prompt_data.get("sd_positive"):
+            style_part = sd_prompt_data["sd_positive"]
+            sd_neg = sd_prompt_data.get("sd_negative", "")
+            guidance = float(sd_prompt_data.get("sd_guidance", 8.5))
+
+            # 색상 보강
+            color_pos_hint = ""
+            color_neg_hint = ""
+            if normalized_color:
+                style_part = f"{style_part}, {normalized_color.strip()} hair color"
+                lowered_color = normalized_color.lower()
+                if "ash" in lowered_color:
+                    color_pos_hint = ", cool-toned ash color, smoky neutral undertone, no brassiness"
+                    color_neg_hint = "warm orange cast, yellow brassiness, copper tint, reddish tint, "
+                else:
+                    color_pos_hint = ", consistent natural hair color tone, coherent root-to-end color"
+
+            positive_parts = [
+                f"professional portrait photo of a person with {style_part}",
+            ]
+            if color_pos_hint:
+                positive_parts.append(color_pos_hint.lstrip(", ").strip())
+            positive_parts.extend([
+                "same outfit, preserved shirt or blouse fabric texture, clean neckline and collar continuity, natural sleeve folds",
+                "photorealistic, high quality, natural lighting, 8k",
+                "studio photography, sharp focus, beautiful hair",
+            ])
+            positive = ", ".join(positive_parts)
+            negative_base = _NEGATIVE_BASE + ", " + _COMMON_STYLE_BLOCK_NEGATIVE
+            negative = sd_neg + (", " if sd_neg else "") + color_neg_hint + negative_base
+
+            return positive, negative, guidance
+
+        # ── 폴백: 기존 hairstyle_text 기반 (직접 입력 모드) ──────────────────
+        normalized_style = " ".join(str(hairstyle_text or "").strip().split())
         parts = []
         if normalized_style:
             parts.append(normalized_style)
@@ -5320,7 +5323,7 @@ class MirrAISDPipeline:
             parts.append(f"{normalized_color.strip()} hair color")
         style = ", ".join(parts) if parts else "natural hairstyle"
 
-        # ── 길이별 positive/negative 보강 ────────────────────────────────────
+        # 길이별 기본 보강 (직접 입력 시에만 사용)
         if hair_length == "short":
             pos_suffix = (
                 ", strict short jaw-length bob silhouette, compact side shape, tucked nape line, "
