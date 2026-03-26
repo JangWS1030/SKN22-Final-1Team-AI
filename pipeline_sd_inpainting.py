@@ -223,6 +223,9 @@ class SDInpaintConfig:
     standardize_face_width_ratio_min: float = 0.18
     standardized_width: int = 768
     standardized_height: int = 1024
+    enable_portrait_reframe: bool = True
+    portrait_reframe_face_height_ratio_max: float = 0.40
+    portrait_reframe_top_gap_ratio_min: float = 0.06
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3484,51 +3487,63 @@ class MirrAISDPipeline:
         face_h = max(y2 - y1, 1)
         face_w_ratio = face_w / max(float(W), 1.0)
         face_h_ratio = face_h / max(float(H), 1.0)
+        top_gap_ratio = y1 / max(float(H), 1.0)
         is_landscape = W > H
+        enable_reframe = bool(getattr(self.config, "enable_portrait_reframe", True))
+        needs_reframe = (
+            enable_reframe
+            and not is_landscape
+            and (
+                face_h_ratio > float(getattr(self.config, "portrait_reframe_face_height_ratio_max", 0.40))
+                or top_gap_ratio < float(getattr(self.config, "portrait_reframe_top_gap_ratio_min", 0.06))
+            )
+        )
 
         if (
             face_h_ratio >= float(self.config.standardize_face_height_ratio_min)
             and face_w_ratio >= float(self.config.standardize_face_width_ratio_min)
             and not is_landscape
+            and not needs_reframe
         ):
             return meta
 
-        target_w = int(getattr(self.config, "standardized_width", 768))
-        target_h = int(getattr(self.config, "standardized_height", 1024))
+        if needs_reframe:
+            target_w = int(W)
+            target_h = int(H)
+        else:
+            target_w = int(getattr(self.config, "standardized_width", 768))
+            target_h = int(getattr(self.config, "standardized_height", 1024))
+            crop_top = int(round(y1 - face_h * 0.95))
+            crop_bottom = int(round(y2 + face_h * 2.15))
         target_aspect = target_w / max(float(target_h), 1.0)
 
         cx = 0.5 * (x1 + x2)
-        crop_top = int(round(y1 - face_h * 0.95))
-        crop_bottom = int(round(y2 + face_h * 2.15))
-        crop_h = max(crop_bottom - crop_top, face_h + 1)
-        crop_w = max(int(round(crop_h * target_aspect)), face_w + 1)
+        if needs_reframe:
+            scale_candidates = [1.0]
+            max_face_ratio = float(getattr(self.config, "portrait_reframe_face_height_ratio_max", 0.40))
+            min_top_gap = float(getattr(self.config, "portrait_reframe_top_gap_ratio_min", 0.06))
+            if max_face_ratio > 0.0:
+                scale_candidates.append(face_h_ratio / max_face_ratio)
+            if min_top_gap > 0.0 and top_gap_ratio > 1e-6:
+                scale_candidates.append(min_top_gap / top_gap_ratio)
+            reframe_scale = float(np.clip(max(scale_candidates) * 1.04, 1.02, 1.18))
+            crop_h = max(int(round(H * reframe_scale)), face_h + 1)
+            crop_w = max(int(round(crop_h * target_aspect)), W + 1)
+            extra_h = max(0, crop_h - H)
+            crop_top = int(round(-extra_h * 0.58))
+            crop_bottom = crop_top + crop_h
+        else:
+            crop_h = max(crop_bottom - crop_top, face_h + 1)
+            crop_w = max(int(round(crop_h * target_aspect)), face_w + 1)
         crop_left = int(round(cx - crop_w * 0.5))
         crop_right = crop_left + crop_w
-
-        if crop_left < 0:
-            crop_right -= crop_left
-            crop_left = 0
-        if crop_right > W:
-            crop_left -= (crop_right - W)
-            crop_right = W
-        if crop_left < 0:
-            crop_left = 0
-
-        if crop_top < 0:
-            crop_bottom -= crop_top
-            crop_top = 0
-        if crop_bottom > H:
-            crop_top -= (crop_bottom - H)
-            crop_bottom = H
-        if crop_top < 0:
-            crop_top = 0
-
-        crop_left = max(0, min(crop_left, W - 1))
-        crop_top = max(0, min(crop_top, H - 1))
-        crop_right = max(crop_left + 1, min(crop_right, W))
-        crop_bottom = max(crop_top + 1, min(crop_bottom, H))
-
-        crop_rgb = img_rgb[crop_top:crop_bottom, crop_left:crop_right]
+        crop_rgb = self._crop_with_soft_padding(
+            img_rgb,
+            crop_left=crop_left,
+            crop_top=crop_top,
+            crop_right=crop_right,
+            crop_bottom=crop_bottom,
+        )
         if crop_rgb.size == 0:
             return meta
 
@@ -3542,7 +3557,9 @@ class MirrAISDPipeline:
             "reason": {
                 "face_h_ratio": round(face_h_ratio, 4),
                 "face_w_ratio": round(face_w_ratio, 4),
+                "top_gap_ratio": round(top_gap_ratio, 4),
                 "is_landscape": bool(is_landscape),
+                "reframe_applied": bool(needs_reframe),
             },
             "crop_box": [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)],
             "original_shape": [int(H), int(W)],
@@ -3550,6 +3567,53 @@ class MirrAISDPipeline:
             "image_rgb": standardized_rgb,
         })
         return meta
+
+    @staticmethod
+    def _crop_with_soft_padding(
+        img_rgb: np.ndarray,
+        crop_left: int,
+        crop_top: int,
+        crop_right: int,
+        crop_bottom: int,
+    ) -> np.ndarray:
+        H, W = img_rgb.shape[:2]
+        pad_left = max(0, -int(crop_left))
+        pad_top = max(0, -int(crop_top))
+        pad_right = max(0, int(crop_right) - W)
+        pad_bottom = max(0, int(crop_bottom) - H)
+
+        padded = img_rgb
+        if pad_left or pad_top or pad_right or pad_bottom:
+            padded = cv2.copyMakeBorder(
+                img_rgb,
+                pad_top,
+                pad_bottom,
+                pad_left,
+                pad_right,
+                cv2.BORDER_REFLECT_101,
+            )
+            pad_mask = np.zeros(padded.shape[:2], dtype=np.float32)
+            if pad_top:
+                pad_mask[:pad_top, :] = 1.0
+            if pad_bottom:
+                pad_mask[-pad_bottom:, :] = 1.0
+            if pad_left:
+                pad_mask[:, :pad_left] = 1.0
+            if pad_right:
+                pad_mask[:, -pad_right:] = 1.0
+            pad_mask = cv2.GaussianBlur(pad_mask, (0, 0), sigmaX=7.0, sigmaY=7.0)
+            blurred = cv2.GaussianBlur(padded, (0, 0), sigmaX=18.0, sigmaY=18.0)
+            padded = (
+                padded.astype(np.float32) * (1.0 - pad_mask[..., np.newaxis])
+                + blurred.astype(np.float32) * pad_mask[..., np.newaxis]
+            )
+            padded = np.clip(padded, 0, 255).astype(np.uint8)
+
+        x1 = int(crop_left) + pad_left
+        y1 = int(crop_top) + pad_top
+        x2 = int(crop_right) + pad_left
+        y2 = int(crop_bottom) + pad_top
+        return padded[y1:y2, x1:x2]
 
     def _detect_face(
         self, img_rgb: np.ndarray
@@ -5609,12 +5673,18 @@ class MirrAISDPipeline:
         if color_pos_hint:
             positive_parts.append(color_pos_hint.lstrip(", ").strip())
         positive_parts.extend([
+            "top of hairstyle fully visible, comfortable headroom above the hair, centered portrait framing, no tight close-up crop",
             "same outfit, preserved shirt or blouse fabric texture, clean neckline and collar continuity, natural sleeve folds",
             "photorealistic, high quality, natural lighting, 8k",
             "studio photography, sharp focus, beautiful hair",
         ])
         positive = ", ".join(positive_parts)
-        negative_base = _NEGATIVE_BASE + ", " + _COMMON_STYLE_BLOCK_NEGATIVE
+        negative_base = (
+            _NEGATIVE_BASE
+            + ", cropped head, cropped hair, cut off hair, top of head out of frame, tight close-up portrait, clipped hairstyle"
+            + ", "
+            + _COMMON_STYLE_BLOCK_NEGATIVE
+        )
         negative = neg_prefix + color_neg_hint + negative_base
 
         return positive, negative, guidance
