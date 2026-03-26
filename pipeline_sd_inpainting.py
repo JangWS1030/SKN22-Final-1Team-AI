@@ -317,7 +317,35 @@ class MirrAISDPipeline:
 
         image_bgr = image.copy()
         img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        normalized_color_text = self._normalize_color_text(color_text)
+
+        # ── 트렌드 해상도 (resolve_generation_request) ─────────────────────
+        trend_request = (
+            resolve_generation_request(hairstyle_text, color_text)
+            if resolve_generation_request is not None
+            else None
+        )
+        effective_hairstyle_text = hairstyle_text
+        effective_color_text = color_text
+        if trend_request is not None:
+            if trend_request.resolved_hairstyle_text:
+                effective_hairstyle_text = trend_request.resolved_hairstyle_text
+            if trend_request.resolved_color_text:
+                effective_color_text = trend_request.resolved_color_text
+            logger.info(
+                "[SDPipeline] trend resolution: requested_style='%s' -> resolved_style='%s', matches=%d",
+                trend_request.requested_hairstyle_text,
+                effective_hairstyle_text,
+                len(trend_request.matches),
+            )
+            if trend_request.matches:
+                logger.info(
+                    "[SDPipeline] top trend match: %s (score=%.3f, source=%s)",
+                    trend_request.matches[0].trend_name,
+                    trend_request.matches[0].score,
+                    trend_request.matches[0].source,
+                )
+
+        normalized_color_text = self._normalize_color_text(effective_color_text)
         has_color_request = bool(normalized_color_text)
         target_hair_lab = self._resolve_target_hair_lab(normalized_color_text) if has_color_request else None
         if not has_color_request:
