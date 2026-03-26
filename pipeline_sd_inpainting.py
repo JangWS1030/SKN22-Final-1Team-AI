@@ -223,7 +223,7 @@ class SDInpaintConfig:
     standardize_face_width_ratio_min: float = 0.18
     standardized_width: int = 768
     standardized_height: int = 1024
-    enable_portrait_reframe: bool = True
+    enable_portrait_reframe: bool = False
     portrait_reframe_face_height_ratio_max: float = 0.40
     portrait_reframe_top_gap_ratio_min: float = 0.06
 
@@ -5337,6 +5337,58 @@ class MirrAISDPipeline:
         return ", ".join(parts)
 
     @staticmethod
+    def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
+        raw = " ".join(str(hairstyle_text or "").strip().split())
+        lowered = raw.lower()
+        hints: List[str] = []
+
+        if any(token in lowered for token in ("mullet", "wolf cut", "soft mullet", "baby mullet", "mini mullet")):
+            base_style = "masculine medium layered wolf cut with restrained volume"
+            hints.extend([
+                "moderate crown height",
+                "controlled nape length",
+                "proportional silhouette around the face",
+            ])
+        elif any(
+            token in lowered
+            for token in ("swept-back", "swept back", "side part", "side-part", "dandy", "two block", "two-block", "comma", "regent")
+        ):
+            base_style = "masculine medium layered haircut with shorter back and sides"
+            hints.extend([
+                "moderate crown height",
+                "restrained top lift",
+                "compact temple volume",
+                "soft front movement",
+            ])
+        else:
+            base_style = "masculine medium layered haircut with proportional volume"
+            hints.extend([
+                "moderate top volume",
+                "controlled side silhouette",
+            ])
+
+        if any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
+            hints.append("light natural texture")
+        elif any(token in lowered for token in ("straight", "sleek")):
+            hints.append("soft natural finish")
+
+        if "bang" in lowered or "fringe" in lowered:
+            hints.append("soft masculine fringe with natural forehead coverage")
+        else:
+            hints.append("natural masculine hairline with balanced forehead coverage")
+
+        hints.append("hairstyle proportional to face size")
+        hints.append("no oversized fluffy crown")
+        hints.append("no exaggerated side expansion")
+        hints.append("clean ear contour")
+
+        parts = [base_style]
+        for hint in hints:
+            if hint not in parts:
+                parts.append(hint)
+        return ", ".join(parts)
+
+    @staticmethod
     def _normalize_hairstyle_prompt_text(
         hairstyle_text: str,
         hair_length: str,
@@ -5346,10 +5398,13 @@ class MirrAISDPipeline:
         if not raw:
             return ""
         gender_mode = MirrAISDPipeline._infer_subject_gender(raw, subject_gender)
+        if gender_mode == "male":
+            if hair_length == "short":
+                return MirrAISDPipeline._normalize_male_short_hairstyle_prompt_text(raw)
+            if hair_length == "medium":
+                return MirrAISDPipeline._normalize_male_medium_hairstyle_prompt_text(raw)
         if hair_length != "short":
             return raw
-        if gender_mode == "male":
-            return MirrAISDPipeline._normalize_male_short_hairstyle_prompt_text(raw)
 
         lowered = raw.lower()
         hints: List[str] = []
@@ -5634,11 +5689,13 @@ class MirrAISDPipeline:
         elif hair_length == "medium" and gender_mode == "male":
             pos_suffix = (
                 ", masculine medium haircut, controlled side silhouette, natural masculine hairline, "
-                "balanced forehead coverage, soft front movement, no jewelry"
+                "balanced forehead coverage, soft front movement, hairstyle proportional to face size, "
+                "moderate crown height, restrained top lift, no oversized fluffy crown, no jewelry"
             )
             neg_prefix = (
                 "feminine bob, rounded lob, dangling earrings, hoop earrings, necklace, jewelry, "
                 "oversized exposed forehead, exaggerated high hairline, receding hairline, severe slicked-back hair, "
+                "oversized fluffy crown, exaggerated pompadour, towering top volume, bulky side volume, oversized hair mass, "
             )
             guidance = 8.9
         elif hair_length == "medium":
@@ -5673,7 +5730,7 @@ class MirrAISDPipeline:
         if color_pos_hint:
             positive_parts.append(color_pos_hint.lstrip(", ").strip())
         positive_parts.extend([
-            "top of hairstyle fully visible, comfortable headroom above the hair, centered portrait framing, no tight close-up crop",
+            "hairstyle proportional to face size, realistic crown height, natural portrait framing",
             "same outfit, preserved shirt or blouse fabric texture, clean neckline and collar continuity, natural sleeve folds",
             "photorealistic, high quality, natural lighting, 8k",
             "studio photography, sharp focus, beautiful hair",
