@@ -1691,6 +1691,13 @@ class MirrAISDPipeline:
         # 전략 2는 원본 위에 short 생성물을 합성한 뒤, cutoff 아래 잔여 긴머리만 정리한다.
         composite_base_rgb = img_rgb_cleaned
         composite_base_bgr = cv2.cvtColor(composite_base_rgb, cv2.COLOR_RGB2BGR)
+        male_medium_source_profile: Optional[Dict[str, float]] = None
+        if hair_length == "medium" and subject_gender_mode == "male":
+            male_medium_source_profile = self._estimate_hair_shape_profile(
+                hair_mask_base,
+                face_bbox,
+                hair_length="medium",
+            )
 
         candidates: List[Dict[str, Any]] = []
         for gen_idx, (gen_pil, seed) in enumerate(zip(gen_images, seeds)):
@@ -1790,6 +1797,18 @@ class MirrAISDPipeline:
             except Exception as e:
                 logger.warning(f"[SDPipeline] accessory penalty 계산 실패(무시): {e}")
 
+            male_medium_fit_penalty: Optional[float] = None
+            if hair_length == "medium" and subject_gender_mode == "male":
+                try:
+                    post_rgb = cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB)
+                    male_medium_fit_penalty = self._estimate_male_medium_fit_penalty(
+                        img_rgb=post_rgb,
+                        face_bbox=face_bbox,
+                        source_profile=male_medium_source_profile,
+                    )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] male medium fit penalty 怨꾩궛 ?ㅽ뙣(臾댁떆): {e}")
+
             candidates.append({
                 "seed": seed,
                 "image_bgr": composited_bgr,
@@ -1798,6 +1817,7 @@ class MirrAISDPipeline:
                 "color_score": color_score,
                 "tail_penalty": tail_penalty,
                 "accessory_penalty": accessory_penalty,
+                "male_medium_fit_penalty": male_medium_fit_penalty,
                 "gen_idx": gen_idx,
             })
 
@@ -1808,6 +1828,8 @@ class MirrAISDPipeline:
                     key=lambda c: (
                         c["accessory_penalty"] is None,
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                        c["male_medium_fit_penalty"] is None,
+                        c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
                         c["color_distance"] is None,
                         c["color_distance"] if c["color_distance"] is not None else 1e9,
                         c["gen_idx"],
@@ -1818,15 +1840,21 @@ class MirrAISDPipeline:
                 logger.info("[SDPipeline] 컬러 유사도 재정렬 스킵 (유효 샘플 부족)")
         elif len(candidates) > 1:
             accessory_sortable = sum(c["accessory_penalty"] is not None for c in candidates)
-            if accessory_sortable >= 2:
+            fit_sortable = sum(c["male_medium_fit_penalty"] is not None for c in candidates)
+            if accessory_sortable >= 2 or fit_sortable >= 2:
                 candidates.sort(
                     key=lambda c: (
                         c["accessory_penalty"] is None,
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                        c["male_medium_fit_penalty"] is None,
+                        c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
                         c["gen_idx"],
                     )
                 )
-                logger.info("[SDPipeline] accessory penalty ranking applied")
+                if fit_sortable >= 2:
+                    logger.info("[SDPipeline] male medium fit ranking applied")
+                else:
+                    logger.info("[SDPipeline] accessory penalty ranking applied")
 
         if hair_length == "short" and len(candidates) > 1:
             tail_sortable = sum(c["tail_penalty"] is not None for c in candidates)
@@ -5582,6 +5610,114 @@ class MirrAISDPipeline:
         earring_penalty = min(float(earring_px) / norm * 36.0, 1.0)
         necklace_penalty = min(float(necklace_px) / norm * 20.0, 1.0)
         return 0.74 * earring_penalty + 0.26 * necklace_penalty
+
+    def _estimate_hair_shape_profile(
+        self,
+        hair_mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+        *,
+        hair_length: str = "medium",
+    ) -> Optional[Dict[str, float]]:
+        if hair_mask is None:
+            return None
+
+        H, W = hair_mask.shape[:2]
+        x1, y1, x2, y2 = [int(v) for v in face_bbox]
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+
+        work = np.clip(hair_mask.astype(np.float32), 0.0, 1.0).copy()
+        corridor_top = max(0, int(y1 - face_h * 0.78))
+        corridor_bottom = min(H, int(y2 + face_h * (0.26 if hair_length == "medium" else 0.22)))
+        corridor_left = max(0, int(x1 - face_w * 0.90))
+        corridor_right = min(W, int(x2 + face_w * 0.90))
+        if corridor_top >= corridor_bottom or corridor_left >= corridor_right:
+            return None
+
+        corridor = np.zeros((H, W), dtype=np.float32)
+        corridor[corridor_top:corridor_bottom, corridor_left:corridor_right] = 1.0
+        work *= corridor
+        if float(work.sum()) < 20.0:
+            return None
+
+        bbox = self._mask_bbox(work, threshold=0.20)
+        if bbox is None:
+            return None
+        hx1, hy1, hx2, hy2 = [int(v) for v in bbox]
+
+        upper_top = max(0, int(y1 - face_h * 0.62))
+        upper_bottom = min(H, int(y1 + face_h * 0.14))
+        upper_left = max(0, int(x1 - face_w * 0.56))
+        upper_right = min(W, int(x2 + face_w * 0.56))
+        upper_band = work[upper_top:upper_bottom, upper_left:upper_right]
+        upper_density = 0.0
+        if upper_band.size > 0:
+            upper_density = float(np.mean(upper_band > 0.20))
+
+        crown_top = max(0, int(y1 - face_h * 0.62))
+        crown_bottom = max(crown_top + 1, int(y1 - face_h * 0.04))
+        crown_left = max(0, int(x1 + face_w * 0.10))
+        crown_right = min(W, int(x2 - face_w * 0.10))
+        crown_density = 0.0
+        if crown_top < crown_bottom and crown_left < crown_right:
+            crown_band = work[crown_top:crown_bottom, crown_left:crown_right]
+            if crown_band.size > 0:
+                crown_density = float(np.mean(crown_band > 0.20))
+
+        face_area = float(max(face_w * face_h, 1))
+        area_ratio = float(np.sum(work > 0.20)) / face_area
+
+        return {
+            "width_ratio": float(max(hx2 - hx1, 1)) / float(face_w),
+            "top_lift": float(max(y1 - hy1, 0)) / float(face_h),
+            "left_overhang": float(max(x1 - hx1, 0)) / float(face_w),
+            "right_overhang": float(max(hx2 - x2, 0)) / float(face_w),
+            "area_ratio": area_ratio,
+            "upper_density": upper_density,
+            "crown_density": crown_density,
+        }
+
+    def _estimate_male_medium_fit_penalty(
+        self,
+        img_rgb: np.ndarray,
+        face_bbox: Tuple[int, int, int, int],
+        source_profile: Optional[Dict[str, float]],
+    ) -> Optional[float]:
+        if source_profile is None:
+            return None
+
+        hair_now, _, _ = self._segface_hair_mask(img_rgb, face_bbox)
+        candidate_profile = self._estimate_hair_shape_profile(
+            hair_now,
+            face_bbox,
+            hair_length="medium",
+        )
+        if candidate_profile is None:
+            return None
+
+        def _oversize(metric: str, allowance: float, scale: float) -> float:
+            base = float(source_profile.get(metric, 0.0))
+            current = float(candidate_profile.get(metric, 0.0))
+            excess = max(0.0, current - base - allowance)
+            return float(np.clip(excess / max(scale, 1e-6), 0.0, 1.0))
+
+        width_penalty = _oversize("width_ratio", allowance=0.08, scale=0.26)
+        top_penalty = _oversize("top_lift", allowance=0.05, scale=0.18)
+        left_penalty = _oversize("left_overhang", allowance=0.06, scale=0.18)
+        right_penalty = _oversize("right_overhang", allowance=0.06, scale=0.18)
+        area_penalty = _oversize("area_ratio", allowance=0.18, scale=0.44)
+        upper_penalty = _oversize("upper_density", allowance=0.08, scale=0.28)
+        crown_penalty = _oversize("crown_density", allowance=0.08, scale=0.28)
+
+        return float(
+            0.26 * width_penalty
+            + 0.20 * top_penalty
+            + 0.14 * left_penalty
+            + 0.14 * right_penalty
+            + 0.14 * area_penalty
+            + 0.06 * upper_penalty
+            + 0.06 * crown_penalty
+        )
 
     def _preserve_original_hair_tone(
         self,
