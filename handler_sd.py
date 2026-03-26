@@ -2,7 +2,7 @@
 MirrAI SD Inpainting — RunPod Serverless Handler
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-입력 스키마 (JSON):
+== 모드 1: 직접 지정 (기존) ==
 {
   "input": {
     "image":          "<base64 or URL>",   // 필수
@@ -10,25 +10,38 @@ MirrAI SD Inpainting — RunPod Serverless Handler
     "color_text":     "auburn",            // 헤어 색상 (선택)
     "top_k":          3,                   // 결과 수 (1~5, 기본 3)
     "mask_refine_mode": "sam2",            // "sam2" | "segface_priority" | "segface_only"
-    "return_base64":  true,                // true=base64, false=이미지 없이 메타만
-    "return_intermediates": false          // true=중간 산출물(base64) 포함
+    "return_base64":  true,
+    "return_intermediates": false
+  }
+}
+
+== 모드 2: 추천 기반 생성 (취향벡터 + RAG) ==
+face_ratios가 있으면 자동으로 추천 모드 진입.
+{
+  "input": {
+    "image":          "<base64 or URL>",
+    "face_ratios": { "cheekbone_to_height": 0.72, ... },
+    "preference": { "length": "medium", "mood": ["trendy"], ... },
+    "preference_text": "자연스러운 웨이브",
+    "age": 28,
+    "top_k": 5,
+    "return_base64": true
+  }
+}
+
+== 모드 3: 트렌드 데이터 최신화 ==
+{
+  "input": {
+    "action": "refresh_trends",
+    "chromadb_tar_base64": "<base64 tar.gz>"
   }
 }
 
 출력 스키마:
 {
-  "results": [
-    {
-      "rank":         0,          // CLIP score 기준 0=best
-      "seed":         42,
-      "clip_score":   0.312,
-      "mask_used":    "sam2",     // "sam2" | "sam2_soft" | "segface"
-      "mask_refine_mode": "sam2",
-      "image_base64": "..."       // return_base64=true 일 때
-    },
-    ...
-  ],
-  "intermediates": { ... },   // return_intermediates=true 일 때
+  "results": [ ... ],
+  "recommendations": [ ... ],    // 추천 모드
+  "rag_context": "...",          // 추천 모드
   "elapsed_seconds": 12.3
 }
 """
@@ -259,6 +272,199 @@ def _image_to_base64(img_bgr: "np.ndarray", quality: int = 92) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+# ── 트렌드 최신화 ──────────────────────────────────────────────────────────────
+
+def _handle_refresh_trends(inp: Dict[str, Any]) -> Dict[str, Any]:
+    """트렌드 데이터 최신화. ChromaDB 아카이브 수신 또는 파이프라인 실행."""
+    t0 = time.time()
+    try:
+        chromadb_payload = inp.get("chromadb_tar_base64")
+        if chromadb_payload:
+            result = _receive_chromadb_archive(chromadb_payload)
+        else:
+            from rag_pipeline.pipeline import refresh_trends
+            steps = inp.get("steps")
+            if isinstance(steps, str):
+                steps = [s.strip() for s in steps.split(",")]
+            result = refresh_trends(steps=steps)
+        result["elapsed_seconds"] = round(time.time() - t0, 2)
+        return result
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.error(f"[handler_sd] refresh_trends 오류: {e}\n{tb}")
+        return {"error": f"{type(e).__name__}: {e}", "traceback": tb}
+
+
+def _receive_chromadb_archive(payload_b64: str) -> Dict[str, Any]:
+    """base64 인코딩된 tar.gz ChromaDB 아카이브를 수신하여 교체."""
+    import shutil
+    import tarfile
+    import tempfile
+
+    stores_dir = PROJECT_ROOT / "data" / "rag" / "stores"
+    stores_dir.mkdir(parents=True, exist_ok=True)
+
+    raw = base64.b64decode(payload_b64)
+    size_mb = len(raw) / (1024 * 1024)
+    logger.info(f"[handler_sd] ChromaDB 아카이브 수신: {size_mb:.1f} MB")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tar_path = Path(tmpdir) / "chromadb.tar.gz"
+        tar_path.write_bytes(raw)
+        with tarfile.open(tar_path, "r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name.startswith("/") or ".." in member.name:
+                    raise ValueError(f"안전하지 않은 경로: {member.name}")
+            tar.extractall(path=tmpdir)
+
+        replaced = []
+        for collection_name in ("chromadb_trends", "chromadb_ncs", "chromadb_styles"):
+            src = Path(tmpdir) / collection_name
+            if not src.is_dir():
+                continue
+            dst = stores_dir / collection_name
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+            replaced.append(collection_name)
+            logger.info(f"[handler_sd] {collection_name} 교체 완료")
+
+    _invalidate_collection_caches(replaced)
+    return {
+        "success": True,
+        "mode": "receive_archive",
+        "replaced_collections": replaced,
+        "archive_size_mb": round(size_mb, 2),
+    }
+
+
+def _invalidate_collection_caches(replaced: list) -> None:
+    """교체된 컬렉션의 메모리 캐시를 무효화."""
+    if "chromadb_styles" in replaced:
+        try:
+            import style_recommender
+            style_recommender._collection_cache = None
+        except Exception:
+            pass
+    if "chromadb_trends" in replaced or "chromadb_ncs" in replaced:
+        try:
+            from rag_pipeline import rag_query
+            if hasattr(rag_query, "_get_collection"):
+                rag_query._get_collection.cache_clear()
+            if hasattr(rag_query, "_get_trend_corpus"):
+                rag_query._get_trend_corpus.cache_clear()
+        except Exception:
+            pass
+        try:
+            from rag_pipeline import ncs_rag_query
+            if hasattr(ncs_rag_query, "_get_collection"):
+                ncs_rag_query._get_collection.cache_clear()
+        except Exception:
+            pass
+
+
+# ── 추천 + RAG 컨텍스트 ────────────────────────────────────────────────────────
+
+def _run_recommendation(face_ratios, preference, preference_text, age, color_text, top_k):
+    """추천 엔진 실행 → (recommendations_data, rag_context, hairstyle_text, color_text)"""
+    from style_recommender import recommend_top_k, recommend_to_dict
+
+    recommendations = recommend_top_k(
+        face_ratios=face_ratios,
+        preference=preference,
+        preference_text=preference_text or None,
+        age=age,
+        top_k=top_k,
+    )
+    recommendations_data = recommend_to_dict(recommendations)
+    rag_context_str = _fetch_rag_context_for_styles(recommendations)
+
+    hairstyle_text = ""
+    if recommendations:
+        hairstyle_text = recommendations[0].style_name
+    logger.info(f"[handler_sd] 추천 완료: {len(recommendations)}개, top='{hairstyle_text}'")
+    return recommendations_data, rag_context_str, hairstyle_text, color_text
+
+
+def _fetch_rag_context_for_styles(recommendations) -> Optional[str]:
+    """추천된 스타일들에 대한 RAG 트렌드 컨텍스트를 검색."""
+    try:
+        from rag_pipeline.rag_query import retrieve, build_context
+    except ImportError:
+        logger.warning("[handler_sd] RAG pipeline import 실패, 컨텍스트 없이 진행")
+        return None
+
+    all_docs, seen_titles = [], set()
+    for rec in recommendations[:3]:
+        try:
+            docs = retrieve(rec.style_name, n_results=3, expand=True)
+            for doc in docs:
+                title = doc.get("title", "")
+                if title not in seen_titles:
+                    seen_titles.add(title)
+                    all_docs.append(doc)
+        except Exception as e:
+            logger.warning(f"[handler_sd] RAG 검색 실패({rec.style_name}): {e}")
+    return build_context(all_docs[:5]) if all_docs else None
+
+
+def _generate_per_recommendation(
+    pipeline, img_bgr, recommendations, color_text,
+    return_intermediates, mask_refine_mode, lora_path, lora_scale, rag_context,
+):
+    """추천된 각 스타일마다 1장씩 생성."""
+    all_results = []
+    for idx, rec in enumerate(recommendations):
+        style_name = rec.get("style_name", "")
+        description = rec.get("description", "")
+        enriched_prompt = f"{style_name}, {description}" if description else style_name
+
+        if rag_context:
+            rag_kw = _extract_rag_keywords(rag_context, style_name)
+            if rag_kw:
+                enriched_prompt = f"{enriched_prompt}, {rag_kw}"
+
+        logger.info(f"[handler_sd] 추천 #{idx}: '{enriched_prompt}'")
+        try:
+            results = pipeline.run(
+                image=img_bgr,
+                hairstyle_text=enriched_prompt,
+                color_text=color_text,
+                top_k=1,
+                return_intermediates=return_intermediates if idx == 0 else False,
+                mask_refine_mode=mask_refine_mode,
+                lora_path=lora_path,
+                lora_scale=lora_scale,
+            )
+            for r in results:
+                r.rank = idx
+                r.style_meta = {
+                    "style_id": rec.get("style_id"),
+                    "style_name": style_name,
+                    "recommendation_score": rec.get("score"),
+                }
+                all_results.append(r)
+        except Exception as e:
+            logger.error(f"[handler_sd] 추천 #{idx} 생성 실패: {e}")
+    return all_results
+
+
+def _extract_rag_keywords(rag_context: str, style_name: str) -> str:
+    """RAG 컨텍스트에서 해당 스타일 관련 키워드를 추출."""
+    style_lower = style_name.lower()
+    keywords = []
+    for line in rag_context.split("\n"):
+        line_lower = line.lower()
+        if "스타일 태그:" in line:
+            tags = line.split(":", 1)[1].strip()
+            for tag in (t.strip() for t in tags.split(",")):
+                tag_l = tag.lower().strip("[] ")
+                if tag_l and (tag_l in style_lower or any(w in tag_l for w in style_lower.split())):
+                    keywords.append(tag)
+    seen = set()
+    return ", ".join(kw for kw in keywords if not (kw in seen or seen.add(kw)))[:3]
+
+
 # ── RunPod Handler ──────────────────────────────────────────────────────────────
 
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -270,8 +476,15 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
     inp = (job or {}).get("input") or {}
 
+    # ── action 라우팅 ─────────────────────────────────────────────────────
+    action = str(inp.get("action", "")).strip().lower()
+
+    # 트렌드 데이터 최신화
+    if action == "refresh_trends":
+        return _handle_refresh_trends(inp)
+
     # 헬스체크
-    if _coerce_bool(inp.get("health_check")):
+    if action == "health_check" or _coerce_bool(inp.get("health_check")):
         import torch
         return {
             "status": "ok",
@@ -309,8 +522,32 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         lora_path = str(inp.get("lora_path", "")).strip() or None
         lora_scale = float(inp.get("lora_scale", 1.0))
 
-        if not hairstyle_text and not color_text:
-            return {"error": "hairstyle_text 또는 color_text 중 하나 이상 필요합니다."}
+        # ── 추천 모드 입력 ─────────────────────────────────────────────────
+        face_ratios = inp.get("face_ratios")
+        preference = inp.get("preference")
+        preference_text = str(inp.get("preference_text", "")).strip()
+        age = inp.get("age")
+        if age is not None:
+            age = int(age)
+
+        is_recommend_mode = face_ratios is not None
+        recommendations_data = None
+        rag_context_str = None
+
+        if is_recommend_mode:
+            recommendations_data, rag_context_str, hairstyle_text, color_text = (
+                _run_recommendation(
+                    face_ratios=face_ratios,
+                    preference=preference,
+                    preference_text=preference_text,
+                    age=age,
+                    color_text=color_text,
+                    top_k=top_k,
+                )
+            )
+        elif not hairstyle_text and not color_text:
+            return {"error": "hairstyle_text 또는 color_text 중 하나 이상 필요합니다. "
+                           "또는 face_ratios를 전달하여 추천 모드를 사용하세요."}
 
         # ── 이미지 로드 ──────────────────────────────────────────────────────
         img_bgr = _load_image_from_input(inp)
@@ -319,25 +556,38 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             f"[handler_sd] 입력: {w}×{h}, "
             f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}, "
             f"mask_refine_mode={mask_refine_mode or 'default'}, "
-            "landmarks=mediapipe"
+            f"recommend_mode={is_recommend_mode}"
         )
 
         # ── 파이프라인 실행 ───────────────────────────────────────────────────
         pipeline = _get_pipeline()
-        # bg_fill_mode를 런타임에 동적으로 설정 (빌드 없이 테스트 가능)
         pipeline.config.bg_fill_mode = bg_fill_mode
         logger.info(f"[handler_sd] bg_fill_mode={bg_fill_mode}")
         logger.info(f"[handler_sd] mask_debug_only={mask_debug_only}")
-        results = pipeline.run(
-            image=img_bgr,
-            hairstyle_text=hairstyle_text,
-            color_text=color_text,
-            top_k=top_k,
-            return_intermediates=return_intermediates,
-            mask_refine_mode=mask_refine_mode,
-            lora_path=lora_path,
-            lora_scale=lora_scale,
-        )
+
+        if is_recommend_mode and recommendations_data:
+            results = _generate_per_recommendation(
+                pipeline=pipeline,
+                img_bgr=img_bgr,
+                recommendations=recommendations_data,
+                color_text=color_text,
+                return_intermediates=return_intermediates,
+                mask_refine_mode=mask_refine_mode,
+                lora_path=lora_path,
+                lora_scale=lora_scale,
+                rag_context=rag_context_str,
+            )
+        else:
+            results = pipeline.run(
+                image=img_bgr,
+                hairstyle_text=hairstyle_text,
+                color_text=color_text,
+                top_k=top_k,
+                return_intermediates=return_intermediates,
+                mask_refine_mode=mask_refine_mode,
+                lora_path=lora_path,
+                lora_scale=lora_scale,
+            )
 
         # ── 결과 직렬화 ───────────────────────────────────────────────────────
         output_results = []
@@ -396,6 +646,10 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     x1, y1, x2, y2 = r.face_bbox
                     item["face_bbox"] = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
 
+            # 추천 모드: 스타일 메타데이터 추가
+            if hasattr(r, "style_meta") and r.style_meta:
+                item["recommended_style"] = r.style_meta
+
             output_results.append(item)
 
         intermediates: Dict[str, str] = {}
@@ -416,12 +670,16 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         elapsed = time.time() - t0
         logger.info(f"[handler_sd] 완료: {elapsed:.1f}s, {len(results)}개 결과")
 
-        response = {
+        response: Dict[str, Any] = {
             "results":         output_results,
             "elapsed_seconds": round(elapsed, 2),
             "build_tag":       runtime_meta["build_tag"],
             "runpod":          runtime_meta["runpod"],
         }
+        if recommendations_data:
+            response["recommendations"] = recommendations_data
+        if rag_context_str:
+            response["rag_context"] = rag_context_str
         if intermediates:
             response["intermediates"] = intermediates
         if intermediate_data:

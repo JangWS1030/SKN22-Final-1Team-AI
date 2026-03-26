@@ -1,11 +1,6 @@
 name: Release RunPod Endpoint
 
 on:
-  workflow_run:
-    workflows:
-      - Build and Push SD App Image
-    types:
-      - completed
   workflow_dispatch:
     inputs:
       image:
@@ -25,12 +20,11 @@ on:
         type: boolean
 
 concurrency:
-  group: release-runpod-${{ github.ref_name || github.event.workflow_run.head_branch || 'default' }}
+  group: release-runpod-${{ github.ref_name || 'default' }}
   cancel-in-progress: true
 
 jobs:
   release:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -38,7 +32,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -61,21 +55,16 @@ jobs:
             exit 1
           fi
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ -n "${{ github.event.inputs.image }}" ]; then
-              IMAGE="${{ github.event.inputs.image }}"
-            else
-              TAG="${{ github.event.inputs.image_tag }}"
-              if [ -z "${TAG}" ]; then
-                TAG="latest"
-              fi
-              IMAGE="${DOCKER_USERNAME}/sd:${TAG}"
-            fi
-            SKIP_HEALTH="${{ github.event.inputs.skip_health_check }}"
+          if [ -n "${{ github.event.inputs.image }}" ]; then
+            IMAGE="${{ github.event.inputs.image }}"
           else
-            IMAGE="${DOCKER_USERNAME}/sd:run-${{ github.event.workflow_run.run_number }}"
-            SKIP_HEALTH="false"
+            TAG="${{ github.event.inputs.image_tag }}"
+            if [ -z "${TAG}" ]; then
+              TAG="latest"
+            fi
+            IMAGE="${DOCKER_USERNAME}/sd:${TAG}"
           fi
+          SKIP_HEALTH="${{ github.event.inputs.skip_health_check }}"
 
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "skip_health=${SKIP_HEALTH}" >> "$GITHUB_OUTPUT"

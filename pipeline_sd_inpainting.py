@@ -218,6 +218,7 @@ class SDInpaintResult:
     face_bbox: Optional[Tuple[int, int, int, int]] = None  # (x1, y1, x2, y2)
     debug_images: Optional[Dict[str, np.ndarray]] = None    # 디버그용 중간 산출물 (BGR)
     debug_data: Optional[Dict[str, Any]] = None             # 디버그용 중간 메타데이터(JSON)
+    style_meta: Optional[Dict[str, Any]] = None             # 추천 모드: 스타일 메타데이터
 
 
 # ─────────────────────────────────────────────────────────────────────────────
