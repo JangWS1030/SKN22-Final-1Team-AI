@@ -9,45 +9,27 @@ MirrAI SD Inpainting — RunPod Serverless Handler
     "hairstyle_text": "wolf cut, layered", // 헤어스타일 설명
     "color_text":     "auburn",            // 헤어 색상 (선택)
     "top_k":          3,                   // 결과 수 (1~5, 기본 3)
+    "mask_refine_mode": "sam2",            // "sam2" | "segface_priority" | "segface_only"
     "return_base64":  true,
     "return_intermediates": false
   }
 }
 
 == 모드 2: 추천 기반 생성 (취향벡터 + RAG) ==
+face_ratios가 있으면 자동으로 추천 모드 진입.
 {
   "input": {
-    "image":          "<base64 or URL>",   // 필수
-    "face_ratios": {                       // EP1 얼굴 분석 결과
-      "cheekbone_to_height": 0.72,
-      "jaw_to_height": 0.60,
-      "temple_to_height": 0.70,
-      "jaw_to_cheekbone": 0.83
-    },
-    "preference": {                        // 구조화된 취향 (옵션 A)
-      "length": "medium",
-      "mood": ["trendy", "natural"],
-      "hair_type": "wavy",
-      "color_temp": "warm",
-      "budget": "medium"
-    },
-    "preference_text": "자연스러운 웨이브", // 자연어 취향 (옵션 B)
-    "age": 28,                             // 나이 (분위기 추론용)
-    "color_text": "ash brown",
+    "image":          "<base64 or URL>",
+    "face_ratios": { "cheekbone_to_height": 0.72, ... },
+    "preference": { "length": "medium", "mood": ["trendy"], ... },
+    "preference_text": "자연스러운 웨이브",
+    "age": 28,
     "top_k": 5,
     "return_base64": true
   }
 }
 
 == 모드 3: 트렌드 데이터 최신화 ==
-// 3-A: 파이프라인 실행 (RunPod 내부)
-{
-  "input": {
-    "action": "refresh_trends",
-    "steps": ["crawl", "refine", "llm_refine", "vectorize", "rebuild_styles"]
-  }
-}
-// 3-B: Django에서 빌드한 ChromaDB 수신 (권장, ~5MB)
 {
   "input": {
     "action": "refresh_trends",
@@ -58,8 +40,8 @@ MirrAI SD Inpainting — RunPod Serverless Handler
 출력 스키마:
 {
   "results": [ ... ],
-  "recommendations": [ ... ],    // 추천 모드일 때 Top-K 추천 정보
-  "rag_context": "...",          // 추천 모드일 때 RAG 트렌드 컨텍스트
+  "recommendations": [ ... ],    // 추천 모드
+  "rag_context": "...",          // 추천 모드
   "elapsed_seconds": 12.3
 }
 """
@@ -78,7 +60,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logging.basicConfig(
     level=logging.INFO,
@@ -166,6 +148,49 @@ def _is_mask_debug_image(name: str) -> bool:
     return any(token in key for token in MASK_DEBUG_KEYWORDS)
 
 
+def _mask_image_to_float(mask_image: Any) -> Optional["np.ndarray"]:
+    if mask_image is None:
+        return None
+    if not isinstance(mask_image, np.ndarray):
+        return None
+
+    mask_arr = mask_image
+    if mask_arr.ndim == 3:
+        mask_arr = cv2.cvtColor(mask_arr, cv2.COLOR_BGR2GRAY)
+    if mask_arr.ndim != 2:
+        return None
+
+    mask_f = mask_arr.astype(np.float32)
+    if mask_f.max() > 1.0:
+        mask_f /= 255.0
+    return np.clip(mask_f, 0.0, 1.0)
+
+
+def _resolve_display_mask(
+    pipeline_mask: Optional["np.ndarray"],
+    debug_images: Optional[Dict[str, "np.ndarray"]],
+    mask_used: str,
+) -> Tuple[Optional["np.ndarray"], str]:
+    debug_images = debug_images or {}
+    normalized_used = str(mask_used or "").strip().lower()
+
+    candidates: list[Tuple[str, Any]] = []
+    if "pipeline_short_removal_mask" in debug_images:
+        candidates.append(("pipeline_short_removal_mask", debug_images["pipeline_short_removal_mask"]))
+    if normalized_used.startswith("sam2") and "sam2_refined_hair_mask" in debug_images:
+        candidates.append(("sam2_refined_hair_mask", debug_images["sam2_refined_hair_mask"]))
+    if normalized_used == "segface" and "segface_hair_mask" in debug_images:
+        candidates.append(("segface_hair_mask", debug_images["segface_hair_mask"]))
+    if pipeline_mask is not None:
+        candidates.append(("pipeline_sd_inpaint_mask", pipeline_mask))
+
+    for name, source in candidates:
+        mask_f = _mask_image_to_float(source)
+        if mask_f is not None and float(mask_f.sum()) > 0.0:
+            return mask_f, name
+    return None, "none"
+
+
 def _load_image_from_input(inp: Dict[str, Any]) -> "np.ndarray":
     """image 필드(base64 or URL or image_path)에서 BGR numpy array 반환"""
 
@@ -250,39 +275,18 @@ def _image_to_base64(img_bgr: "np.ndarray", quality: int = 92) -> str:
 # ── 트렌드 최신화 ──────────────────────────────────────────────────────────────
 
 def _handle_refresh_trends(inp: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    트렌드 데이터 최신화 엔드포인트.
-
-    == 모드 A: 파이프라인 실행 (서버 내부에서 크롤링~벡터화) ==
-    {
-      "action": "refresh_trends",
-      "steps": ["crawl", "refine", "llm_refine", "vectorize", "rebuild_styles"]
-    }
-
-    == 모드 B: Django에서 빌드한 ChromaDB 파일 수신 (권장) ==
-    {
-      "action": "refresh_trends",
-      "chromadb_tar_base64": "<base64 encoded tar.gz>"
-    }
-
-    Django(CPU)에서 크롤링+정제+벡터화 → tar.gz → base64로 전송하면
-    RunPod에서는 압축 해제 + 컬렉션 핫 리로드만 수행.
-    """
+    """트렌드 데이터 최신화. ChromaDB 아카이브 수신 또는 파이프라인 실행."""
     t0 = time.time()
     try:
         chromadb_payload = inp.get("chromadb_tar_base64")
-
         if chromadb_payload:
-            # 모드 B: Django에서 빌드한 ChromaDB 파일 수신
             result = _receive_chromadb_archive(chromadb_payload)
         else:
-            # 모드 A: 서버 내부 파이프라인 실행
             from rag_pipeline.pipeline import refresh_trends
             steps = inp.get("steps")
             if isinstance(steps, str):
                 steps = [s.strip() for s in steps.split(",")]
             result = refresh_trends(steps=steps)
-
         result["elapsed_seconds"] = round(time.time() - t0, 2)
         return result
     except Exception as e:
@@ -292,14 +296,7 @@ def _handle_refresh_trends(inp: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _receive_chromadb_archive(payload_b64: str) -> Dict[str, Any]:
-    """
-    base64 인코딩된 tar.gz ChromaDB 아카이브를 수신하여 교체.
-
-    기대하는 아카이브 구조:
-        chromadb_trends/
-        chromadb_ncs/
-        chromadb_styles/    (선택)
-    """
+    """base64 인코딩된 tar.gz ChromaDB 아카이브를 수신하여 교체."""
     import shutil
     import tarfile
     import tempfile
@@ -307,7 +304,6 @@ def _receive_chromadb_archive(payload_b64: str) -> Dict[str, Any]:
     stores_dir = PROJECT_ROOT / "data" / "rag" / "stores"
     stores_dir.mkdir(parents=True, exist_ok=True)
 
-    # 디코딩 + 압축 해제
     raw = base64.b64decode(payload_b64)
     size_mb = len(raw) / (1024 * 1024)
     logger.info(f"[handler_sd] ChromaDB 아카이브 수신: {size_mb:.1f} MB")
@@ -315,15 +311,12 @@ def _receive_chromadb_archive(payload_b64: str) -> Dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmpdir:
         tar_path = Path(tmpdir) / "chromadb.tar.gz"
         tar_path.write_bytes(raw)
-
         with tarfile.open(tar_path, "r:gz") as tar:
-            # 보안: 경로 탈출 방지
             for member in tar.getmembers():
                 if member.name.startswith("/") or ".." in member.name:
                     raise ValueError(f"안전하지 않은 경로: {member.name}")
             tar.extractall(path=tmpdir)
 
-        # 추출된 컬렉션 디렉터리 교체
         replaced = []
         for collection_name in ("chromadb_trends", "chromadb_ncs", "chromadb_styles"):
             src = Path(tmpdir) / collection_name
@@ -336,9 +329,7 @@ def _receive_chromadb_archive(payload_b64: str) -> Dict[str, Any]:
             replaced.append(collection_name)
             logger.info(f"[handler_sd] {collection_name} 교체 완료")
 
-    # 메모리 캐시 무효화 (다음 쿼리 시 재로드)
     _invalidate_collection_caches(replaced)
-
     return {
         "success": True,
         "mode": "receive_archive",
@@ -353,10 +344,8 @@ def _invalidate_collection_caches(replaced: list) -> None:
         try:
             import style_recommender
             style_recommender._collection_cache = None
-            logger.info("[handler_sd] style_recommender 캐시 무효화")
         except Exception:
             pass
-
     if "chromadb_trends" in replaced or "chromadb_ncs" in replaced:
         try:
             from rag_pipeline import rag_query
@@ -364,32 +353,20 @@ def _invalidate_collection_caches(replaced: list) -> None:
                 rag_query._get_collection.cache_clear()
             if hasattr(rag_query, "_get_trend_corpus"):
                 rag_query._get_trend_corpus.cache_clear()
-            logger.info("[handler_sd] rag_query 캐시 무효화")
         except Exception:
             pass
-
         try:
             from rag_pipeline import ncs_rag_query
             if hasattr(ncs_rag_query, "_get_collection"):
                 ncs_rag_query._get_collection.cache_clear()
-            logger.info("[handler_sd] ncs_rag_query 캐시 무효화")
         except Exception:
             pass
 
 
 # ── 추천 + RAG 컨텍스트 ────────────────────────────────────────────────────────
 
-def _run_recommendation(
-    face_ratios: Dict[str, Any],
-    preference: Optional[Dict[str, Any]],
-    preference_text: str,
-    age: Optional[int],
-    color_text: str,
-    top_k: int,
-) -> tuple:
-    """
-    추천 엔진 실행 → (recommendations_data, rag_context, hairstyle_text, color_text)
-    """
+def _run_recommendation(face_ratios, preference, preference_text, age, color_text, top_k):
+    """추천 엔진 실행 → (recommendations_data, rag_context, hairstyle_text, color_text)"""
     from style_recommender import recommend_top_k, recommend_to_dict
 
     recommendations = recommend_top_k(
@@ -400,22 +377,12 @@ def _run_recommendation(
         top_k=top_k,
     )
     recommendations_data = recommend_to_dict(recommendations)
-
-    # 추천된 스타일들로 RAG 트렌드 검색
     rag_context_str = _fetch_rag_context_for_styles(recommendations)
 
-    # 첫 번째 추천 스타일을 기본 hairstyle_text로 설정 (단일 생성 모드 폴백용)
+    hairstyle_text = ""
     if recommendations:
-        top_style = recommendations[0]
-        hairstyle_text = top_style.style_name
-        if not color_text and top_style.metadata.get("color_temp"):
-            color_text = ""  # 색상은 사용자 지정 우선
-
-    logger.info(
-        f"[handler_sd] 추천 완료: {len(recommendations)}개 스타일, "
-        f"top='{recommendations[0].style_name if recommendations else 'none'}'"
-    )
-
+        hairstyle_text = recommendations[0].style_name
+    logger.info(f"[handler_sd] 추천 완료: {len(recommendations)}개, top='{hairstyle_text}'")
     return recommendations_data, rag_context_str, hairstyle_text, color_text
 
 
@@ -427,9 +394,8 @@ def _fetch_rag_context_for_styles(recommendations) -> Optional[str]:
         logger.warning("[handler_sd] RAG pipeline import 실패, 컨텍스트 없이 진행")
         return None
 
-    all_docs = []
-    seen_titles = set()
-    for rec in recommendations[:3]:  # 상위 3개 스타일만 검색 (성능)
+    all_docs, seen_titles = [], set()
+    for rec in recommendations[:3]:
         try:
             docs = retrieve(rec.style_name, n_results=3, expand=True)
             for doc in docs:
@@ -439,54 +405,34 @@ def _fetch_rag_context_for_styles(recommendations) -> Optional[str]:
                     all_docs.append(doc)
         except Exception as e:
             logger.warning(f"[handler_sd] RAG 검색 실패({rec.style_name}): {e}")
-
-    if not all_docs:
-        return None
-
-    # 상위 5개 문서로 제한
-    return build_context(all_docs[:5])
+    return build_context(all_docs[:5]) if all_docs else None
 
 
 def _generate_per_recommendation(
-    pipeline,
-    img_bgr,
-    recommendations: list,
-    color_text: str,
-    return_intermediates: bool,
-    lora_path: Optional[str],
-    lora_scale: float,
-    rag_context: Optional[str],
-) -> list:
-    """
-    추천된 각 스타일마다 1장씩 생성.
-    RAG 컨텍스트가 있으면 프롬프트에 트렌드 정보를 주입.
-    """
+    pipeline, img_bgr, recommendations, color_text,
+    return_intermediates, mask_refine_mode, lora_path, lora_scale, rag_context,
+):
+    """추천된 각 스타일마다 1장씩 생성."""
     all_results = []
-
     for idx, rec in enumerate(recommendations):
         style_name = rec.get("style_name", "")
         description = rec.get("description", "")
+        enriched_prompt = f"{style_name}, {description}" if description else style_name
 
-        # RAG 트렌드 컨텍스트에서 해당 스타일 관련 정보 추출
-        enriched_prompt = style_name
-        if description:
-            enriched_prompt = f"{style_name}, {description}"
-
-        # RAG 컨텍스트에서 키워드 추출하여 프롬프트 보강
         if rag_context:
-            rag_keywords = _extract_rag_keywords(rag_context, style_name)
-            if rag_keywords:
-                enriched_prompt = f"{enriched_prompt}, {rag_keywords}"
+            rag_kw = _extract_rag_keywords(rag_context, style_name)
+            if rag_kw:
+                enriched_prompt = f"{enriched_prompt}, {rag_kw}"
 
         logger.info(f"[handler_sd] 추천 #{idx}: '{enriched_prompt}'")
-
         try:
             results = pipeline.run(
                 image=img_bgr,
                 hairstyle_text=enriched_prompt,
                 color_text=color_text,
-                top_k=1,  # 스타일당 1장
+                top_k=1,
                 return_intermediates=return_intermediates if idx == 0 else False,
+                mask_refine_mode=mask_refine_mode,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
             )
@@ -500,7 +446,6 @@ def _generate_per_recommendation(
                 all_results.append(r)
         except Exception as e:
             logger.error(f"[handler_sd] 추천 #{idx} 생성 실패: {e}")
-
     return all_results
 
 
@@ -508,35 +453,16 @@ def _extract_rag_keywords(rag_context: str, style_name: str) -> str:
     """RAG 컨텍스트에서 해당 스타일 관련 키워드를 추출."""
     style_lower = style_name.lower()
     keywords = []
-
     for line in rag_context.split("\n"):
         line_lower = line.lower()
-        # 스타일 태그 라인에서 관련 키워드 추출
         if "스타일 태그:" in line:
             tags = line.split(":", 1)[1].strip()
-            tag_list = [t.strip() for t in tags.split(",")]
-            for tag in tag_list:
+            for tag in (t.strip() for t in tags.split(",")):
                 tag_l = tag.lower().strip("[] ")
-                if tag_l and (
-                    tag_l in style_lower
-                    or style_lower in tag_l
-                    or any(w in tag_l for w in style_lower.split())
-                ):
+                if tag_l and (tag_l in style_lower or any(w in tag_l for w in style_lower.split())):
                     keywords.append(tag)
-        # 요약에서 스타일 관련 트렌드 키워드 추출
-        elif "요약:" in line and any(w in line_lower for w in style_lower.split()):
-            summary = line.split(":", 1)[1].strip()
-            if len(summary) < 200:
-                keywords.append(summary)
-
-    # 중복 제거, 최대 3개
     seen = set()
-    unique = []
-    for kw in keywords:
-        if kw not in seen:
-            seen.add(kw)
-            unique.append(kw)
-    return ", ".join(unique[:3])
+    return ", ".join(kw for kw in keywords if not (kw in seen or seen.add(kw)))[:3]
 
 
 # ── RunPod Handler ──────────────────────────────────────────────────────────────
@@ -553,20 +479,35 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     # ── action 라우팅 ─────────────────────────────────────────────────────
     action = str(inp.get("action", "")).strip().lower()
 
+    # 트렌드 데이터 최신화
+    if action == "refresh_trends":
+        return _handle_refresh_trends(inp)
+
     # 헬스체크
     if action == "health_check" or _coerce_bool(inp.get("health_check")):
         import torch
         return {
             "status": "ok",
+            "build_tag": os.environ.get("MIRRAI_BUILD_TAG", "unknown"),
+            "runpod": {
+                "endpoint_id": os.environ.get("RUNPOD_ENDPOINT_ID"),
+                "pod_id": os.environ.get("RUNPOD_POD_ID"),
+                "gpu_type_id": os.environ.get("RUNPOD_GPU_TYPE_ID"),
+            },
             "cuda": {
                 "available": torch.cuda.is_available(),
                 "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
             },
         }
 
-    # 트렌드 데이터 최신화
-    if action == "refresh_trends":
-        return _handle_refresh_trends(inp)
+    runtime_meta = {
+        "build_tag": os.environ.get("MIRRAI_BUILD_TAG", "unknown"),
+        "runpod": {
+            "endpoint_id": os.environ.get("RUNPOD_ENDPOINT_ID"),
+            "pod_id": os.environ.get("RUNPOD_POD_ID"),
+            "gpu_type_id": os.environ.get("RUNPOD_GPU_TYPE_ID"),
+        },
+    }
 
     try:
         # ── 입력 파싱 ────────────────────────────────────────────────────────
@@ -577,12 +518,13 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         return_intermediates = _coerce_bool(inp.get("return_intermediates"), default=False)
         mask_debug_only = _coerce_bool(inp.get("mask_debug_only"), default=False)
         bg_fill_mode   = str(inp.get("bg_fill_mode", "cv2")).strip()  # "cv2" | "sd"
+        mask_refine_mode = str(inp.get("mask_refine_mode", "")).strip().lower() or None
         lora_path = str(inp.get("lora_path", "")).strip() or None
         lora_scale = float(inp.get("lora_scale", 1.0))
 
         # ── 추천 모드 입력 ─────────────────────────────────────────────────
-        face_ratios = inp.get("face_ratios")         # EP1에서 받은 얼굴 비율
-        preference = inp.get("preference")           # 구조화된 취향 벡터
+        face_ratios = inp.get("face_ratios")
+        preference = inp.get("preference")
         preference_text = str(inp.get("preference_text", "")).strip()
         age = inp.get("age")
         if age is not None:
@@ -593,7 +535,6 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         rag_context_str = None
 
         if is_recommend_mode:
-            # ── 추천 기반 생성 모드 ──────────────────────────────────────────
             recommendations_data, rag_context_str, hairstyle_text, color_text = (
                 _run_recommendation(
                     face_ratios=face_ratios,
@@ -614,6 +555,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(
             f"[handler_sd] 입력: {w}×{h}, "
             f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}, "
+            f"mask_refine_mode={mask_refine_mode or 'default'}, "
             f"recommend_mode={is_recommend_mode}"
         )
 
@@ -624,50 +566,78 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"[handler_sd] mask_debug_only={mask_debug_only}")
 
         if is_recommend_mode and recommendations_data:
-            # 추천 모드: 추천된 각 스타일로 1장씩 생성
-            all_results = _generate_per_recommendation(
+            results = _generate_per_recommendation(
                 pipeline=pipeline,
                 img_bgr=img_bgr,
                 recommendations=recommendations_data,
                 color_text=color_text,
                 return_intermediates=return_intermediates,
+                mask_refine_mode=mask_refine_mode,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
                 rag_context=rag_context_str,
             )
         else:
-            # 기존 모드: 동일 스타일로 top_k장 생성
-            all_results = pipeline.run(
+            results = pipeline.run(
                 image=img_bgr,
                 hairstyle_text=hairstyle_text,
                 color_text=color_text,
                 top_k=top_k,
                 return_intermediates=return_intermediates,
+                mask_refine_mode=mask_refine_mode,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
             )
 
         # ── 결과 직렬화 ───────────────────────────────────────────────────────
         output_results = []
-        for r in all_results:
+        for r in results:
             item: Dict[str, Any] = {
                 "rank":       r.rank,
                 "seed":       r.seed,
                 "clip_score": round(float(r.clip_score), 4),
                 "mask_used":  r.mask_used,
+                "mask_refine_mode": r.mask_refine_mode,
             }
             if return_base64:
                 item["image_base64"] = _image_to_base64(r.image)
+                debug_images_for_overlay = r.debug_images or {}
+                display_mask, display_mask_name = _resolve_display_mask(
+                    pipeline_mask=r.mask,
+                    debug_images=debug_images_for_overlay,
+                    mask_used=r.mask_used,
+                )
+                item["mask_display_name"] = display_mask_name
+
                 if r.mask is not None:
-                    mask_uint8 = (r.mask * 255).astype(np.uint8)
+                    pipeline_mask_uint8 = (np.clip(r.mask, 0.0, 1.0) * 255).astype(np.uint8)
+                    pipeline_mask_rgb = cv2.cvtColor(pipeline_mask_uint8, cv2.COLOR_GRAY2BGR)
+                    item["pipeline_mask_name"] = "pipeline_sd_inpaint_mask"
+                    item["pipeline_mask_base64"] = _image_to_base64(pipeline_mask_rgb)
+
+                if display_mask is not None:
+                    mask_uint8 = (np.clip(display_mask, 0.0, 1.0) * 255).astype(np.uint8)
                     mask_rgb = cv2.cvtColor(mask_uint8, cv2.COLOR_GRAY2BGR)
                     item["mask_base64"] = _image_to_base64(mask_rgb)
 
-                    orig_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                    overlay_base_bgr = img_bgr
+                    standardized_bgr = debug_images_for_overlay.get("pipeline_standardized_input_image")
+                    if (
+                        isinstance(standardized_bgr, np.ndarray)
+                        and standardized_bgr.shape[:2] == display_mask.shape[:2]
+                    ):
+                        overlay_base_bgr = standardized_bgr
+                    elif overlay_base_bgr.shape[:2] != display_mask.shape[:2]:
+                        overlay_base_bgr = cv2.resize(
+                            overlay_base_bgr,
+                            (display_mask.shape[1], display_mask.shape[0]),
+                            interpolation=cv2.INTER_AREA,
+                        )
+                    orig_rgb = cv2.cvtColor(overlay_base_bgr, cv2.COLOR_BGR2RGB)
                     overlay = orig_rgb.copy()
                     red_layer = np.zeros_like(overlay)
                     red_layer[:, :, 0] = 255
-                    alpha = r.mask[..., np.newaxis]
+                    alpha = display_mask[..., np.newaxis]
                     overlay = (overlay * (1 - 0.5 * alpha) + red_layer * 0.5 * alpha).astype(np.uint8)
                     overlay_bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
                     item["mask_overlay_base64"] = _image_to_base64(overlay_bgr)
@@ -676,7 +646,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     x1, y1, x2, y2 = r.face_bbox
                     item["face_bbox"] = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
 
-            # 추천 모드: 어떤 스타일로 생성했는지 메타데이터 추가
+            # 추천 모드: 스타일 메타데이터 추가
             if hasattr(r, "style_meta") and r.style_meta:
                 item["recommended_style"] = r.style_meta
 
@@ -684,8 +654,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
         intermediates: Dict[str, str] = {}
         intermediate_data: Dict[str, Any] = {}
-        if return_intermediates and all_results:
-            debug_images = all_results[0].debug_images or {}
+        if return_intermediates and results:
+            debug_images = results[0].debug_images or {}
             for name, dbg_bgr in debug_images.items():
                 if mask_debug_only and not _is_mask_debug_image(name):
                     continue
@@ -693,16 +663,18 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     intermediates[name] = _image_to_base64(dbg_bgr, quality=90)
                 except Exception as e:
                     logger.warning(f"[handler_sd] intermediate 직렬화 실패({name}): {e}")
-            debug_data = all_results[0].debug_data or {}
+            debug_data = results[0].debug_data or {}
             if isinstance(debug_data, dict) and debug_data:
                 intermediate_data = debug_data
 
         elapsed = time.time() - t0
-        logger.info(f"[handler_sd] 완료: {elapsed:.1f}s, {len(all_results)}개 결과")
+        logger.info(f"[handler_sd] 완료: {elapsed:.1f}s, {len(results)}개 결과")
 
         response: Dict[str, Any] = {
             "results":         output_results,
             "elapsed_seconds": round(elapsed, 2),
+            "build_tag":       runtime_meta["build_tag"],
+            "runpod":          runtime_meta["runpod"],
         }
         if recommendations_data:
             response["recommendations"] = recommendations_data

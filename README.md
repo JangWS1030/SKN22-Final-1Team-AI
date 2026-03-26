@@ -31,6 +31,13 @@
 - ControlNet canny
 - IP-Adapter face
 
+## 최근 업데이트 반영
+
+- **입력 이미지 표준화**: `enable_input_standardization` 로직 추가로 인물 중심 스튜디오 비율 최적화 지원
+- **단발/중단발 마스크 개선**: 얼굴/목/가슴 영역 세분화를 통한 의상(어깨 선, 밝은 옷 등) 및 피부 보존/복원 로직 대폭 강화
+- **RunPod 환경 및 모니터링 대응**: `$RUNPOD_POD_ID` 등 웹훅 환경 변수 자동 정규화, API 응답에 빌드 태그 및 노드 메타 정보 추가
+- **디버그 마스크 응답 강화**: 여러 마스크를 분리하여 확인할 수 있도록 핸들러 리턴 구조 개편
+
 ## 의존성
 
 - `requirements.txt`: 현재 서비스 런타임 의존성
@@ -432,6 +439,23 @@ python test_runpod.py \
 ```bash
 python style_recommender.py
 ```
+
+단발/중단발 마스크 비교:
+
+```bash
+python tests/test_runpod.py \
+  --image images/1234.jpeg \
+  --hairstyle "short chin-length bob cut, hush cut" \
+  --top-k 1 \
+  --bg-fill sd \
+  --mask-refine-mode segface_priority
+```
+
+마스크 비교 모드:
+
+- `sam2`: 기본 경로
+- `segface_priority`: SegFace 코어 유지 + SAM2 경계 보정만 약하게 반영
+- `segface_only`: SegFace 마스크만 사용
 
 ## CI/CD
 

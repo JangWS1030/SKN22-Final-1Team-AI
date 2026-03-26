@@ -67,11 +67,15 @@ def request_json(
     return response.json()
 
 
-def get_endpoint(endpoint_id: str, api_key: str) -> dict[str, Any]:
+def get_endpoint(endpoint_id: str, api_key: str, *, include_workers: bool = False) -> dict[str, Any]:
+    params: dict[str, Any] | None = None
+    if include_workers:
+        params = {"includeWorkers": "true"}
     data = request_json(
         "GET",
         f"{REST_BASE_URL}/endpoints/{endpoint_id}",
         api_key=api_key,
+        params=params,
         timeout=30,
     )
     if not isinstance(data, dict):
@@ -102,6 +106,19 @@ def update_template(template_id: str, api_key: str, payload: dict[str, Any]) -> 
     )
     if not isinstance(data, dict):
         raise RuntimeError("Unexpected template update response shape.")
+    return data
+
+
+def patch_endpoint(endpoint_id: str, api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    data = request_json(
+        "PATCH",
+        f"{REST_BASE_URL}/endpoints/{endpoint_id}",
+        api_key=api_key,
+        payload=payload,
+        timeout=60,
+    )
+    if not isinstance(data, dict):
+        raise RuntimeError("Unexpected endpoint patch response shape.")
     return data
 
 
@@ -170,7 +187,7 @@ def wait_for_version_change(
     last_endpoint: dict[str, Any] = {}
 
     while time.time() < deadline:
-        endpoint = get_endpoint(endpoint_id, api_key)
+        endpoint = get_endpoint(endpoint_id, api_key, include_workers=True)
         last_endpoint = endpoint
 
         version_raw = endpoint.get("version")
@@ -208,6 +225,16 @@ def infer_repository(image_name: str) -> str:
     if ":" in image_name.rsplit("/", 1)[-1]:
         return image_name.rsplit(":", 1)[0]
     return image_name
+
+
+def infer_build_tag(image_name: str) -> str | None:
+    image_name = str(image_name or "").strip()
+    if not image_name or "@" in image_name:
+        return None
+    tail = image_name.rsplit("/", 1)[-1]
+    if ":" not in tail:
+        return None
+    return tail.rsplit(":", 1)[-1].strip() or None
 
 
 def resolve_target_image(
@@ -248,6 +275,38 @@ def build_template_update_payload(template: dict[str, Any], target_image: str) -
         if key in template and template[key] is not None:
             payload[key] = template[key]
     return payload
+
+
+def summarize_workers(endpoint: dict[str, Any]) -> list[dict[str, str]]:
+    workers = endpoint.get("workers") or []
+    summaries: list[dict[str, str]] = []
+    for worker in workers:
+        if not isinstance(worker, dict):
+            continue
+        summaries.append(
+            {
+                "id": str(worker.get("id") or ""),
+                "image": str(worker.get("imageName") or ""),
+                "version": str(worker.get("slsVersion") or ""),
+                "desiredStatus": str(worker.get("desiredStatus") or ""),
+                "lastStatusChange": str(worker.get("lastStatusChange") or ""),
+            }
+        )
+    return summaries
+
+
+def refresh_worker_pool(
+    endpoint_id: str,
+    api_key: str,
+    *,
+    restore_workers_max: int,
+    pause_seconds: int,
+) -> None:
+    print(f"[refresh] scaling workersMax -> 0 for endpoint={endpoint_id}")
+    patch_endpoint(endpoint_id, api_key, {"workersMax": 0})
+    time.sleep(max(1, pause_seconds))
+    print(f"[refresh] restoring workersMax -> {restore_workers_max}")
+    patch_endpoint(endpoint_id, api_key, {"workersMax": restore_workers_max})
 
 
 def redact_for_display(value: Any, *, key_hint: str | None = None) -> Any:
@@ -291,6 +350,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-health-check", action="store_true", help="Skip handler-level health check.")
     parser.add_argument("--skip-version-wait", action="store_true", help="Skip waiting for endpoint version rollout.")
     parser.add_argument("--force", action="store_true", help="Update even if the current image already matches.")
+    parser.add_argument(
+        "--worker-refresh-pause",
+        type=int,
+        default=8,
+        help="Seconds to keep workersMax=0 when forcing a worker-pool refresh. Default: 8.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Show the resolved release plan without changing RunPod.")
     return parser.parse_args()
 
@@ -303,7 +368,7 @@ def main() -> int:
     if not args.endpoint_id:
         raise SystemExit("RUNPOD_ENDPOINT_ID or --endpoint-id is required.")
 
-    endpoint = get_endpoint(args.endpoint_id, args.api_key)
+    endpoint = get_endpoint(args.endpoint_id, args.api_key, include_workers=True)
     template_id = endpoint.get("templateId")
     if not template_id:
         raise SystemExit(f"Endpoint {args.endpoint_id} does not expose a templateId.")
@@ -319,7 +384,9 @@ def main() -> int:
         image_repo=args.image_repo,
         current_image=current_image,
     )
+    expected_build_tag = infer_build_tag(target_image)
     previous_version = endpoint.get("version") if isinstance(endpoint.get("version"), int) else None
+    original_workers_max = int(endpoint.get("workersMax") or 0)
 
     print(f"[release] endpoint_id={args.endpoint_id}")
     print(f"[release] template_id={template_id}")
@@ -357,14 +424,60 @@ def main() -> int:
 
     if not args.skip_health_check:
         health_timeout = max(60, args.timeout)
-        job_id = submit_health_check(args.endpoint_id, args.api_key)
-        output = poll_job(
-            args.endpoint_id,
-            args.api_key,
-            job_id,
-            timeout=health_timeout,
-            interval=args.poll_interval,
-        )
+        output: dict[str, Any] = {}
+        build_tag_confirmed = expected_build_tag is None
+        max_health_attempts = 3
+        for attempt in range(1, max_health_attempts + 1):
+            job_id = submit_health_check(args.endpoint_id, args.api_key)
+            output = poll_job(
+                args.endpoint_id,
+                args.api_key,
+                job_id,
+                timeout=health_timeout,
+                interval=args.poll_interval,
+            )
+            actual_build_tag = str(output.get("build_tag") or "").strip()
+            if expected_build_tag is None or actual_build_tag == expected_build_tag:
+                build_tag_confirmed = True
+                break
+
+            pod_id = str(((output.get("runpod") or {}).get("pod_id") or "")).strip()
+            print(
+                "[warn] health-check build_tag mismatch: "
+                f"expected={expected_build_tag} actual={actual_build_tag or '(missing)'} pod_id={pod_id or '(missing)'}"
+            )
+            worker_endpoint = get_endpoint(args.endpoint_id, args.api_key, include_workers=True)
+            worker_summaries = summarize_workers(worker_endpoint)
+            if worker_summaries:
+                print("[warn] active worker summary:")
+                print(json.dumps(worker_summaries, ensure_ascii=False, indent=2))
+
+            mixed_images = {
+                summary["image"]
+                for summary in worker_summaries
+                if summary.get("image")
+            }
+            can_refresh_workers = (
+                attempt == 1
+                and original_workers_max > 0
+                and bool(mixed_images)
+                and mixed_images != {target_image}
+            )
+            if can_refresh_workers:
+                refresh_worker_pool(
+                    args.endpoint_id,
+                    args.api_key,
+                    restore_workers_max=original_workers_max,
+                    pause_seconds=args.worker_refresh_pause,
+                )
+            elif attempt < max_health_attempts:
+                time.sleep(args.poll_interval)
+
+        if not build_tag_confirmed:
+            raise RuntimeError(
+                "Health-check never reached the expected build tag. "
+                f"expected={expected_build_tag} last_output={output!r}"
+            )
         status = str(output.get("status", "")).lower()
         if status and status != "ok":
             raise RuntimeError(f"Health-check returned an unexpected status payload: {output!r}")

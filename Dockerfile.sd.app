@@ -7,7 +7,9 @@
 # =============================================================================
 
 ARG BASE_IMAGE=sd:base-latest
+ARG BUILD_TAG=dev
 FROM ${BASE_IMAGE} AS runtime
+ARG BUILD_TAG
 
 WORKDIR /app
 
@@ -38,6 +40,7 @@ ENV PYTHONPATH=/app \
     PATH=/usr/local/cuda/bin:$PATH \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
     MODEL_DOWNLOAD_TIMEOUT=600 \
-    ENABLE_SAM2=1
+    ENABLE_SAM2=1 \
+    MIRRAI_BUILD_TAG=${BUILD_TAG}
 
 ENTRYPOINT ["./entrypoint.sh"]
