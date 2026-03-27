@@ -404,8 +404,8 @@ class MirrAISDPipeline:
         if debug_data_common is not None and trend_request is not None:
             debug_data_common["trend_resolution"] = trend_request.to_debug_dict()
 
-        def _store_mask(name: str, mask: np.ndarray) -> None:
-            if debug_images_common is None:
+        def _store_mask(name: str, mask: Optional[np.ndarray]) -> None:
+            if debug_images_common is None or mask is None:
                 return
             m = np.clip(mask, 0.0, 1.0)
             m_u8 = (m * 255).astype(np.uint8)

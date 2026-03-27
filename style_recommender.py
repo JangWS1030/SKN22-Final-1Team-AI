@@ -16,15 +16,17 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import math
-import os
+import re
+from functools import lru_cache
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+from utils.trend_prompt import _load_trend_records
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +34,8 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 _DATA_DIR = Path(__file__).resolve().parent / "data"
-_HAIRSTYLES_PATH = _DATA_DIR / "trend_hairstyles.json"
 _CHROMA_STYLE_DIR = _DATA_DIR / "rag" / "stores" / "chromadb_styles"
+_STYLE_SOURCE_NAME = "llm_refined_trends"
 
 GOLDEN_RATIO = 1.618
 
@@ -279,6 +281,183 @@ def parse_preference_text(
 
 
 # ---------------------------------------------------------------------------
+# llm_refined_trends -> recommendation style normalization
+# ---------------------------------------------------------------------------
+_STYLE_SPLIT_RE = re.compile(r"[,/;|]+")
+
+
+def _normalize_blob(*values: str) -> str:
+    return " ".join(str(value or "").strip().lower() for value in values if str(value or "").strip())
+
+
+def _contains_any(blob: str, keywords: Sequence[str]) -> bool:
+    return any(keyword in blob for keyword in keywords)
+
+
+def _split_style_terms(text: str) -> List[str]:
+    terms: List[str] = []
+    seen: set[str] = set()
+    for part in _STYLE_SPLIT_RE.split(str(text or "")):
+        normalized = part.strip()
+        if normalized and normalized not in seen:
+            terms.append(normalized)
+            seen.add(normalized)
+    return terms
+
+
+def _slugify(text: str, fallback: str) -> str:
+    slug = re.sub(r"[^0-9a-zA-Z가-힣]+", "-", str(text or "").strip().lower()).strip("-")
+    return slug or fallback
+
+
+def _dedupe_preserve(values: Sequence[str]) -> List[str]:
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value or "").strip()
+        if normalized and normalized not in seen:
+            deduped.append(normalized)
+            seen.add(normalized)
+    return deduped
+
+
+def _infer_length(hairstyle_text: str, description: str, trend_name: str) -> str:
+    blob = _normalize_blob(hairstyle_text, description, trend_name)
+    if _contains_any(blob, ("long hair", "ponytail", "braids", "micro braids", "goddess braids", "twists", "updo", "bun", "chignon", "french twist")):
+        return "long"
+    if _contains_any(blob, ("buzz cut", "fade buzz cut", "burr buzz cut", "pixie", "crop", "crew cut", "french bob", "bob")):
+        return "short"
+    if _contains_any(blob, ("lob", "shoulder-length", "shoulder length", "mid-length", "mid length", "mullet", "wolf cut", "shag", "layered cut", "leaf cut", "medium")):
+        return "medium"
+    return "medium"
+
+
+def _infer_hair_types(hairstyle_text: str, description: str, trend_name: str) -> List[str]:
+    blob = _normalize_blob(hairstyle_text, description, trend_name)
+    hair_types: List[str] = []
+    if _contains_any(blob, ("curly", "curls", "curl", "perm", "afro", "coily", "coil", "곱슬", "컬")):
+        hair_types.append("curly")
+    if _contains_any(blob, ("wavy", "waves", "wave", "웨이브")):
+        hair_types.append("wavy")
+    if not hair_types:
+        hair_types.append("straight")
+    return hair_types
+
+
+def _infer_mood(hairstyle_text: str, description: str, trend_name: str) -> List[str]:
+    blob = _normalize_blob(hairstyle_text, description, trend_name)
+    moods: List[str] = []
+    if _contains_any(blob, ("natural", "soft", "manageable", "casual", "low-key", "effortless", "loose", "air dry", "easy", "자연", "편안", "부드")):
+        moods.append("natural")
+    if _contains_any(blob, ("classic", "tailored", "wall street", "sleek", "slicked-back", "french twist", "polished", "glamour", "단정", "클래식", "우아")):
+        moods.append("classic")
+    if _contains_any(blob, ("mullet", "wolf", "buzz", "fade", "shag", "pixie", "edgy", "punk", "dramatic", "art school", "개성", "엣지", "강렬")):
+        moods.append("edgy")
+    if _contains_any(blob, ("cute", "playful", "girly", "발랄", "귀여")):
+        moods.append("cute")
+    if _contains_any(blob, ("trend", "trendy", "modern", "fashion", "celebrity", "유행", "트렌드", "모던", "세련")) or not moods:
+        moods.append("trendy")
+    return _dedupe_preserve(moods)
+
+
+def _infer_color_temp(color_text: str, description: str) -> str:
+    blob = _normalize_blob(color_text, description)
+    if _contains_any(blob, ("ash", "silver", "gray", "grey", "platinum", "icy", "cool")):
+        return "cool"
+    if _contains_any(blob, ("auburn", "copper", "brown", "blonde", "gold", "golden", "honey", "beige", "red", "chocolate", "warm")):
+        return "warm"
+    return "neutral"
+
+
+def _infer_maintenance(hairstyle_text: str, description: str) -> str:
+    blob = _normalize_blob(hairstyle_text, description)
+    if _contains_any(blob, ("buzz cut", "burr buzz cut")):
+        return "low"
+    if _contains_any(blob, ("braids", "micro braids", "goddess braids", "twists", "updo", "bun", "perm", "afro")):
+        return "high"
+    return "medium"
+
+
+def _infer_face_shapes(length: str, hairstyle_text: str, description: str) -> List[str]:
+    blob = _normalize_blob(hairstyle_text, description)
+    if _contains_any(blob, ("buzz", "fade", "slicked-back", "ponytail", "updo")):
+        return ["oval", "square", "oblong"]
+    if _contains_any(blob, ("bob", "blunt", "french bob", "lob")):
+        return ["oval", "heart", "oblong"]
+    if _contains_any(blob, ("curtain bangs", "face-framing", "layers", "waves")):
+        return ["oval", "round", "square", "heart"]
+    if _contains_any(blob, ("mullet", "wolf cut", "shag")):
+        return ["oval", "heart", "oblong"]
+    if length == "long":
+        return ["oval", "round", "heart", "oblong"]
+    return list(FACE_SHAPES)
+
+
+def _build_keywords(trend_name: str, hairstyle_text: str, color_text: str, description: str) -> List[str]:
+    keywords = _split_style_terms(hairstyle_text)
+    token_blob = re.sub(r"[^0-9a-zA-Z가-힣]+", " ", _normalize_blob(trend_name, color_text, description))
+    for token in token_blob.split():
+        if len(token) >= 3:
+            keywords.append(token)
+    return _dedupe_preserve(keywords)[:18]
+
+
+def _estimate_freshness(year_text: str) -> float:
+    years = [int(value) for value in re.findall(r"\d{4}", str(year_text or ""))]
+    if not years:
+        return 0.6
+    newest = max(years)
+    return _clamp(0.45 + max(0, min(newest, 2026) - 2022) * 0.12, lo=0.45, hi=0.93)
+
+
+def _estimate_popularity(keyword_count: int) -> float:
+    return _clamp(0.45 + min(keyword_count, 6) * 0.06, lo=0.45, hi=0.81)
+
+
+def _build_style_from_trend_record(record: Dict[str, str], index: int) -> Dict[str, Any]:
+    trend_name = str(record.get("trend_name", "")).strip()
+    hairstyle_text = str(record.get("hairstyle_text", "")).strip() or trend_name
+    color_text = str(record.get("color_text", "")).strip()
+    description = str(record.get("description", "")).strip() or hairstyle_text
+    source = str(record.get("source", "")).strip()
+    year = str(record.get("year", "")).strip()
+
+    length = _infer_length(hairstyle_text, description, trend_name)
+    hair_types = _infer_hair_types(hairstyle_text, description, trend_name)
+    keywords = _build_keywords(trend_name, hairstyle_text, color_text, description)
+
+    prompt_parts = [hairstyle_text]
+    if color_text:
+        prompt_parts.append(f"{color_text} hair")
+    if description:
+        prompt_parts.append(description)
+
+    return {
+        "id": _slugify(f"{trend_name or hairstyle_text}-{index + 1}", f"trend-{index + 1}"),
+        "style_name": hairstyle_text,
+        "description": description,
+        "face_shapes": _infer_face_shapes(length, hairstyle_text, description),
+        "length": length,
+        "mood": _infer_mood(hairstyle_text, description, trend_name),
+        "hair_types": hair_types,
+        "color_temp": _infer_color_temp(color_text, description),
+        "maintenance": _infer_maintenance(hairstyle_text, description),
+        "popularity_score": _estimate_popularity(len(keywords)),
+        "freshness_score": _estimate_freshness(year),
+        "sd_positive": ", ".join(part for part in prompt_parts if part),
+        "sd_negative": "",
+        "sd_guidance": 8.5,
+        "keywords": keywords,
+        "trend_name": trend_name,
+        "hairstyle_text": hairstyle_text,
+        "color_text": color_text,
+        "source": source,
+        "year": year,
+        "source_dataset": _STYLE_SOURCE_NAME,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 벡터 인코딩
 # ---------------------------------------------------------------------------
 def _one_hot(value: str, categories: Sequence[str]) -> np.ndarray:
@@ -303,7 +482,7 @@ def _multi_hot(values: Sequence[str], categories: Sequence[str]) -> np.ndarray:
 
 def encode_style_vector(style: Dict[str, Any]) -> np.ndarray:
     """
-    trend_hairstyles.json의 스타일 1개 → 23차원 피처 벡터.
+    llm_refined_trends 기반 추천 스타일 1개 → 23차원 피처 벡터.
     """
     vec = np.zeros(VEC_DIM, dtype=np.float32)
 
@@ -430,7 +609,11 @@ def _get_style_collection():
     if _collection_cache is not None:
         return _collection_cache
 
-    import chromadb
+    try:
+        import chromadb
+    except ModuleNotFoundError:
+        logger.warning("chromadb is not installed; falling back to in-memory style search")
+        return None
 
     client = chromadb.PersistentClient(path=str(_CHROMA_STYLE_DIR))
 
@@ -439,11 +622,15 @@ def _get_style_collection():
             name="hairstyle_features",
         )
         if collection.count() > 0:
-            # sd_positive 필드가 있는지 확인 → 없으면 리빌드
+            # 최신 메타 스키마가 없으면 리빌드
             sample = collection.peek(limit=1)
             sample_meta = (sample.get("metadatas") or [{}])[0]
-            if "sd_positive" not in sample_meta:
-                logger.info("Style collection missing sd_positive field, rebuilding...")
+            if (
+                sample_meta.get("source_dataset") != _STYLE_SOURCE_NAME
+                or "hairstyle_text" not in sample_meta
+                or "sd_positive" not in sample_meta
+            ):
+                logger.info("Style collection schema/source changed, rebuilding...")
                 collection = build_style_collection(client)
             else:
                 logger.info("Loaded existing style collection (%d items)", collection.count())
@@ -459,7 +646,7 @@ def _get_style_collection():
 
 
 def build_style_collection(client=None):
-    """trend_hairstyles.json → ChromaDB 컬렉션 빌드."""
+    """llm_refined_trends 기반 추천 후보 → ChromaDB 컬렉션 빌드."""
     import chromadb
 
     if client is None:
@@ -492,24 +679,8 @@ def build_style_collection(client=None):
 
         ids.append(style["id"])
         embeddings.append(scaled.tolist())
-        metadatas.append({
-            "style_name": style["style_name"],
-            "description": style["description"],
-            "face_shapes": ",".join(style.get("face_shapes", [])),
-            "length": style.get("length", "medium"),
-            "mood": ",".join(style.get("mood", [])),
-            "hair_types": ",".join(style.get("hair_types", [])),
-            "maintenance": style.get("maintenance", "medium"),
-            "popularity_score": style.get("popularity_score", 0.5),
-            "freshness_score": style.get("freshness_score", 0.5),
-            "sd_positive": style.get("sd_positive", ""),
-            "sd_negative": style.get("sd_negative", ""),
-            "sd_guidance": style.get("sd_guidance", 8.5),
-        })
-        documents.append(
-            f"{style['style_name']}: {style['description']} "
-            f"Keywords: {', '.join(style.get('keywords', []))}"
-        )
+        metadatas.append(_style_metadata(style))
+        documents.append(_style_document(style))
 
     collection.add(
         ids=ids,
@@ -536,9 +707,76 @@ def _apply_weight_scaling(vec: np.ndarray) -> np.ndarray:
     return scaled
 
 
+@lru_cache(maxsize=1)
 def _load_hairstyles() -> List[Dict[str, Any]]:
-    with open(_HAIRSTYLES_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    trend_data_path, records = _load_trend_records()
+    if not records:
+        raise RuntimeError("llm_refined_trends recommendation data could not be loaded.")
+
+    styles = [
+        _build_style_from_trend_record(record, index)
+        for index, record in enumerate(records)
+    ]
+    logger.info(
+        "Loaded %d recommendation styles from %s",
+        len(styles),
+        trend_data_path or _STYLE_SOURCE_NAME,
+    )
+    return styles
+
+
+def list_available_hairstyles() -> List[str]:
+    """현재 llm_refined_trends에서 생성에 활용 가능한 hairstyle_text 목록."""
+    available: List[str] = []
+    seen: set[str] = set()
+    for style in _load_hairstyles():
+        hairstyle_text = str(style.get("hairstyle_text") or style.get("style_name") or "").strip()
+        if hairstyle_text and hairstyle_text not in seen:
+            available.append(hairstyle_text)
+            seen.add(hairstyle_text)
+    return available
+
+
+def _style_metadata(style: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "style_name": style["style_name"],
+        "description": style["description"],
+        "face_shapes": ",".join(style.get("face_shapes", [])),
+        "length": style.get("length", "medium"),
+        "mood": ",".join(style.get("mood", [])),
+        "hair_types": ",".join(style.get("hair_types", [])),
+        "maintenance": style.get("maintenance", "medium"),
+        "popularity_score": style.get("popularity_score", 0.5),
+        "freshness_score": style.get("freshness_score", 0.5),
+        "sd_positive": style.get("sd_positive", ""),
+        "sd_negative": style.get("sd_negative", ""),
+        "sd_guidance": style.get("sd_guidance", 8.5),
+        "trend_name": style.get("trend_name", ""),
+        "hairstyle_text": style.get("hairstyle_text", style["style_name"]),
+        "color_text": style.get("color_text", ""),
+        "source": style.get("source", ""),
+        "year": style.get("year", ""),
+        "source_dataset": style.get("source_dataset", _STYLE_SOURCE_NAME),
+    }
+
+
+def _style_document(style: Dict[str, Any]) -> str:
+    return (
+        f"{style['style_name']}: {style['description']} "
+        f"Keywords: {', '.join(style.get('keywords', []))}"
+    )
+
+
+def _query_styles_in_memory(user_vec: np.ndarray, top_k: int) -> List[Tuple[str, float, Dict[str, Any], str]]:
+    user_norm = float(np.linalg.norm(user_vec))
+    scored: List[Tuple[str, float, Dict[str, Any], str]] = []
+    for style in _load_hairstyles():
+        style_vec = _apply_weight_scaling(encode_style_vector(style))
+        denom = user_norm * float(np.linalg.norm(style_vec))
+        similarity = float(np.dot(user_vec, style_vec) / denom) if denom > 1e-6 else 0.0
+        scored.append((style["id"], similarity, _style_metadata(style), _style_document(style)))
+    scored.sort(key=lambda item: item[1], reverse=True)
+    return scored[:top_k]
 
 
 # ---------------------------------------------------------------------------
@@ -598,36 +836,40 @@ def recommend_top_k(
     # 4. 유저 벡터 인코딩 (가중치 적용)
     user_vec = encode_user_vector(face_scores, g_score, preference, weights=weights)
 
-    # 5. ChromaDB 쿼리
+    # 5. ChromaDB 쿼리 (없으면 인메모리 폴백)
     collection = _get_style_collection()
-    results = collection.query(
-        query_embeddings=[user_vec.tolist()],
-        n_results=min(top_k, collection.count()),
-        include=["metadatas", "documents", "distances"],
-    )
+    if collection is None:
+        ranked_rows = _query_styles_in_memory(user_vec, top_k)
+    else:
+        results = collection.query(
+            query_embeddings=[user_vec.tolist()],
+            n_results=min(top_k, collection.count()),
+            include=["metadatas", "documents", "distances"],
+        )
+        ranked_rows = [
+            (sid, 1.0 - dist, meta, doc)
+            for sid, dist, meta, doc in zip(
+                results["ids"][0],
+                results["distances"][0],
+                results["metadatas"][0],
+                results["documents"][0],
+            )
+        ]
 
     # 6. 결과 매핑
     recommendations = []
-    for rank, (sid, dist, meta, doc) in enumerate(zip(
-        results["ids"][0],
-        results["distances"][0],
-        results["metadatas"][0],
-        results["documents"][0],
-    )):
-        # ChromaDB cosine distance → similarity (1 - distance)
-        similarity = 1.0 - dist
-
+    for rank, (sid, similarity, meta, doc) in enumerate(ranked_rows):
         recommendations.append(StyleRecommendation(
             rank=rank,
             style_id=sid,
             style_name=meta.get("style_name", sid),
             score=round(similarity, 4),
-            face_shapes=meta.get("face_shapes", "").split(","),
+            face_shapes=[shape for shape in meta.get("face_shapes", "").split(",") if shape],
             description=meta.get("description", ""),
             metadata={
                 "length": meta.get("length"),
-                "mood": meta.get("mood", "").split(","),
-                "hair_types": meta.get("hair_types", "").split(","),
+                "mood": [m for m in meta.get("mood", "").split(",") if m],
+                "hair_types": [h for h in meta.get("hair_types", "").split(",") if h],
                 "maintenance": meta.get("maintenance"),
                 "popularity_score": meta.get("popularity_score"),
                 "freshness_score": meta.get("freshness_score"),
@@ -636,6 +878,11 @@ def recommend_top_k(
                 "sd_positive": meta.get("sd_positive", ""),
                 "sd_negative": meta.get("sd_negative", ""),
                 "sd_guidance": meta.get("sd_guidance", 8.5),
+                "trend_name": meta.get("trend_name", ""),
+                "hairstyle_text": meta.get("hairstyle_text", meta.get("style_name", sid)),
+                "color_text": meta.get("color_text", ""),
+                "source": meta.get("source", ""),
+                "year": meta.get("year", ""),
             },
         ))
 
