@@ -8352,9 +8352,9 @@ class MirrAISDPipeline:
 
         corridor_u8 = np.zeros((H, W), dtype=np.uint8)
         top = max(0, int(cutoff_y + face_h * (0.10 if hair_length == "short" else 0.20)))
-        bottom = min(H, int(cutoff_y + face_h * (1.74 if hair_length == "short" else 1.34)))
-        left = max(0, int(x1 - face_w * (1.42 if hair_length == "short" else 1.12)))
-        right = min(W, int(x2 + face_w * (1.42 if hair_length == "short" else 1.12)))
+        bottom = min(H, int(cutoff_y + face_h * (1.54 if hair_length == "short" else 1.34)))
+        left = max(0, int(x1 - face_w * (1.18 if hair_length == "short" else 1.12)))
+        right = min(W, int(x2 + face_w * (1.18 if hair_length == "short" else 1.12)))
         if top >= bottom or left >= right:
             return np.zeros((H, W), dtype=np.float32)
         corridor_u8[top:bottom, left:right] = 255
@@ -8380,7 +8380,7 @@ class MirrAISDPipeline:
             & (sat < (100.0 if hair_length == "short" else 100.0))
             & (lap < (24.0 if hair_length == "short" else 20.0))
         ).astype(np.uint8) * 255
-        smooth_u8 = cv2.bitwise_or(bright_smooth_u8, dark_smooth_u8)
+        smooth_u8 = dark_smooth_u8 if hair_length == "short" else cv2.bitwise_or(bright_smooth_u8, dark_smooth_u8)
         zone_u8 = cv2.bitwise_and(zone_u8, smooth_u8)
 
         if final_hair_mask is not None and final_hair_mask.shape == (H, W):
@@ -8412,15 +8412,15 @@ class MirrAISDPipeline:
         keep_u8 = np.zeros((H, W), dtype=np.uint8)
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(zone_u8, 8)
         min_area = max(120, int(face_w * face_h * 0.014))
-        max_area = max(7000, int(face_w * face_h * 0.34))
+        max_area = max(4200, int(face_w * face_h * (0.22 if hair_length == "short" else 0.34)))
         min_height = max(36, int(face_h * 0.12))
         max_width = max(120, int(face_w * (0.78 if hair_length == "short" else 0.54)))
         max_offset = max(120, int(face_w * (1.38 if hair_length == "short" else 0.60)))
         short_center_offset = max(18, int(face_w * 0.18))
         short_center_width = max(92, int(face_w * 0.42))
         short_center_area = max(2400, int(face_w * face_h * 0.15))
-        short_side_width = max(132, int(face_w * 0.86))
-        short_side_area = max(12000, int(face_w * face_h * 0.52))
+        short_side_width = max(104, int(face_w * 0.68))
+        short_side_area = max(5200, int(face_w * face_h * 0.26))
         for idx in range(1, num_labels):
             x = int(stats[idx, cv2.CC_STAT_LEFT])
             y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -8518,10 +8518,10 @@ class MirrAISDPipeline:
             return np.zeros((H, W), dtype=np.float32)
 
         corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-        top = max(0, int(cutoff_y - face_h * 0.10))
-        bottom = min(H, int(cutoff_y + face_h * 1.82))
-        left = max(0, int(x1 - face_w * 1.48))
-        right = min(W, int(x2 + face_w * 1.48))
+        top = max(0, int(cutoff_y + face_h * 0.04))
+        bottom = min(H, int(cutoff_y + face_h * 1.56))
+        left = max(0, int(x1 - face_w * 1.20))
+        right = min(W, int(x2 + face_w * 1.20))
         if top >= bottom or left >= right:
             return np.zeros((H, W), dtype=np.float32)
         corridor_u8[top:bottom, left:right] = 255
@@ -8543,10 +8543,10 @@ class MirrAISDPipeline:
         keep_u8 = np.zeros((H, W), dtype=np.uint8)
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(zone_u8, 8)
         min_area = max(120, int(face_w * face_h * 0.010))
-        max_area = max(22000, int(face_w * face_h * 0.72))
+        max_area = max(9200, int(face_w * face_h * 0.34))
         min_height = max(72, int(face_h * 0.28))
-        max_width = max(176, int(face_w * 1.00))
-        max_offset = max(360, int(face_w * 1.62))
+        max_width = max(128, int(face_w * 0.78))
+        max_offset = max(260, int(face_w * 1.18))
         for idx in range(1, num_labels):
             x = int(stats[idx, cv2.CC_STAT_LEFT])
             y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -8561,7 +8561,7 @@ class MirrAISDPipeline:
                 continue
             if bottom_y < int(cutoff_y + face_h * 0.24):
                 continue
-            if bottom_y > int(cutoff_y + face_h * 1.82):
+            if bottom_y > int(cutoff_y + face_h * 1.56):
                 continue
             if abs(comp_cx - cx) > max_offset:
                 continue
