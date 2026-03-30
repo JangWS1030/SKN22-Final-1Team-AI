@@ -493,6 +493,8 @@ class MirrAISDPipeline:
         earring_mask = segface_debug.get("earring_mask")
         necklace_mask = segface_debug.get("necklace_mask")
         sparse_dark_cloth_support_mask = segface_debug.get("sparse_dark_cloth_support_mask")
+        subject_cloth_anchor_mask = segface_debug.get("subject_cloth_anchor_mask")
+        subject_cloth_filtered_mask = segface_debug.get("subject_cloth_filtered_mask")
         if isinstance(custom_hair_mask, np.ndarray):
             _store_mask("segface_custom_hair_mask", custom_hair_mask)
         if isinstance(base_hair_mask, np.ndarray):
@@ -507,6 +509,10 @@ class MirrAISDPipeline:
             _store_mask("segface_necklace_mask", necklace_mask)
         if isinstance(sparse_dark_cloth_support_mask, np.ndarray):
             _store_mask("segface_sparse_dark_cloth_support_mask", sparse_dark_cloth_support_mask)
+        if isinstance(subject_cloth_anchor_mask, np.ndarray):
+            _store_mask("segface_subject_cloth_anchor_mask", subject_cloth_anchor_mask)
+        if isinstance(subject_cloth_filtered_mask, np.ndarray):
+            _store_mask("segface_subject_cloth_filtered_mask", subject_cloth_filtered_mask)
         if debug_data_common is not None and segface_debug.get("meta"):
             debug_data_common["segface_mask_debug"] = segface_debug["meta"]
 
@@ -4580,13 +4586,45 @@ class MirrAISDPipeline:
             iterations=1,
         )
 
+        original_cloth_u8 = cloth_u8.copy()
+        subject_anchor_u8 = self._build_subject_cloth_anchor_mask(
+            image_shape=(H, W),
+            face_bbox=face_bbox,
+        )
+        filtered_subject_cloth_u8 = self._filter_cloth_mask_to_subject_anchor(
+            cloth_mask_u8=cloth_u8,
+            subject_anchor_u8=subject_anchor_u8,
+            face_bbox=face_bbox,
+        )
+        if int((filtered_subject_cloth_u8 > 0).sum()) >= 60:
+            cloth_u8 = filtered_subject_cloth_u8
+        else:
+            cloth_u8 = np.zeros((H, W), dtype=np.uint8)
+        if isinstance(self._last_segface_mask_debug, dict):
+            self._last_segface_mask_debug["subject_cloth_anchor_mask"] = (
+                subject_anchor_u8 > 0
+            ).astype(np.float32)
+            self._last_segface_mask_debug["subject_cloth_filtered_mask"] = (
+                cloth_u8 > 0
+            ).astype(np.float32)
+
         sparse_thresh_px = max(900, int(bw * bh * 0.020))
-        if img_rgb.shape[:2] == (H, W) and int((cloth_u8 > 0).sum()) < sparse_thresh_px:
+        filtered_px = int((cloth_u8 > 0).sum())
+        original_px = int((original_cloth_u8 > 0).sum())
+        should_add_sparse_support = (
+            img_rgb.shape[:2] == (H, W)
+            and (
+                filtered_px < sparse_thresh_px
+                or (original_px >= 240 and filtered_px < max(90, int(original_px * 0.22)))
+            )
+        )
+        if should_add_sparse_support:
             sparse_dark_support = self._build_sparse_dark_cloth_support_mask(
                 img_rgb=img_rgb,
                 base_cloth_mask_u8=cloth_u8,
                 hair_mask=hair_mask,
                 face_bbox=face_bbox,
+                subject_anchor_u8=subject_anchor_u8,
             )
             if int((sparse_dark_support > 0).sum()) >= 120:
                 cloth_u8 = cv2.bitwise_or(cloth_u8, sparse_dark_support)
@@ -4611,6 +4649,87 @@ class MirrAISDPipeline:
 
         return cloth_f
 
+    def _build_subject_cloth_anchor_mask(
+        self,
+        *,
+        image_shape: Tuple[int, int],
+        face_bbox: Tuple[int, int, int, int],
+    ) -> np.ndarray:
+        H, W = image_shape
+        x1, y1, x2, y2 = face_bbox
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+        cx = int(0.5 * (x1 + x2))
+
+        anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+        top = max(0, int(y2 - face_h * 0.02))
+        bottom = min(H, int(y2 + face_h * 1.18))
+        left = max(0, int(cx - face_w * 0.66))
+        right = min(W, int(cx + face_w * 0.66))
+        if top < bottom and left < right:
+            anchor_u8[top:bottom, left:right] = 255
+
+        shoulder_centers = (
+            (int(cx - face_w * 0.40), int(y2 + face_h * 0.18)),
+            (int(cx + face_w * 0.40), int(y2 + face_h * 0.18)),
+        )
+        shoulder_axes = (
+            max(18, int(face_w * 0.24)),
+            max(16, int(face_h * 0.16)),
+        )
+        for center in shoulder_centers:
+            cv2.ellipse(anchor_u8, center, shoulder_axes, 0, 0, 360, 255, -1)
+
+        anchor_u8 = cv2.morphologyEx(
+            anchor_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 19)),
+        )
+        return anchor_u8
+
+    def _filter_cloth_mask_to_subject_anchor(
+        self,
+        *,
+        cloth_mask_u8: np.ndarray,
+        subject_anchor_u8: np.ndarray,
+        face_bbox: Tuple[int, int, int, int],
+    ) -> np.ndarray:
+        H, W = cloth_mask_u8.shape[:2]
+        if subject_anchor_u8.shape[:2] != (H, W):
+            return np.zeros((H, W), dtype=np.uint8)
+
+        x1, y1, x2, y2 = face_bbox
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+        cx = float(0.5 * (x1 + x2))
+
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            (cloth_mask_u8 > 0).astype(np.uint8),
+            8,
+        )
+        keep_u8 = np.zeros((H, W), dtype=np.uint8)
+        min_area = max(40, int(face_w * face_h * 0.002))
+        max_dx = max(72, int(face_w * 0.95))
+        min_bottom = int(y2 + face_h * 0.02)
+
+        for idx in range(1, num_labels):
+            x = int(stats[idx, cv2.CC_STAT_LEFT])
+            y = int(stats[idx, cv2.CC_STAT_TOP])
+            w = int(stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            bottom_y = y + h
+            if area < min_area or bottom_y < min_bottom:
+                continue
+            comp_u8 = (labels == idx).astype(np.uint8) * 255
+            overlap_px = int((cv2.bitwise_and(comp_u8, subject_anchor_u8) > 0).sum())
+            comp_cx = float(centroids[idx][0])
+            if overlap_px <= 0 and abs(comp_cx - cx) > max_dx:
+                continue
+            keep_u8[labels == idx] = 255
+
+        return keep_u8
+
     def _build_sparse_dark_cloth_support_mask(
         self,
         *,
@@ -4618,6 +4737,7 @@ class MirrAISDPipeline:
         base_cloth_mask_u8: np.ndarray,
         hair_mask: np.ndarray,
         face_bbox: Tuple[int, int, int, int],
+        subject_anchor_u8: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         H, W = img_rgb.shape[:2]
         if base_cloth_mask_u8.shape[:2] != (H, W) or hair_mask.shape[:2] != (H, W):
@@ -4676,6 +4796,11 @@ class MirrAISDPipeline:
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
             iterations=1,
         )
+        if subject_anchor_u8 is not None and subject_anchor_u8.shape[:2] == (H, W):
+            anchor_u8 = cv2.bitwise_or(
+                anchor_u8,
+                cv2.bitwise_and(subject_anchor_u8, corridor_u8),
+            )
         side_seed_u8 = np.zeros((H, W), dtype=np.uint8)
         side_centers = (
             (int(cx - face_w * 0.54), int(y2 + face_h * 0.14)),
