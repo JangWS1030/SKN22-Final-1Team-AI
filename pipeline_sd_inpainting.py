@@ -58,11 +58,22 @@ except Exception:
 if load_project_dotenv is not None:
     load_project_dotenv()
 
+
+def _clean_optional_env_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        cleaned = cleaned[1:-1].strip()
+    return cleaned or None
+
 # ── HuggingFace 모델 ID ────────────────────────────────────────────────────────
 SD_INPAINT_MODEL_ID   = "runwayml/stable-diffusion-inpainting"
 CONTROLNET_MODEL_ID   = "lllyasviel/control_v11p_sd15_canny"
 IP_ADAPTER_REPO_ID    = "h94/IP-Adapter"
 IP_ADAPTER_WEIGHT     = "ip-adapter-plus-face_sd15.bin"
+DEFAULT_RUNTIME_LORA_HF_REPO_ID = "siik/mirrai-hair-swap-stage4-garment-reveal-lora-20260330"
+DEFAULT_RUNTIME_LORA_HF_FILENAME = "pytorch_lora_weights.safetensors"
 DEFAULT_SEGFACE_HF_REPO_ID    = "siik/segface_hair_khairstyle"
 DEFAULT_SEGFACE_HF_SUBFOLDER  = ""
 DEFAULT_SEGFACE_HF_FILENAME   = "best.pt"
@@ -2823,6 +2834,15 @@ class MirrAISDPipeline:
         logger.info("[SDPipeline] SD Pipeline 로드 완료")
 
     def _discover_default_lora_path(self) -> Optional[str]:
+        default_hf_repo_id = (
+            _clean_optional_env_text(os.environ.get("MIRRAI_LORA_HF_REPO_ID"))
+            or _clean_optional_env_text(os.environ.get("LORA_HF_REPO_ID"))
+            or DEFAULT_RUNTIME_LORA_HF_REPO_ID
+        )
+        if default_hf_repo_id:
+            logger.info(f"[SDPipeline] LoRA default source(HF): {default_hf_repo_id}")
+            return default_hf_repo_id
+
         candidate_dirs: List[Path] = [
             PROJECT_ROOT / "pretrained_models" / "generation_lora_stage4_garment_reveal_best",
             PROJECT_ROOT / "pretrained_models" / "generation_lora_stage4_garment_reveal_final",
@@ -2880,6 +2900,13 @@ class MirrAISDPipeline:
             return str(resolved_dir), None, str(resolved_dir)
 
         resolved = str(raw_path)
+        if not raw_path.exists():
+            default_weight_name = (
+                _clean_optional_env_text(os.environ.get("MIRRAI_LORA_HF_FILENAME"))
+                or _clean_optional_env_text(os.environ.get("LORA_HF_FILENAME"))
+                or DEFAULT_RUNTIME_LORA_HF_FILENAME
+            )
+            return resolved, default_weight_name, resolved
         return resolved, None, resolved
 
     def _apply_runtime_lora(
@@ -8171,6 +8198,7 @@ class MirrAISDPipeline:
         ).mean(axis=2)
         current_gray = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
         source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+        source_sat = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
         gray_delta = np.abs(current_gray - source_gray)
         strong_diff_u8 = (
             (
@@ -8201,6 +8229,42 @@ class MirrAISDPipeline:
             iterations=1,
         )
         keep_u8 = cv2.bitwise_and(keep_u8, cloth_u8)
+
+        visible_cloth_u8 = cv2.bitwise_and(
+            cloth_u8,
+            cv2.bitwise_not(
+                cv2.dilate(
+                    removal_u8,
+                    cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE,
+                        (27, 35) if hair_length == "short" else (31, 41),
+                    ),
+                    iterations=1,
+                )
+            ),
+        )
+        if int((visible_cloth_u8 > 0).sum()) >= 120:
+            visible_rgb = source_rgb[visible_cloth_u8 > 0].astype(np.float32)
+            visible_gray = source_gray[visible_cloth_u8 > 0]
+            visible_sat = source_sat[visible_cloth_u8 > 0]
+            cloth_rgb_median = np.median(visible_rgb, axis=0)
+            cloth_gray_median = float(np.median(visible_gray))
+            cloth_sat_median = float(np.median(visible_sat))
+            color_delta = np.sqrt(
+                np.sum(
+                    (source_rgb.astype(np.float32) - cloth_rgb_median.reshape(1, 1, 3)) ** 2,
+                    axis=2,
+                )
+            )
+            tone_match_u8 = (
+                (
+                    (np.abs(source_gray - cloth_gray_median) <= (34.0 if hair_length == "short" else 42.0))
+                    & (np.abs(source_sat - cloth_sat_median) <= (42.0 if hair_length == "short" else 54.0))
+                    & (color_delta <= (62.0 if hair_length == "short" else 78.0))
+                ).astype(np.uint8)
+                * 255
+            )
+            keep_u8 = cv2.bitwise_and(keep_u8, tone_match_u8)
 
         if protect_mask is not None and protect_mask.shape == (H, W):
             protect_u8 = cv2.dilate(
