@@ -888,11 +888,11 @@ def bind_loading_methods_to_pipeline(cls) -> None:
     cls._resolve_lora_source = _resolve_lora_source
     cls._apply_runtime_lora = _apply_runtime_lora
     cls._load_lama = _load_lama
-    cls._cv2_inpaint_rgb = _cv2_inpaint_rgb
+    cls._cv2_inpaint_rgb = staticmethod(_cv2_inpaint_rgb)
     cls._lama_inpaint = _lama_inpaint
-    cls._as_state_dict = _as_state_dict
-    cls._strip_prefix = _strip_prefix
-    cls._coerce_checkpoint_config = _coerce_checkpoint_config
+    cls._as_state_dict = staticmethod(_as_state_dict)
+    cls._strip_prefix = staticmethod(_strip_prefix)
+    cls._coerce_checkpoint_config = staticmethod(_coerce_checkpoint_config)
     cls._prepare_custom_segface_checkpoint = _prepare_custom_segface_checkpoint
     cls._iter_state_dict_candidates = _iter_state_dict_candidates
     cls._load_segface_checkpoint = _load_segface_checkpoint

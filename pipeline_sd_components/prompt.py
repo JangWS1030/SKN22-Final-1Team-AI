@@ -768,19 +768,19 @@ def _build_prompt(
     return positive, negative, guidance
 
 def bind_prompt_methods_to_pipeline(cls) -> None:
-    cls._classify_hair_length = _classify_hair_length
-    cls._normalize_color_text = _normalize_color_text
-    cls._normalize_subject_gender = _normalize_subject_gender
-    cls._infer_subject_gender = _infer_subject_gender
-    cls._normalize_male_short_hairstyle_prompt_text = _normalize_male_short_hairstyle_prompt_text
-    cls._normalize_male_medium_hairstyle_prompt_text = _normalize_male_medium_hairstyle_prompt_text
-    cls._normalize_hairstyle_prompt_text = _normalize_hairstyle_prompt_text
-    cls._resolve_target_hair_lab = _resolve_target_hair_lab
+    cls._classify_hair_length = staticmethod(_classify_hair_length)
+    cls._normalize_color_text = staticmethod(_normalize_color_text)
+    cls._normalize_subject_gender = staticmethod(_normalize_subject_gender)
+    cls._infer_subject_gender = staticmethod(_infer_subject_gender)
+    cls._normalize_male_short_hairstyle_prompt_text = staticmethod(_normalize_male_short_hairstyle_prompt_text)
+    cls._normalize_male_medium_hairstyle_prompt_text = staticmethod(_normalize_male_medium_hairstyle_prompt_text)
+    cls._normalize_hairstyle_prompt_text = staticmethod(_normalize_hairstyle_prompt_text)
+    cls._resolve_target_hair_lab = staticmethod(_resolve_target_hair_lab)
     cls._estimate_hair_color_distance = _estimate_hair_color_distance
     cls._estimate_short_tail_penalty = _estimate_short_tail_penalty
     cls._estimate_accessory_penalty = _estimate_accessory_penalty
     cls._estimate_hair_shape_profile = _estimate_hair_shape_profile
     cls._estimate_male_medium_fit_penalty = _estimate_male_medium_fit_penalty
-    cls._estimate_mask_mass_center_offset = _estimate_mask_mass_center_offset
+    cls._estimate_mask_mass_center_offset = staticmethod(_estimate_mask_mass_center_offset)
     cls._preserve_original_hair_tone = _preserve_original_hair_tone
-    cls._build_prompt = _build_prompt
+    cls._build_prompt = staticmethod(_build_prompt)

@@ -5824,9 +5824,9 @@ def unload(self) -> None:
 
 def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._generate = _generate
-    cls._cv2_refine_cloth_region = _cv2_refine_cloth_region
-    cls._overlay_reference_cloth_fill = _overlay_reference_cloth_fill
-    cls._blend_neighbor_cloth_tone = _blend_neighbor_cloth_tone
+    cls._cv2_refine_cloth_region = staticmethod(_cv2_refine_cloth_region)
+    cls._overlay_reference_cloth_fill = staticmethod(_overlay_reference_cloth_fill)
+    cls._blend_neighbor_cloth_tone = staticmethod(_blend_neighbor_cloth_tone)
     cls._sd_refine_removed_region = _sd_refine_removed_region
     cls._filter_short_center_cleanup_mask = _filter_short_center_cleanup_mask
     cls._build_post_cloth_refine_mask = _build_post_cloth_refine_mask
@@ -5866,7 +5866,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._build_lower_tail_post_support_mask = _build_lower_tail_post_support_mask
     cls._build_lower_tail_removal_extension_mask = _build_lower_tail_removal_extension_mask
     cls._build_dark_tail_residual_mask = _build_dark_tail_residual_mask
-    cls._cv2_cleanup_dark_tail_blob = _cv2_cleanup_dark_tail_blob
+    cls._cv2_cleanup_dark_tail_blob = staticmethod(_cv2_cleanup_dark_tail_blob)
     cls._remove_residual_hair_below_cutoff = _remove_residual_hair_below_cutoff
     cls._final_cutoff_cleanup = _final_cutoff_cleanup
     cls._composite = _composite
