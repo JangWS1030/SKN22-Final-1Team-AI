@@ -17,6 +17,7 @@ from PIL import Image
 from pipeline_sd_inpainting import (
     CLOTH_CLASS_IDX,
     CONTROLNET_MODEL_ID,
+    _clean_optional_env_text,
     DEFAULT_RUNTIME_LORA_HF_FILENAME,
     DEFAULT_RUNTIME_LORA_HF_REPO_ID,
     DEFAULT_SEGFACE_BASE_HF_FILENAME,
