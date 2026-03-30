@@ -4730,6 +4730,89 @@ class MirrAISDPipeline:
 
         return keep_u8
 
+    def _trim_blocky_short_restore_mask_u8(
+        self,
+        *,
+        mask_u8: np.ndarray,
+        face_bbox: Tuple[int, int, int, int],
+        cutoff_y: int,
+        min_keep_px: int = 60,
+    ) -> np.ndarray:
+        H, W = mask_u8.shape[:2]
+        original_px = int((mask_u8 > 0).sum())
+        if original_px < min_keep_px:
+            return mask_u8
+
+        x1, y1, x2, y2 = face_bbox
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+        cx = float(0.5 * (x1 + x2))
+
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            (mask_u8 > 0).astype(np.uint8),
+            8,
+        )
+        keep_u8 = np.zeros((H, W), dtype=np.uint8)
+        min_area = max(16, int(face_w * face_h * 0.0012))
+        reject_far_offset = max(180, int(face_w * 1.05))
+        reject_center_offset = max(24, int(face_w * 0.22))
+        reject_center_width = max(72, int(face_w * 0.38))
+        reject_wide_width = max(110, int(face_w * 0.62))
+        reject_center_area = max(280, int(face_w * face_h * 0.030))
+        reject_wide_area = max(520, int(face_w * face_h * 0.045))
+        reject_far_area = max(180, int(face_w * face_h * 0.015))
+        min_bottom = int(cutoff_y + face_h * 0.06)
+
+        for idx in range(1, num_labels):
+            x = int(stats[idx, cv2.CC_STAT_LEFT])
+            y = int(stats[idx, cv2.CC_STAT_TOP])
+            w = int(stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            if area < min_area:
+                continue
+            bottom_y = y + h
+            comp_cx = float(centroids[idx][0])
+            offset = abs(comp_cx - cx)
+            fill_ratio = float(area) / float(max(w * h, 1))
+
+            reject_far_blob = (
+                offset > reject_far_offset
+                and area >= reject_far_area
+                and (fill_ratio >= 0.30 or w >= max(56, int(face_w * 0.26)))
+            )
+            reject_center_block = (
+                offset <= reject_center_offset
+                and bottom_y >= min_bottom
+                and w >= reject_center_width
+                and area >= reject_center_area
+                and fill_ratio >= 0.34
+            )
+            reject_dense_wide = (
+                bottom_y >= min_bottom
+                and w >= reject_wide_width
+                and area >= reject_wide_area
+                and fill_ratio >= 0.46
+            )
+            reject_rect_patch = (
+                bottom_y >= min_bottom
+                and h >= max(72, int(face_h * 0.26))
+                and w >= max(84, int(face_w * 0.34))
+                and fill_ratio >= 0.58
+            )
+            if reject_far_blob or reject_center_block or reject_dense_wide or reject_rect_patch:
+                continue
+            keep_u8[labels == idx] = 255
+
+        kept_px = int((keep_u8 > 0).sum())
+        if kept_px == original_px:
+            return mask_u8
+        if kept_px < max(12, min_keep_px // 4):
+            if original_px >= max(min_keep_px * 2, int(face_w * face_h * 0.05)):
+                return np.zeros((H, W), dtype=np.uint8)
+            return mask_u8
+        return keep_u8
+
     def _build_sparse_dark_cloth_support_mask(
         self,
         *,
@@ -8703,6 +8786,13 @@ class MirrAISDPipeline:
             iterations=1,
         )
         filtered_u8 = cv2.bitwise_and(filtered_u8, cloth_u8)
+        if hair_length == "short":
+            filtered_u8 = self._trim_blocky_short_restore_mask_u8(
+                mask_u8=filtered_u8,
+                face_bbox=face_bbox,
+                cutoff_y=cutoff_y,
+                min_keep_px=80,
+            )
         if int((filtered_u8 > 0).sum()) < 80:
             return np.zeros((H, W), dtype=np.float32)
         return (filtered_u8 > 0).astype(np.float32)
@@ -8871,6 +8961,12 @@ class MirrAISDPipeline:
             iterations=1,
         )
         filtered_u8 = cv2.bitwise_and(filtered_u8, corridor_u8)
+        filtered_u8 = self._trim_blocky_short_restore_mask_u8(
+            mask_u8=filtered_u8,
+            face_bbox=face_bbox,
+            cutoff_y=cutoff_y,
+            min_keep_px=120,
+        )
         return cv2.GaussianBlur(
             filtered_u8.astype(np.float32) / 255.0,
             (0, 0),
@@ -9023,6 +9119,13 @@ class MirrAISDPipeline:
         keep_gate_u8 = cv2.bitwise_or(loose_cloth_u8, candidate_u8)
         keep_u8 = cv2.bitwise_and(keep_u8, keep_gate_u8)
         keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
+        if hair_length == "short":
+            keep_u8 = self._trim_blocky_short_restore_mask_u8(
+                mask_u8=keep_u8,
+                face_bbox=face_bbox,
+                cutoff_y=cutoff_y,
+                min_keep_px=60,
+            )
         if int((keep_u8 > 0).sum()) < 60:
             return np.zeros((H, W), dtype=np.float32)
 
@@ -9139,6 +9242,12 @@ class MirrAISDPipeline:
             ),
         )
         keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
+        keep_u8 = self._trim_blocky_short_restore_mask_u8(
+            mask_u8=keep_u8,
+            face_bbox=face_bbox,
+            cutoff_y=cutoff_y,
+            min_keep_px=80,
+        )
         if int((keep_u8 > 0).sum()) < 80:
             return np.zeros((H, W), dtype=np.float32)
 
@@ -9280,6 +9389,12 @@ class MirrAISDPipeline:
             iterations=1,
         )
         keep_u8 = cv2.bitwise_and(keep_u8, lane_u8)
+        keep_u8 = self._trim_blocky_short_restore_mask_u8(
+            mask_u8=keep_u8,
+            face_bbox=face_bbox,
+            cutoff_y=cutoff_y,
+            min_keep_px=40,
+        )
         if int((keep_u8 > 0).sum()) < 40:
             return np.zeros((H, W), dtype=np.float32)
 
