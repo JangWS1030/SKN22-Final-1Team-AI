@@ -7,6 +7,9 @@
 - `gh`, `docker`, `python`
 - `.env`에 `RUNPOD_API_KEY`, `RUNPOD_ENDPOINT_ID`
 - GitHub secrets에 `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `RUNPOD_API_KEY`, `RUNPOD_ENDPOINT_ID`
+- RunPod cache 설정 유지:
+  - endpoint `networkVolumeId`를 지우지 말 것
+  - template env의 `HF_HOME`, `TORCH_HOME`, `MIRRAI_PRELOAD_ON_STARTUP`를 지우지 말 것
 
 로컬 확인:
 
@@ -79,6 +82,21 @@ python scripts/build_sd_image.py \
 python scripts/runpod_release.py --image-tag latest
 ```
 
+릴리스 직후 아래 항목이 그대로 유지됐는지 확인합니다.
+
+- endpoint `networkVolumeId=h6lcfsxdt0`
+- template env에 `HF_HOME=/runpod-volume/huggingface`
+- template env에 `TORCH_HOME=/runpod-volume/torch`
+- template env에 `MIRRAI_PRELOAD_ON_STARTUP=1`
+
+위 값이 빠졌다면 바로 아래 복구 스크립트를 실행합니다.
+
+```bash
+python scripts/runpod_restore_cache_config.py \
+  --network-volume-id h6lcfsxdt0 \
+  --preload-on-startup
+```
+
 ```powershell
 .\scripts\runpod_release.ps1 -ImageTag latest
 ```
@@ -106,4 +124,5 @@ python test_runpod.py --health-check
 ## 메모
 
 - 현재 릴리스 스크립트는 `scripts/runpod_release.py` 하나로 정리했습니다.
+- RunPod cache volume 정보가 빠지면 콜드스타트가 다시 길어지므로, endpoint/template 갱신 시 volume 및 cache env 보존 여부를 항상 확인합니다.
 - 예전 MCP 연결 문서, self-hosted runner 문서, 구형 endpoint update 스크립트는 저장소에서 제거했습니다.
