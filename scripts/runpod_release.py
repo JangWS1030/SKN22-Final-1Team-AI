@@ -295,18 +295,84 @@ def summarize_workers(endpoint: dict[str, Any]) -> list[dict[str, str]]:
     return summaries
 
 
+def wait_for_worker_bounds(
+    endpoint_id: str,
+    api_key: str,
+    *,
+    expected_workers_min: int | None = None,
+    expected_workers_max: int | None = None,
+    timeout: int = 90,
+    interval: int = 3,
+) -> None:
+    deadline = time.time() + max(5, timeout)
+    while time.time() < deadline:
+        endpoint = get_endpoint(endpoint_id, api_key, include_workers=False)
+        current_min = int(endpoint.get("workersMin") or 0)
+        current_max = int(endpoint.get("workersMax") or 0)
+        min_ok = expected_workers_min is None or current_min == expected_workers_min
+        max_ok = expected_workers_max is None or current_max == expected_workers_max
+        if min_ok and max_ok:
+            return
+        print(
+            "[refresh] waiting for bounds "
+            f"(current min/max={current_min}/{current_max}, "
+            f"expected min/max={expected_workers_min}/{expected_workers_max})"
+        )
+        time.sleep(max(1, interval))
+    raise RuntimeError(
+        "Timed out waiting for endpoint worker bounds to settle "
+        f"(expected min/max={expected_workers_min}/{expected_workers_max})."
+    )
+
+
 def refresh_worker_pool(
     endpoint_id: str,
     api_key: str,
     *,
+    restore_workers_min: int,
     restore_workers_max: int,
     pause_seconds: int,
 ) -> None:
+    normalized_restore_min = max(0, int(restore_workers_min))
+    normalized_restore_max = max(normalized_restore_min, int(restore_workers_max))
+
+    if normalized_restore_min > 0:
+        print(f"[refresh] scaling workersMin -> 0 for endpoint={endpoint_id}")
+        patch_endpoint(endpoint_id, api_key, {"workersMin": 0})
+        wait_for_worker_bounds(
+            endpoint_id,
+            api_key,
+            expected_workers_min=0,
+            expected_workers_max=normalized_restore_max,
+        )
+
     print(f"[refresh] scaling workersMax -> 0 for endpoint={endpoint_id}")
     patch_endpoint(endpoint_id, api_key, {"workersMax": 0})
+    wait_for_worker_bounds(
+        endpoint_id,
+        api_key,
+        expected_workers_min=0 if normalized_restore_min > 0 else None,
+        expected_workers_max=0,
+    )
     time.sleep(max(1, pause_seconds))
-    print(f"[refresh] restoring workersMax -> {restore_workers_max}")
-    patch_endpoint(endpoint_id, api_key, {"workersMax": restore_workers_max})
+    print(f"[refresh] restoring workersMax -> {normalized_restore_max}")
+    patch_endpoint(endpoint_id, api_key, {"workersMax": normalized_restore_max})
+    wait_for_worker_bounds(
+        endpoint_id,
+        api_key,
+        expected_workers_min=0 if normalized_restore_min > 0 else None,
+        expected_workers_max=normalized_restore_max,
+    )
+
+    if normalized_restore_min > 0:
+        print(f"[refresh] restoring workersMin -> {normalized_restore_min}")
+        patch_endpoint(endpoint_id, api_key, {"workersMin": normalized_restore_min})
+        wait_for_worker_bounds(
+            endpoint_id,
+            api_key,
+            expected_workers_min=normalized_restore_min,
+            expected_workers_max=normalized_restore_max,
+        )
 
 
 def redact_for_display(value: Any, *, key_hint: str | None = None) -> Any:
@@ -386,6 +452,7 @@ def main() -> int:
     )
     expected_build_tag = infer_build_tag(target_image)
     previous_version = endpoint.get("version") if isinstance(endpoint.get("version"), int) else None
+    original_workers_min = int(endpoint.get("workersMin") or 0)
     original_workers_max = int(endpoint.get("workersMax") or 0)
 
     print(f"[release] endpoint_id={args.endpoint_id}")
@@ -467,6 +534,7 @@ def main() -> int:
                 refresh_worker_pool(
                     args.endpoint_id,
                     args.api_key,
+                    restore_workers_min=original_workers_min,
                     restore_workers_max=original_workers_max,
                     pause_seconds=args.worker_refresh_pause,
                 )
