@@ -37,6 +37,7 @@ from pipeline_sd_inpainting import (
     PROJECT_ROOT,
     SD_INPAINT_MODEL_ID,
     SD_SIZE,
+    MirrAISDPipeline,
     _COMMON_STYLE_BLOCK_NEGATIVE,
     _FEMALE_STYLE_HINTS,
     _FEMALE_SUBJECT_HINTS,
