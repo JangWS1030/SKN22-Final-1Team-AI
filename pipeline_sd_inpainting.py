@@ -8515,6 +8515,7 @@ class MirrAISDPipeline:
         if int((keep_u8 > 0).sum()) < 80:
             return np.zeros((H, W), dtype=np.float32)
 
+        sparse_cloth_mode = cloth_mask is None or cloth_mask.shape != (H, W)
         if cloth_mask is not None and cloth_mask.shape == (H, W):
             cloth_u8 = cv2.dilate(
                 (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
@@ -8522,12 +8523,33 @@ class MirrAISDPipeline:
                 iterations=1,
             )
             cloth_support_u8 = cv2.bitwise_and(cloth_u8, corridor_u8)
+            cloth_support_px = int((cloth_support_u8 > 0).sum())
+            sparse_cloth_mode = cloth_support_px < max(160, int(face_w * face_h * 0.006))
             keep_u8 = cv2.bitwise_or(keep_u8, cv2.bitwise_and(deep_zone_u8, cloth_support_u8))
 
+        if sparse_cloth_mode:
+            sparse_support_u8 = (
+                (
+                    (diff_rgb > 10.0)
+                    | (gray_delta > 10.0)
+                    | (lap < 11.0)
+                ).astype(np.uint8)
+                * 255
+            )
+            sparse_band_u8 = np.zeros((H, W), dtype=np.uint8)
+            sparse_top = max(top, int(cutoff_y + face_h * 0.18))
+            sparse_left = max(0, int(x1 - face_w * 1.14))
+            sparse_right = min(W, int(x2 + face_w * 1.14))
+            if sparse_top < bottom and sparse_left < sparse_right:
+                sparse_band_u8[sparse_top:bottom, sparse_left:sparse_right] = 255
+            sparse_support_u8 = cv2.bitwise_and(sparse_support_u8, zone_u8)
+            sparse_support_u8 = cv2.bitwise_and(sparse_support_u8, sparse_band_u8)
+            keep_u8 = cv2.bitwise_or(keep_u8, sparse_support_u8)
+
         upper_guard_u8 = np.zeros((H, W), dtype=np.uint8)
-        upper_guard_bottom = min(H, int(cutoff_y + face_h * 0.32))
-        upper_guard_left = max(0, int(cx - face_w * 0.74))
-        upper_guard_right = min(W, int(cx + face_w * 0.74))
+        upper_guard_bottom = min(H, int(cutoff_y + face_h * (0.22 if sparse_cloth_mode else 0.32)))
+        upper_guard_left = max(0, int(cx - face_w * (0.62 if sparse_cloth_mode else 0.74)))
+        upper_guard_right = min(W, int(cx + face_w * (0.62 if sparse_cloth_mode else 0.74)))
         if top < upper_guard_bottom and upper_guard_left < upper_guard_right:
             upper_guard_u8[top:upper_guard_bottom, upper_guard_left:upper_guard_right] = 255
             keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(upper_guard_u8))
@@ -8540,7 +8562,7 @@ class MirrAISDPipeline:
             )
             keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(protect_u8))
 
-        if final_hair_mask is not None:
+        if final_hair_mask is not None and not sparse_cloth_mode:
             final_hair_u8 = cv2.dilate(
                 (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.18).astype(np.uint8) * 255,
                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 25)),
@@ -8573,8 +8595,8 @@ class MirrAISDPipeline:
         min_area = max(72, int(face_w * face_h * 0.003))
         max_area = max(120000, int(face_w * face_h * 1.85))
         min_height = max(22, int(face_h * 0.12))
-        max_width = max(360, int(face_w * 1.88))
-        max_offset = max(220, int(face_w * 1.16))
+        max_width = max(420 if sparse_cloth_mode else 360, int(face_w * (2.12 if sparse_cloth_mode else 1.88)))
+        max_offset = max(260 if sparse_cloth_mode else 220, int(face_w * (1.34 if sparse_cloth_mode else 1.16)))
         for idx in range(1, num_labels):
             x = int(stats[idx, cv2.CC_STAT_LEFT])
             y = int(stats[idx, cv2.CC_STAT_TOP])
