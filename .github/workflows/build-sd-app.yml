@@ -193,6 +193,7 @@ jobs:
           file: ./Dockerfile.sd.app
           build-args: |
             BASE_IMAGE=${{ steps.meta.outputs.BASE_IMAGE }}
+            BUILD_TAG=${{ steps.meta.outputs.VERSION }}
           platforms: linux/amd64
           pull: true
           push: true
