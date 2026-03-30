@@ -9066,12 +9066,12 @@ class MirrAISDPipeline:
         max_area = max(4200, int(face_w * face_h * (0.22 if hair_length == "short" else 0.34)))
         min_height = max(36, int(face_h * 0.12))
         max_width = max(120, int(face_w * (0.78 if hair_length == "short" else 0.54)))
-        max_offset = max(120, int(face_w * (1.38 if hair_length == "short" else 0.60)))
-        short_center_offset = max(18, int(face_w * 0.18))
-        short_center_width = max(92, int(face_w * 0.42))
-        short_center_area = max(2400, int(face_w * face_h * 0.15))
-        short_side_width = max(104, int(face_w * 0.68))
-        short_side_area = max(5200, int(face_w * face_h * 0.26))
+        max_offset = max(120, int(face_w * (0.98 if hair_length == "short" else 0.60)))
+        short_center_offset = max(24, int(face_w * 0.30))
+        short_center_width = max(76, int(face_w * 0.34))
+        short_center_area = max(1800, int(face_w * face_h * 0.09))
+        short_side_width = max(96, int(face_w * 0.56))
+        short_side_area = max(3600, int(face_w * face_h * 0.18))
         for idx in range(1, num_labels):
             x = int(stats[idx, cv2.CC_STAT_LEFT])
             y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -9204,7 +9204,8 @@ class MirrAISDPipeline:
         max_area = max(9200, int(face_w * face_h * 0.34))
         min_height = max(72, int(face_h * 0.28))
         max_width = max(128, int(face_w * 0.78))
-        max_offset = max(260, int(face_w * 1.18))
+        max_offset = max(180, int(face_w * 0.98))
+        center_reject_offset = max(26, int(face_w * 0.30))
         for idx in range(1, num_labels):
             x = int(stats[idx, cv2.CC_STAT_LEFT])
             y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -9222,6 +9223,12 @@ class MirrAISDPipeline:
             if bottom_y > int(cutoff_y + face_h * 1.56):
                 continue
             if abs(comp_cx - cx) > max_offset:
+                continue
+            if (
+                abs(comp_cx - cx) <= center_reject_offset
+                and w > max(84, int(face_w * 0.38))
+                and area > max(1600, int(face_w * face_h * 0.06))
+            ):
                 continue
             keep_u8[labels == idx] = 255
 
@@ -9360,6 +9367,8 @@ class MirrAISDPipeline:
         max_width = max(152, int(face_w * 0.98))
         center_keepout = max(16, int(face_w * 0.16))
         deep_center_bottom = int(y2 + face_h * 0.52)
+        max_offset = max(170, int(face_w * 0.95))
+        center_reject_offset = max(26, int(face_w * 0.30))
 
         for idx in range(1, num_labels):
             x = int(stats[idx, cv2.CC_STAT_LEFT])
@@ -9376,7 +9385,15 @@ class MirrAISDPipeline:
                 continue
             if bottom_y < int(bob_floor + face_h * 0.10):
                 continue
+            if offset > max_offset:
+                continue
             if offset < center_keepout and bottom_y < deep_center_bottom:
+                continue
+            if (
+                offset <= center_reject_offset
+                and w > max(84, int(face_w * 0.42))
+                and area > max(1800, int(face_w * face_h * 0.07))
+            ):
                 continue
             keep_u8[labels == idx] = 255
 
