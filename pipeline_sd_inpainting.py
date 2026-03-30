@@ -2648,6 +2648,48 @@ class MirrAISDPipeline:
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] residual strand cleanup failed (ignored): {e}")
+            if (
+                hair_length in ("short", "medium")
+                and cloth_mask_dilated is not None
+                and removal_mask_for_post is not None
+                and cutoff_y_for_post is not None
+            ):
+                try:
+                    final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
+                    final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    final_source_cloth_rescue_mask = self._build_final_source_cloth_rescue_mask(
+                        current_rgb=final_rgb,
+                        source_rgb=img_rgb,
+                        removal_mask=removal_mask_for_post,
+                        cloth_mask=cloth_mask_dilated,
+                        face_bbox=face_bbox,
+                        cutoff_y=cutoff_y_for_post,
+                        hair_length=hair_length,
+                        protect_mask=protect_mask_for_sd,
+                        final_hair_mask=final_hair_mask,
+                    )
+                    final_source_cloth_rescue_u8 = (
+                        (np.clip(final_source_cloth_rescue_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
+                        * 255
+                    )
+                    final_source_cloth_rescue_px = int((final_source_cloth_rescue_u8 > 0).sum())
+                    if final_source_cloth_rescue_px >= 120:
+                        final_rgb = self._cleanup_region_with_cloth_restore(
+                            source_rgb=img_rgb,
+                            current_rgb=final_rgb,
+                            cleanup_mask=final_source_cloth_rescue_mask,
+                            cloth_mask=cloth_mask_dilated,
+                            final_hair_mask=final_hair_mask,
+                            cleanup_dark_tail=(hair_length == "short"),
+                        )
+                        final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                    if debug_images_common is not None and rank == 0:
+                        debug_images_common["pipeline_final_source_cloth_rescue_mask"] = cv2.cvtColor(
+                            final_source_cloth_rescue_u8,
+                            cv2.COLOR_GRAY2BGR,
+                        )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] final source cloth rescue failed (ignored): {e}")
             try:
                 final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                 final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
@@ -8069,6 +8111,153 @@ class MirrAISDPipeline:
             cloth_mask=cloth_mask,
         )
         return cleaned
+
+    def _build_final_source_cloth_rescue_mask(
+        self,
+        *,
+        current_rgb: np.ndarray,
+        source_rgb: np.ndarray,
+        removal_mask: np.ndarray,
+        cloth_mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+        cutoff_y: int,
+        hair_length: str,
+        protect_mask: Optional[np.ndarray] = None,
+        final_hair_mask: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        if hair_length not in ("short", "medium"):
+            return np.zeros(current_rgb.shape[:2], dtype=np.float32)
+
+        H, W = current_rgb.shape[:2]
+        if source_rgb.shape[:2] != (H, W) or removal_mask.shape != (H, W):
+            return np.zeros((H, W), dtype=np.float32)
+        if cloth_mask is None or cloth_mask.shape != (H, W):
+            return np.zeros((H, W), dtype=np.float32)
+
+        x1, y1, x2, y2 = face_bbox
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+
+        corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+        top = max(0, int(cutoff_y - face_h * 0.04))
+        bottom = min(H, int(cutoff_y + face_h * (1.24 if hair_length == "short" else 1.52)))
+        left = max(0, int(x1 - face_w * (1.18 if hair_length == "short" else 1.34)))
+        right = min(W, int(x2 + face_w * (1.18 if hair_length == "short" else 1.34)))
+        if top >= bottom or left >= right:
+            return np.zeros((H, W), dtype=np.float32)
+        corridor_u8[top:bottom, left:right] = 255
+
+        cloth_u8 = (
+            (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255
+        )
+        cloth_u8 = cv2.bitwise_and(cloth_u8, corridor_u8)
+        if int((cloth_u8 > 0).sum()) < 60:
+            return np.zeros((H, W), dtype=np.float32)
+
+        removal_u8 = cv2.dilate(
+            (np.clip(removal_mask.astype(np.float32), 0.0, 1.0) > 0.06).astype(np.uint8) * 255,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (19, 27) if hair_length == "short" else (23, 33),
+            ),
+            iterations=1,
+        )
+        removal_u8 = cv2.bitwise_and(removal_u8, corridor_u8)
+        if int((removal_u8 > 0).sum()) < 40:
+            return np.zeros((H, W), dtype=np.float32)
+
+        diff_rgb = np.abs(
+            current_rgb.astype(np.float32) - source_rgb.astype(np.float32)
+        ).mean(axis=2)
+        current_gray = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+        source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+        gray_delta = np.abs(current_gray - source_gray)
+        strong_diff_u8 = (
+            (
+                (diff_rgb > (26.0 if hair_length == "short" else 22.0))
+                | (gray_delta > (24.0 if hair_length == "short" else 20.0))
+            ).astype(np.uint8)
+            * 255
+        )
+        strong_diff_u8 = cv2.bitwise_and(strong_diff_u8, cloth_u8)
+        strong_diff_u8 = cv2.bitwise_and(strong_diff_u8, removal_u8)
+        if int((strong_diff_u8 > 0).sum()) < 40:
+            return np.zeros((H, W), dtype=np.float32)
+
+        keep_u8 = cv2.morphologyEx(
+            strong_diff_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (11, 17) if hair_length == "short" else (13, 21),
+            ),
+        )
+        keep_u8 = cv2.dilate(
+            keep_u8,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (9, 15) if hair_length == "short" else (11, 17),
+            ),
+            iterations=1,
+        )
+        keep_u8 = cv2.bitwise_and(keep_u8, cloth_u8)
+
+        if protect_mask is not None and protect_mask.shape == (H, W):
+            protect_u8 = cv2.dilate(
+                (np.clip(protect_mask.astype(np.float32), 0.0, 1.0) > 0.12).astype(np.uint8) * 255,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
+                iterations=1,
+            )
+            keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(protect_u8))
+        if final_hair_mask is not None and final_hair_mask.shape == (H, W):
+            final_hair_u8 = cv2.dilate(
+                (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.18).astype(np.uint8) * 255,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (17, 25) if hair_length == "short" else (15, 23),
+                ),
+                iterations=1,
+            )
+            keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(final_hair_u8))
+
+        if int((keep_u8 > 0).sum()) < 80:
+            return np.zeros((H, W), dtype=np.float32)
+
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(keep_u8, 8)
+        filtered_u8 = np.zeros((H, W), dtype=np.uint8)
+        min_area = max(80, int(face_w * face_h * 0.010))
+        max_area = max(3600, int(face_w * face_h * 0.44))
+        max_width = max(120, int(face_w * 1.26))
+        min_height = max(24, int(face_h * 0.10))
+        for idx in range(1, num_labels):
+            x = int(stats[idx, cv2.CC_STAT_LEFT])
+            y = int(stats[idx, cv2.CC_STAT_TOP])
+            w = int(stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            if area < min_area or area > max_area:
+                continue
+            if w > max_width or h < min_height:
+                continue
+            if (y + h) < int(cutoff_y + face_h * 0.06):
+                continue
+            filtered_u8[labels == idx] = 255
+
+        if int((filtered_u8 > 0).sum()) < 80:
+            return np.zeros((H, W), dtype=np.float32)
+
+        filtered_u8 = cv2.dilate(
+            filtered_u8,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (11, 19) if hair_length == "short" else (13, 21),
+            ),
+            iterations=1,
+        )
+        filtered_u8 = cv2.bitwise_and(filtered_u8, cloth_u8)
+        if int((filtered_u8 > 0).sum()) < 80:
+            return np.zeros((H, W), dtype=np.float32)
+        return (filtered_u8 > 0).astype(np.float32)
 
     def _build_side_column_cloth_restore_mask(
         self,
