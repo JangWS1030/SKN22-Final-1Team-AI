@@ -775,6 +775,14 @@ def _normalize_runpod_env() -> None:
 if __name__ == "__main__":
     _normalize_runpod_env()
 
+    preload_flag = str(os.environ.get("MIRRAI_PRELOAD_ON_STARTUP", "")).strip().lower()
+    should_preload = preload_flag in {"1", "true", "yes", "on"}
+    if not should_preload:
+        logger.info("[handler_sd] startup preload skipped; pipeline will load on first request")
+        import runpod
+        runpod.serverless.start({"handler": handler})
+        raise SystemExit(0)
+
     # ── Cold Start 해소: 요청 받기 전에 모델 미리 로드 ─────────────────────
     logger.info("[handler_sd] 서버 시작 전 모델 프리로드 시작...")
     try:
