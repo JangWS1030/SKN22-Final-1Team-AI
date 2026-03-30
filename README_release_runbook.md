@@ -57,7 +57,7 @@ gh run view <run-id> --log-failed
 
 ```bash
 python scripts/build_sd_image.py \
-  --image-repo sikersiker/sd \
+  --image-repo byoungj/sd \
   --tag manual-20260326-170000 \
   --push
 ```
@@ -68,7 +68,7 @@ python scripts/build_sd_image.py \
 
 ```bash
 python scripts/build_sd_image.py \
-  --image-repo sikersiker/sd \
+  --image-repo byoungj/sd \
   --tag manual-20260326-170000 \
   --ensure-base \
   --base-tag v1 \
