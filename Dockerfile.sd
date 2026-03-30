@@ -63,6 +63,7 @@ WORKDIR /app
 COPY entrypoint_sd.sh          entrypoint.sh
 COPY handler_sd.py             ./
 COPY pipeline_sd_inpainting.py ./
+COPY pipeline_sd_components/   pipeline_sd_components/
 COPY runtime_download.py       ./
 COPY pretrained_models/        pretrained_models/
 COPY utils/                    utils/

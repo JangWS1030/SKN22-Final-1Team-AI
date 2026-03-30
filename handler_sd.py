@@ -382,7 +382,9 @@ def _run_recommendation(face_ratios, preference, preference_text, age, color_tex
 
     hairstyle_text = ""
     if recommendations:
-        hairstyle_text = recommendations[0].style_name
+        hairstyle_text = str(
+            recommendations[0].metadata.get("hairstyle_text") or recommendations[0].style_name
+        ).strip()
     logger.info(f"[handler_sd] 추천 완료: {len(recommendations)}개, top='{hairstyle_text}'")
     return recommendations_data, rag_context_str, hairstyle_text, color_text
 
@@ -417,11 +419,12 @@ def _generate_per_recommendation(
     all_results = []
     for idx, rec in enumerate(recommendations):
         style_name = rec.get("style_name", "")
+        hairstyle_text = rec.get("hairstyle_text", "") or style_name
         description = rec.get("description", "")
-        enriched_prompt = f"{style_name}, {description}" if description else style_name
+        enriched_prompt = f"{hairstyle_text}, {description}" if description else hairstyle_text
 
         if rag_context:
-            rag_kw = _extract_rag_keywords(rag_context, style_name)
+            rag_kw = _extract_rag_keywords(rag_context, hairstyle_text)
             if rag_kw:
                 enriched_prompt = f"{enriched_prompt}, {rag_kw}"
 
@@ -434,7 +437,10 @@ def _generate_per_recommendation(
                 "sd_guidance": rec.get("sd_guidance", 8.5),
             }
 
-        logger.info(f"[handler_sd] 추천 #{idx}: '{enriched_prompt}' (sd_prompt_data={'yes' if sd_prompt_data else 'no'})")
+        logger.info(
+            f"[handler_sd] 추천 #{idx}: style='{style_name}' prompt='{enriched_prompt}' "
+            f"(sd_prompt_data={'yes' if sd_prompt_data else 'no'})"
+        )
         try:
             results = pipeline.run(
                 image=img_bgr,
@@ -453,6 +459,8 @@ def _generate_per_recommendation(
                 r.style_meta = {
                     "style_id": rec.get("style_id"),
                     "style_name": style_name,
+                    "hairstyle_text": hairstyle_text,
+                    "trend_name": rec.get("trend_name"),
                     "recommendation_score": rec.get("score"),
                 }
                 all_results.append(r)
@@ -766,6 +774,14 @@ def _normalize_runpod_env() -> None:
 
 if __name__ == "__main__":
     _normalize_runpod_env()
+
+    preload_flag = str(os.environ.get("MIRRAI_PRELOAD_ON_STARTUP", "")).strip().lower()
+    should_preload = preload_flag in {"1", "true", "yes", "on"}
+    if not should_preload:
+        logger.info("[handler_sd] startup preload skipped; pipeline will load on first request")
+        import runpod
+        runpod.serverless.start({"handler": handler})
+        raise SystemExit(0)
 
     # ── Cold Start 해소: 요청 받기 전에 모델 미리 로드 ─────────────────────
     logger.info("[handler_sd] 서버 시작 전 모델 프리로드 시작...")

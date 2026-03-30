@@ -45,8 +45,10 @@ configs/
 # 빌드에 필요한 폴더/파일은 제외 해제
 !models/
 !data/
-# pretrained_models 아래 체크포인트는 현재 저장소에 포함하지 않음
+# pretrained_models 아래 체크포인트는 Hugging Face runtime download를 기본으로 사용
 pretrained_models/*
+pretrained_models/generation_lora_stage4_garment_reveal_best/
+pretrained_models/generation_lora_stage4_garment_reveal_final/
 models/*/*.pt
 models/*/*.pth
 output/

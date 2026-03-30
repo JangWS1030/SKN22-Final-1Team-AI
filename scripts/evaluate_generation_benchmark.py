@@ -65,6 +65,23 @@ def read_mask(path: Optional[str]) -> Optional[np.ndarray]:
     return (image > 127).astype(np.float32)
 
 
+def ensure_image_shape(image: np.ndarray, reference_shape: Tuple[int, int]) -> np.ndarray:
+    target_h, target_w = reference_shape
+    if image.shape[:2] == (target_h, target_w):
+        return image
+    return cv2.resize(image, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
+
+def ensure_mask_shape(mask: Optional[np.ndarray], reference_shape: Tuple[int, int]) -> Optional[np.ndarray]:
+    if mask is None:
+        return None
+    target_h, target_w = reference_shape
+    if mask.shape[:2] == (target_h, target_w):
+        return mask
+    resized = cv2.resize(mask.astype(np.float32), (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    return (resized > 0.5).astype(np.float32)
+
+
 def crop_to_mask(
     prediction: np.ndarray,
     target: np.ndarray,
@@ -138,10 +155,10 @@ def summarize_metric(rows: List[Dict], key: str) -> Dict[str, Optional[float]]:
 
 def evaluate_row(row: Dict, pad: int) -> Dict:
     prediction = read_rgb(row["prediction_image_path"])
-    target = read_rgb(row["target_image_path"])
-    hair_mask = read_mask(row["mask_path"])
-    face_mask = read_mask(row.get("face_protect_mask_path"))
-    cloth_mask = read_mask(row.get("cloth_protect_mask_path"))
+    target = ensure_image_shape(read_rgb(row["target_image_path"]), prediction.shape[:2])
+    hair_mask = ensure_mask_shape(read_mask(row["mask_path"]), prediction.shape[:2])
+    face_mask = ensure_mask_shape(read_mask(row.get("face_protect_mask_path")), prediction.shape[:2])
+    cloth_mask = ensure_mask_shape(read_mask(row.get("cloth_protect_mask_path")), prediction.shape[:2])
 
     if hair_mask is None:
         raise ValueError(f"Missing hair mask for {row['sample_id']}")

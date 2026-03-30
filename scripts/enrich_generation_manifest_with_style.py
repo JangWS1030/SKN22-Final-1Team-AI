@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--trend-data",
         type=Path,
-        default=Path("data/trend_hairstyles.json"),
+        default=Path("data/llm_refined_trends.json"),
     )
     parser.add_argument(
         "--output",
@@ -305,7 +305,11 @@ def main() -> None:
     if args.limit is not None:
         records = records[: args.limit]
     trends = json.loads(args.trend_data.read_text(encoding="utf-8"))
-    trend_by_id = {row["id"]: row for row in trends}
+    trend_by_id = {
+        str(row.get("id")).strip(): row
+        for row in trends
+        if isinstance(row, dict) and str(row.get("id", "")).strip()
+    }
 
     enriched: List[Dict] = []
     style_counts: Dict[str, int] = {}

@@ -15,6 +15,13 @@ PATH_FIELDS = (
     "prediction_image_path",
 )
 
+DATASET_NAMES = (
+    "celeba_dialog_hq_generation",
+    "face_sketches_refined_generation",
+    "male_asian_hairstyles_generation",
+    "longtail_training",
+)
+
 
 def infer_dataset_root(manifest_path: Path) -> Path:
     return manifest_path.resolve().parent.parent
@@ -45,15 +52,22 @@ def normalize_dataset_path(raw_path: str, dataset_root: Path) -> str:
         return str(candidate)
 
     normalized = raw_path.replace("\\", "/")
-    dataset_name = dataset_root.name
-    marker = f"/{dataset_name}/"
-    if marker in normalized:
-        suffix = normalized.split(marker, 1)[1]
-        return str((dataset_root / Path(suffix)).resolve())
+    datasets_root = dataset_root.parent if dataset_root.name in DATASET_NAMES else dataset_root
 
-    if normalized.startswith(f"{dataset_name}/"):
-        suffix = normalized[len(dataset_name) + 1 :]
-        return str((dataset_root / Path(suffix)).resolve())
+    for dataset_name in DATASET_NAMES:
+        marker = f"/{dataset_name}/"
+        if marker in normalized:
+            suffix = normalized.split(marker, 1)[1]
+            return str((datasets_root / dataset_name / Path(suffix)).resolve())
+
+        processed_marker = f"dataset_build/processed/{dataset_name}/"
+        if processed_marker in normalized:
+            suffix = normalized.split(processed_marker, 1)[1]
+            return str((datasets_root / dataset_name / Path(suffix)).resolve())
+
+        if normalized.startswith(f"{dataset_name}/"):
+            suffix = normalized[len(dataset_name) + 1 :]
+            return str((datasets_root / dataset_name / Path(suffix)).resolve())
 
     relative_candidate = dataset_root / Path(normalized)
     if relative_candidate.exists():

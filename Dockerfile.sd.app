@@ -19,6 +19,7 @@ COPY handler_sd.py             ./
 COPY style_recommender.py      ./
 COPY handler_runpod_diag.py    ./
 COPY pipeline_sd_inpainting.py ./
+COPY pipeline_sd_components/   pipeline_sd_components/
 COPY runtime_download.py       ./
 COPY utils/                    utils/
 COPY rag_pipeline/             rag_pipeline/
@@ -30,7 +31,8 @@ COPY data/                     data/
 RUN sed -i 's/\r$//' entrypoint.sh
 
 # `pretrained_models/` contains local-only assets in some environments.
-# The runtime creates/downloads the required files on demand.
+# Runtime LoRA is loaded from Hugging Face by default, so the app image keeps
+# only code and lightweight config.
 RUN mkdir -p pretrained_models
 
 ENV PYTHONPATH=/app \

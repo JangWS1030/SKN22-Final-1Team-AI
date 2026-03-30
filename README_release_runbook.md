@@ -19,14 +19,14 @@ python -c "import requests,dotenv; print('deps_ok')"
 ## 배포 전 확인
 
 ```bash
-python tests/test_runpod.py --health-check
+python test_runpod.py --health-check
 ```
 
 샘플 생성 확인:
 
 ```bash
-python tests/test_runpod.py \
-  --image images/1234.jpeg \
+python test_runpod.py \
+  --image images/1234.jpg \
   --hairstyle "short chin-length bob cut, hush cut" \
   --color "ash beige" \
   --top-k 1 \
@@ -63,6 +63,7 @@ python scripts/build_sd_image.py \
 ```
 
 `Dockerfile.sd.app` 기반이라 코드 변경만 있을 때는 전체 의존성을 다시 빌드하지 않아 훨씬 빠릅니다.
+현재 앱 이미지에는 `pipeline_sd_inpainting.py`와 함께 `pipeline_sd_components/`도 포함되어야 합니다.
 처음 한 번 `base-latest`가 없으면 아래처럼 base를 같이 만들 수 있습니다.
 
 ```bash
@@ -91,8 +92,8 @@ python scripts/runpod_release.py --image-tag latest --dry-run
 ## 최종 검증
 
 ```bash
-python -m py_compile scripts/runpod_release.py tests/test_runpod.py
-python tests/test_runpod.py --health-check
+python -m py_compile scripts/runpod_release.py test_runpod.py pipeline_sd_inpainting.py pipeline_sd_components/loading.py pipeline_sd_components/prompt.py pipeline_sd_components/postprocess.py
+python test_runpod.py --health-check
 ```
 
 필요하면 wrapper도 사용합니다.

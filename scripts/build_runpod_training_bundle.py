@@ -23,6 +23,7 @@ INCLUDE_DIRS = [
     "configs",
     "scripts",
     "utils",
+    "pipeline_sd_components",
     "models",
     "docs",
     "data",

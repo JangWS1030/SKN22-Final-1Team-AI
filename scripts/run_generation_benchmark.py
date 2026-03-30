@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import sys
+import traceback
 from pathlib import Path
 from typing import Dict, List
 
@@ -120,23 +121,71 @@ def main() -> None:
     pipeline.load()
 
     predictions: List[Dict] = []
+    failures: List[Dict] = []
     for index, row in enumerate(rows):
         sample_id = str(row["sample_id"])
         image = cv2.imread(str(row["source_image_path"]))
         if image is None:
-            raise FileNotFoundError(f"Could not read source image for {sample_id}: {row['source_image_path']}")
+            failures.append(
+                {
+                    **row,
+                    "failure_stage": "read_source_image",
+                    "error_type": "FileNotFoundError",
+                    "error_message": f"Could not read source image for {sample_id}: {row['source_image_path']}",
+                }
+            )
+            print(
+                json.dumps(
+                    {
+                        "event": "benchmark_sample_failed",
+                        "sample_id": sample_id,
+                        "failure_stage": "read_source_image",
+                        "error_type": "FileNotFoundError",
+                        "error_message": f"Could not read source image for {sample_id}: {row['source_image_path']}",
+                    },
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+            continue
 
         seed = stable_seed(args.seed + index, sample_id)
         pipeline.config.seeds = [seed]
-        result = pipeline.run(
-            image=image,
-            hairstyle_text=compose_hairstyle_text(row),
-            color_text=str(row.get("color_text") or ""),
-            top_k=1,
-            return_intermediates=args.return_intermediates,
-            lora_path=args.lora_path,
-            lora_scale=args.lora_scale,
-        )[0]
+        try:
+            result = pipeline.run(
+                image=image,
+                hairstyle_text=compose_hairstyle_text(row),
+                color_text=str(row.get("color_text") or ""),
+                top_k=1,
+                return_intermediates=args.return_intermediates,
+                lora_path=args.lora_path,
+                lora_scale=args.lora_scale,
+            )[0]
+        except Exception as exc:
+            failures.append(
+                {
+                    **row,
+                    "failure_stage": "pipeline_run",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "inference_seed": seed,
+                    "traceback": "".join(traceback.format_exception_only(type(exc), exc)).strip(),
+                }
+            )
+            print(
+                json.dumps(
+                    {
+                        "event": "benchmark_sample_failed",
+                        "sample_id": sample_id,
+                        "failure_stage": "pipeline_run",
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+            continue
 
         prediction_path = image_dir / f"{sample_id}.png"
         cv2.imwrite(str(prediction_path), result.image)
@@ -154,9 +203,17 @@ def main() -> None:
         )
 
     write_jsonl(output_dir / "predictions.jsonl", predictions)
+    if failures:
+        write_jsonl(output_dir / "failures.jsonl", failures)
+    if not predictions:
+        raise RuntimeError(f"Benchmark completed with 0 successful predictions. See {output_dir / 'failures.jsonl'}")
+
     summary = {
         "benchmark_manifest": str(args.benchmark_manifest),
         "output_dir": str(output_dir),
+        "rows_requested": len(rows),
+        "rows_succeeded": len(predictions),
+        "rows_failed": len(failures),
         "rows": len(predictions),
         "lora_path": args.lora_path,
         "lora_scale": args.lora_scale,

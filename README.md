@@ -14,6 +14,7 @@
 
 - `handler_sd.py`: RunPod serverless 엔트리포인트 (EP0~EP3 라우팅)
 - `pipeline_sd_inpainting.py`: 실제 SD 추론 파이프라인
+- `pipeline_sd_components/`: `pipeline_sd_inpainting.py`에서 분리한 로딩 / 프롬프트 / 후처리 모듈
 - `style_recommender.py`: 얼굴형 + 취향벡터 → 스타일 추천 엔진 (ChromaDB 코사인 유사도)
 - `runtime_download.py`: 런타임 모델 캐시 준비
 - `download_weights_sd.py`: SD 관련 가중치 다운로드 보조 스크립트
@@ -44,6 +45,8 @@
 - `requirements-train.txt`: 학습/평가용 추가 의존성
 - `requirements-dev.txt`: 로컬 개발용 추가 의존성
 - `requirements-trends.txt`: 트렌드 크롤링/RAG 전용 의존성
+
+`pipeline_sd_components/` 분리는 코드 구조 변경만 포함하고, 런타임/학습용 서드파티 패키지 추가는 없습니다.
 
 런타임 설치:
 
@@ -428,7 +431,7 @@ python test_runpod.py --health-check
 
 ```bash
 python test_runpod.py \
-  --image images/1234.jpeg \
+  --image images/1234.jpg \
   --hairstyle "wolf cut, layered bangs" \
   --color "ash brown" \
   --top-k 1
@@ -443,8 +446,8 @@ python style_recommender.py
 단발/중단발 마스크 비교:
 
 ```bash
-python tests/test_runpod.py \
-  --image images/1234.jpeg \
+python test_runpod.py \
+  --image images/1234.jpg \
   --hairstyle "short chin-length bob cut, hush cut" \
   --top-k 1 \
   --bg-fill sd \
@@ -516,6 +519,6 @@ push 시 현재 기준으로 아래 워크플로가 동작합니다.
 현재 정리 이후 기본 확인 명령은 아래 두 개입니다.
 
 ```bash
-python -m py_compile handler_sd.py pipeline_sd_inpainting.py runtime_download.py scripts/runpod_release.py
+python -m py_compile handler_sd.py pipeline_sd_inpainting.py pipeline_sd_components/loading.py pipeline_sd_components/prompt.py pipeline_sd_components/postprocess.py runtime_download.py scripts/runpod_release.py
 python test_runpod.py --health-check
 ```
