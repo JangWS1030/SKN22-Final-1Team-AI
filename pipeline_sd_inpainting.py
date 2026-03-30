@@ -2782,6 +2782,10 @@ class MirrAISDPipeline:
 
     def _discover_default_lora_path(self) -> Optional[str]:
         candidate_dirs: List[Path] = [
+            PROJECT_ROOT / "pretrained_models" / "generation_lora_stage4_garment_reveal_best",
+            PROJECT_ROOT / "pretrained_models" / "generation_lora_stage4_garment_reveal_final",
+            PROJECT_ROOT / "pretrained_models" / "generation_lora_stage3_longtail_best",
+            PROJECT_ROOT / "pretrained_models" / "generation_lora_stage3_longtail_final",
             PROJECT_ROOT / "pretrained_models" / "generation_lora_stage2_best",
             PROJECT_ROOT / "pretrained_models" / "generation_lora_stage2_final",
             PROJECT_ROOT / "pretrained_models" / "generation_lora_stage1_best",
@@ -4711,7 +4715,7 @@ class MirrAISDPipeline:
             band_x1 = max(0, int(np.min(band_pts_arr[:, 0]) - face_w * 0.04))
             band_x2 = min(W, int(np.max(band_pts_arr[:, 0]) + face_w * 0.04))
             band_top = max(0, int(np.min(band_pts_arr[:, 1]) - face_h * 0.04))
-            band_bottom = min(H, int(np.max(left_eye_pts[:, 1].max(), right_eye_pts[:, 1].max()) + face_h * 0.06))
+            band_bottom = min(H, int(max(left_eye_pts[:, 1].max(), right_eye_pts[:, 1].max()) + face_h * 0.06))
             if band_top < band_bottom and band_x1 < band_x2:
                 band_u8 = np.zeros((H, W), dtype=np.uint8)
                 band_u8[band_top:band_bottom, band_x1:band_x2] = 255
@@ -5843,6 +5847,26 @@ class MirrAISDPipeline:
         sd_prompt_data가 제공되면 DB에 저장된 SD 프롬프트를 우선 사용.
         없으면 hairstyle_text 기반으로 폴백.
         """
+        def _truncate_words(text: str, max_words: int) -> str:
+            words = str(text).split()
+            if len(words) <= max_words:
+                return str(text).strip()
+            return " ".join(words[:max_words]).strip(", ")
+
+        def _compact_prompt_parts(parts: List[str], max_words: int = 34) -> str:
+            compact: List[str] = []
+            total_words = 0
+            for part in parts:
+                normalized_part = str(part).strip().strip(",")
+                if not normalized_part:
+                    continue
+                word_count = len(normalized_part.split())
+                if compact and total_words + word_count > max_words:
+                    continue
+                compact.append(normalized_part)
+                total_words += word_count
+            return ", ".join(compact)
+
         normalized_color = MirrAISDPipeline._normalize_color_text(color_text)
         gender_mode = MirrAISDPipeline._infer_subject_gender(
             hairstyle_text,
@@ -5856,7 +5880,7 @@ class MirrAISDPipeline:
 
         # ── DB 프롬프트 데이터가 있으면 우선 사용 ─────────────────────────────
         if sd_prompt_data and sd_prompt_data.get("sd_positive"):
-            style_part = sd_prompt_data["sd_positive"]
+            style_part = _truncate_words(sd_prompt_data["sd_positive"], 18)
             sd_neg = sd_prompt_data.get("sd_negative", "")
             guidance = float(sd_prompt_data.get("sd_guidance", 8.5))
 
@@ -5866,22 +5890,21 @@ class MirrAISDPipeline:
             if normalized_color:
                 style_part = f"{style_part}, {normalized_color.strip()} hair color"
                 if "ash" in lowered_color:
-                    color_pos_hint = ", cool-toned ash color, smoky neutral undertone, no brassiness"
+                    color_pos_hint = "cool-toned ash hair, no brassiness"
                     color_neg_hint = "warm orange cast, yellow brassiness, copper tint, reddish tint, "
                 else:
-                    color_pos_hint = ", consistent natural hair color tone, coherent root-to-end color"
+                    color_pos_hint = "natural consistent hair color"
 
             positive_parts = [
                 f"professional portrait photo of a person with {style_part}",
             ]
             if color_pos_hint:
-                positive_parts.append(color_pos_hint.lstrip(", ").strip())
+                positive_parts.append(color_pos_hint)
             positive_parts.extend([
-                "same outfit, preserved shirt or blouse fabric texture, clean neckline and collar continuity, natural sleeve folds",
-                "photorealistic, high quality, natural lighting, 8k",
-                "studio photography, sharp focus, beautiful hair",
+                "same outfit, clean neckline, preserved fabric folds",
+                "photorealistic, natural lighting, sharp focus",
             ])
-            positive = ", ".join(positive_parts)
+            positive = _compact_prompt_parts(positive_parts)
             negative_base = _NEGATIVE_BASE + ", " + _COMMON_STYLE_BLOCK_NEGATIVE
             negative = sd_neg + (", " if sd_neg else "") + color_neg_hint + negative_base
 
@@ -5892,7 +5915,7 @@ class MirrAISDPipeline:
             parts.append(normalized_style)
         if normalized_color:
             parts.append(f"{normalized_color.strip()} hair color")
-        style = ", ".join(parts) if parts else "natural hairstyle"
+        style = _truncate_words(", ".join(parts) if parts else "natural hairstyle", 18)
         subject_noun = "person"
         if gender_mode == "male":
             subject_noun = "man"
@@ -5902,9 +5925,7 @@ class MirrAISDPipeline:
         # 길이별 기본 보강 (직접 입력/DB 프롬프트 폴백 시 사용)
         if hair_length == "short" and gender_mode == "male":
             pos_suffix = (
-                ", masculine short haircut silhouette, natural masculine hairline, "
-                "balanced forehead coverage, controlled temple coverage, clean sideburn transition, "
-                "no feminine bob shape, no dangling side tails, no jewelry"
+                ", masculine short cut, balanced forehead, clean temple line, no side tails, no jewelry"
             )
             neg_prefix = (
                 "feminine bob, chin-length bob, rounded bob, bixie, pixie bob, "
@@ -5914,11 +5935,7 @@ class MirrAISDPipeline:
             guidance = 10.9
         elif hair_length == "short":
             pos_suffix = (
-                ", strict short jaw-length bob silhouette, compact side shape, tucked nape line, "
-                "ends stopping at or above the jawline, fully visible neck and shoulders, "
-                "hair clearly above the shoulders, no side strands touching clothing, "
-                "no shoulder-grazing side sections, no chest-length strands, "
-                "no long lower tails below the chin line"
+                ", short jaw-length bob, visible neck, above shoulders, no long tails"
             )
             neg_prefix = (
                 "very long hair, medium hair, medium length hair, medium-length hair, shoulder-length hair, "
@@ -5934,10 +5951,7 @@ class MirrAISDPipeline:
             guidance = 11.2
         elif hair_length == "medium" and gender_mode == "male":
             pos_suffix = (
-                ", masculine medium haircut, controlled side silhouette, natural masculine hairline, "
-                "balanced forehead coverage, soft front movement, hairstyle proportional to face size, "
-                "moderate crown height, restrained top lift, balanced left-right volume, centered crown placement, "
-                "even side distribution, no heavy one-sided sweep, no oversized fluffy crown, no jewelry"
+                ", masculine medium cut, balanced forehead, centered volume, no side sweep, no jewelry"
             )
             neg_prefix = (
                 "feminine bob, rounded lob, dangling earrings, hoop earrings, necklace, jewelry, "
@@ -5955,7 +5969,7 @@ class MirrAISDPipeline:
             neg_prefix = "very long hair, very short hair, "
             guidance = 8.5
         else:
-            pos_suffix = ", natural masculine hairline, balanced forehead coverage, no jewelry" if gender_mode == "male" else ""
+            pos_suffix = ", masculine hairline, balanced forehead, no jewelry" if gender_mode == "male" else ""
             neg_prefix = (
                 "earring, earrings, hoop earrings, stud earrings, ear cuff, necklace, jewelry, "
                 "oversized exposed forehead, exaggerated high hairline, receding hairline, "
@@ -5968,23 +5982,22 @@ class MirrAISDPipeline:
         color_neg_hint = ""
         lowered_color = normalized_color.lower()
         if "ash" in lowered_color:
-            color_pos_hint = ", cool-toned ash color, smoky neutral undertone, no brassiness"
+            color_pos_hint = "ash hair, no brassiness"
             color_neg_hint = "warm orange cast, yellow brassiness, copper tint, reddish tint, "
         elif normalized_color:
-            color_pos_hint = ", consistent natural hair color tone, coherent root-to-end color"
+            color_pos_hint = "natural hair color"
 
         positive_parts = [
             f"professional portrait photo of a {subject_noun} with {style}{pos_suffix}",
         ]
         if color_pos_hint:
-            positive_parts.append(color_pos_hint.lstrip(", ").strip())
+            positive_parts.append(color_pos_hint)
         positive_parts.extend([
-            "hairstyle proportional to face size, realistic crown height, natural portrait framing",
-            "same outfit, preserved shirt or blouse fabric texture, clean neckline and collar continuity, natural sleeve folds",
-            "photorealistic, high quality, natural lighting, 8k",
-            "studio photography, sharp focus, beautiful hair",
+            "balanced framing",
+            "same outfit, clean neckline",
+            "photorealistic portrait",
         ])
-        positive = ", ".join(positive_parts)
+        positive = _compact_prompt_parts(positive_parts)
         negative_base = (
             _NEGATIVE_BASE
             + ", cropped head, cropped hair, cut off hair, top of head out of frame, tight close-up portrait, clipped hairstyle"

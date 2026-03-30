@@ -1,6 +1,8 @@
 # ── 모델 파일 ──────────────────────────────────────────────────────────────
 # pretrained_models는 컨텍스트에서 제외 (seg.pth는 런타임 다운로드)
 pretrained_models/*
+!pretrained_models/generation_lora_stage4_garment_reveal_best/
+!pretrained_models/generation_lora_stage4_garment_reveal_best/pytorch_lora_weights.safetensors
 dataset_build/
 cmd/
 tests/

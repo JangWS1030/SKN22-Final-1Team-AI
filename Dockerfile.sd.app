@@ -25,12 +25,14 @@ COPY rag_pipeline/             rag_pipeline/
 COPY models/__init__.py        models/__init__.py
 COPY models/segface/           models/segface/
 COPY data/                     data/
+COPY pretrained_models/generation_lora_stage4_garment_reveal_best/ pretrained_models/generation_lora_stage4_garment_reveal_best/
 
 # Normalize Windows CRLF line endings so the Linux entrypoint can execute.
 RUN sed -i 's/\r$//' entrypoint.sh
 
 # `pretrained_models/` contains local-only assets in some environments.
-# The runtime creates/downloads the required files on demand.
+# Promote the latest validated stage4 LoRA into the app image so serverless
+# rollouts exercise the newly trained weights by default.
 RUN mkdir -p pretrained_models
 
 ENV PYTHONPATH=/app \

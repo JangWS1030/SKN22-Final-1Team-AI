@@ -47,6 +47,8 @@ configs/
 !data/
 # pretrained_models 아래 체크포인트는 현재 저장소에 포함하지 않음
 pretrained_models/*
+!pretrained_models/generation_lora_stage4_garment_reveal_best/
+!pretrained_models/generation_lora_stage4_garment_reveal_best/pytorch_lora_weights.safetensors
 models/*/*.pt
 models/*/*.pth
 output/
