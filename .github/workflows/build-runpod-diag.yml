@@ -30,7 +30,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          driver: docker
+          driver: docker-container
 
       - name: Validate Docker Hub secrets
         shell: bash
@@ -59,6 +59,8 @@ jobs:
           pull: true
           push: true
           provenance: false
+          cache-from: type=gha,scope=runpod-diag
+          cache-to: type=gha,mode=max,scope=runpod-diag
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/sd:diag-run-${{ github.run_number }}
             ${{ secrets.DOCKER_USERNAME }}/sd:diag-latest
