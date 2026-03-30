@@ -14,6 +14,7 @@ on:
       - "handler_sd.py"
       - "handler_runpod_diag.py"
       - "pipeline_sd_inpainting.py"
+      - "pipeline_sd_components/**"
       - "style_recommender.py"
       - "runtime_download.py"
       - "utils/**"

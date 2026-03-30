@@ -19,6 +19,7 @@ COPY handler_sd.py             ./
 COPY style_recommender.py      ./
 COPY handler_runpod_diag.py    ./
 COPY pipeline_sd_inpainting.py ./
+COPY pipeline_sd_components/   pipeline_sd_components/
 COPY runtime_download.py       ./
 COPY utils/                    utils/
 COPY rag_pipeline/             rag_pipeline/
