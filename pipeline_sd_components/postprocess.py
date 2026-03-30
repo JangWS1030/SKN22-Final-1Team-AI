@@ -4927,8 +4927,6 @@ def _build_center_chest_strand_support_mask(
         iterations=1,
     )
     zone_u8 = cv2.bitwise_and(lane_u8, cloth_u8)
-    if int((zone_u8 > 0).sum()) < 20:
-        return np.zeros((H, W), dtype=np.float32)
 
     support_hint_u8 = np.zeros((H, W), dtype=np.uint8)
     if support_mask is not None and support_mask.shape == (H, W):
@@ -4942,7 +4940,7 @@ def _build_center_chest_strand_support_mask(
                 ),
                 iterations=1,
             )
-            support_hint_u8 = cv2.bitwise_and(support_hint_u8, zone_u8)
+            support_hint_u8 = cv2.bitwise_and(support_hint_u8, lane_u8)
             support_hint_u8 = cv2.morphologyEx(
                 support_hint_u8,
                 cv2.MORPH_CLOSE,
@@ -4951,6 +4949,11 @@ def _build_center_chest_strand_support_mask(
                     (7, 31) if hair_length == "short" else (5, 23),
                 ),
             )
+            if hair_length == "short":
+                zone_u8 = cv2.bitwise_or(zone_u8, support_hint_u8)
+
+    if int((zone_u8 > 0).sum()) < 20:
+        return np.zeros((H, W), dtype=np.float32)
 
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
     blur = cv2.GaussianBlur(gray, (0, 0), sigmaX=9.0, sigmaY=9.0)
@@ -5070,6 +5073,7 @@ def _build_lower_tail_post_support_mask(
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[y_min:y_max, x_min:x_max] = 255
     support_u8 = cv2.bitwise_and(support_u8, corridor_u8)
+    support_raw_u8 = support_u8.copy()
 
     if cloth_mask is not None and cloth_mask.shape == (H, W):
         cloth_near_u8 = cv2.dilate(
@@ -5078,6 +5082,21 @@ def _build_lower_tail_post_support_mask(
             iterations=1,
         )
         support_u8 = cv2.bitwise_and(support_u8, cloth_near_u8)
+        if hair_length == "short":
+            raw_px = int((support_raw_u8 > 0).sum())
+            cloth_px = int((support_u8 > 0).sum())
+            if raw_px >= 48 and cloth_px < max(12, int(raw_px * 0.22)):
+                fallback_u8 = support_raw_u8.copy()
+                fallback_u8[:max(0, int(cutoff_y + face_h * 0.10)), :] = 0
+                torso_u8 = np.zeros((H, W), dtype=np.uint8)
+                torso_x1 = max(0, int(x1 - face_w * 0.98))
+                torso_x2 = min(W, int(x2 + face_w * 0.98))
+                torso_y1 = max(0, int(cutoff_y - face_h * 0.02))
+                torso_y2 = min(H, int(cutoff_y + face_h * 1.22))
+                if torso_x1 < torso_x2 and torso_y1 < torso_y2:
+                    torso_u8[torso_y1:torso_y2, torso_x1:torso_x2] = 255
+                    fallback_u8 = cv2.bitwise_and(fallback_u8, torso_u8)
+                    support_u8 = cv2.bitwise_or(support_u8, fallback_u8)
 
     if int((support_u8 > 0).sum()) < 12:
         return np.zeros((H, W), dtype=np.float32)
