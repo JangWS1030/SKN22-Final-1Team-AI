@@ -805,26 +805,26 @@ def _build_post_cloth_refine_mask(
 
     if hair_length == "short":
         short_gate_u8 = np.zeros((H, W), dtype=np.uint8)
-        gate_half_w = max(14, int(face_w * 0.22))
+        gate_half_w = max(32, int(face_w * 0.72))
         gate_left = max(0, cx - gate_half_w)
         gate_right = min(W, cx + gate_half_w)
-        gate_top = max(top, int(cutoff_y + face_h * 0.04))
-        gate_bottom = min(H, int(cutoff_y + face_h * 0.76))
+        gate_top = max(top, int(cutoff_y + face_h * 0.02))
+        gate_bottom = min(H, int(cutoff_y + face_h * 1.04))
         if gate_top < gate_bottom and gate_left < gate_right:
             short_gate_u8[gate_top:gate_bottom, gate_left:gate_right] = 255
         if int((short_gate_u8 > 0).sum()) > 0:
             mask_u8 = cv2.bitwise_and(mask_u8, short_gate_u8)
             artifact_bonus_u8 = cv2.bitwise_and(artifact_bonus_u8, short_gate_u8)
 
-        max_bottom = min(H, int(cutoff_y + face_h * 0.74))
+        max_bottom = min(H, int(cutoff_y + face_h * 1.02))
         if max_bottom < H:
             mask_u8[max_bottom:, :] = 0
             artifact_bonus_u8[max_bottom:, :] = 0
 
-        max_component_area = max(96, int(face_w * face_h * 0.08))
-        max_component_width = max(24, int(face_w * 0.34))
+        max_component_area = max(320, int(face_w * face_h * 0.26))
+        max_component_width = max(84, int(face_w * 0.88))
         min_component_height = max(12, int(face_h * 0.10))
-        center_allow = max(14, int(face_w * 0.18))
+        center_allow = max(44, int(face_w * 0.72))
         filtered_u8 = np.zeros((H, W), dtype=np.uint8)
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_u8, 8)
         for idx in range(1, num_labels):
