@@ -2221,15 +2221,20 @@ def _build_final_source_cloth_rescue_mask(
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
     top = max(0, int(cutoff_y - face_h * 0.04))
-    bottom = min(H, int(cutoff_y + face_h * (1.24 if hair_length == "short" else 1.52)))
-    left = max(0, int(x1 - face_w * (1.18 if hair_length == "short" else 1.34)))
-    right = min(W, int(x2 + face_w * (1.18 if hair_length == "short" else 1.34)))
+    bottom = min(H, int(cutoff_y + face_h * (1.40 if hair_length == "short" else 1.52)))
+    left = max(0, int(x1 - face_w * (1.34 if hair_length == "short" else 1.34)))
+    right = min(W, int(x2 + face_w * (1.34 if hair_length == "short" else 1.34)))
     if top >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
 
-    cloth_u8 = (
-        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255
+    cloth_u8 = cv2.dilate(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (21, 21) if hair_length == "short" else (13, 13),
+        ),
+        iterations=1,
     )
     cloth_u8 = cv2.bitwise_and(cloth_u8, corridor_u8)
     if int((cloth_u8 > 0).sum()) < 60:
@@ -2371,6 +2376,8 @@ def _build_final_source_cloth_rescue_mask(
             ),
             iterations=1,
         )
+        if hair_length == "short":
+            final_hair_u8[min(H, int(cutoff_y + face_h * 0.40)):, :] = 0
         keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(final_hair_u8))
 
     if int((keep_u8 > 0).sum()) < 80:

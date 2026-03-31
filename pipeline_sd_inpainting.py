@@ -2829,6 +2829,7 @@ class MirrAISDPipeline:
                             cleanup_mask=final_source_cloth_rescue_mask,
                             cloth_mask=cloth_mask_dilated,
                             final_hair_mask=final_hair_mask,
+                            ignore_final_hair_for_cloth_restore=(hair_length == "short"),
                             cleanup_dark_tail=(hair_length == "short"),
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
