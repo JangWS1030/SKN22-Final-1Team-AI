@@ -76,3 +76,6 @@ tmp/
 .claude/
 *.swp
 *.swo
+
+# Agent Rules
+AGENTS.md

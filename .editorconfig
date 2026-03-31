@@ -1,0 +1,26 @@
+root = true
+
+[*.md]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = false
+
+[README*.md]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = false
+
+[.gitignore]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = false
+
+[.dockerignore]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = false
+
+[requirements*.txt]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = false
