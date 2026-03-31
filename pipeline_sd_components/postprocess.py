@@ -413,7 +413,21 @@ def _sd_refine_removed_region(
         mask_edge_suppression=0.45,
     )
 
-    if refine_mode == "cloth":
+    if refine_mode == "garment":
+        fill_prompt = (
+            "professional portrait photo, restore the same original outfit, "
+            "clean connected shoulder cloth, continuous cardigan blouse shirt or jacket fabric, "
+            "preserve neckline collar seams and buttons, realistic garment folds and texture, "
+            "no hair strands on clothes, photorealistic details"
+        )
+        fill_guidance = 6.6 if hair_length == "short" else 6.9
+        fill_negative = (
+            "hair strands on clothes, loose dangling hair, long hair, black blob, disconnected clothing, "
+            "broken neckline, missing collar, missing buttons, warped garment, melted fabric, exposed shoulder skin, "
+            "deformed neck, artifacts, blurry, cartoon, painting, "
+            f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
+        )
+    elif refine_mode == "cloth":
         fill_prompt = (
             "professional portrait photo, preserve the original shirt or blouse shape, "
             "realistic clothing fabric texture continuity, coherent folds and seams, "
@@ -474,7 +488,11 @@ def _sd_refine_removed_region(
     # 배경 복원은 identity 영향이 과하면 긴머리가 다시 생길 수 있어 scale을 낮춘다.
     self._sd_pipe.set_ip_adapter_scale(0.0)
     generator = torch.Generator(device=self.device).manual_seed(int(seed))
-    if refine_mode == "cloth":
+    if refine_mode == "garment":
+        fill_control = float(np.clip(max(self.config.controlnet_conditioning_scale, 0.28), 0.22, 0.42))
+        fill_steps = max(22, self.config.num_inference_steps - 6)
+        fill_strength = 0.86
+    elif refine_mode == "cloth":
         fill_control = float(np.clip(max(self.config.controlnet_conditioning_scale, 0.16), 0.10, 0.24))
         fill_steps = max(20, self.config.num_inference_steps - 8)
         fill_strength = 0.84
@@ -532,7 +550,13 @@ def _sd_refine_removed_region(
         alpha = alpha * (1.0 - 0.18 * cloth_w)
 
     # 얼굴은 기존 픽셀 고정
-    if refine_mode == "cloth":
+    if refine_mode == "garment":
+        alpha = cv2.GaussianBlur(fill_mask, (0, 0), sigmaX=5.2, sigmaY=5.2)
+        alpha = np.clip(alpha * 1.04, 0.0, 1.0)
+        if cloth_mask is not None and cloth_mask.shape == (H, W):
+            cloth_w = np.clip(cloth_mask.astype(np.float32), 0.0, 1.0)
+            alpha = np.clip(alpha * (0.98 + 0.24 * cloth_w), 0.0, 1.0)
+    elif refine_mode == "cloth":
         alpha = cv2.GaussianBlur(fill_mask, (0, 0), sigmaX=6.0, sigmaY=6.0)
         alpha = np.clip(alpha, 0.0, 1.0)
         if cloth_mask is not None and cloth_mask.shape == (H, W):

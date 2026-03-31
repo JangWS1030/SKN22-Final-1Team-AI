@@ -2940,6 +2940,117 @@ class MirrAISDPipeline:
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short subject cloth cleanup failed (ignored): {e}")
+            if (
+                hair_length == "short"
+                and cloth_mask_dilated is not None
+                and removal_mask_for_post is not None
+                and cutoff_y_for_post is not None
+            ):
+                try:
+                    final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
+                    final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    short_below_bob_torso_mask = self._build_short_below_bob_torso_mask(
+                        cloth_mask=cloth_mask_dilated,
+                        face_bbox=face_bbox,
+                        cutoff_y=cutoff_y_for_post,
+                        hair_length=hair_length,
+                        final_hair_mask=final_hair_mask,
+                    )
+                    garment_subject_mask = self._build_short_subject_cloth_cleanup_mask(
+                        current_rgb=final_rgb,
+                        source_rgb=img_rgb,
+                        cloth_mask=cloth_mask_dilated,
+                        torso_mask=short_below_bob_torso_mask,
+                        face_mask=face_region_mask,
+                        face_bbox=face_bbox,
+                        cutoff_y=cutoff_y_for_post,
+                        hair_length=hair_length,
+                        final_hair_mask=final_hair_mask,
+                    )
+                    garment_lower_mask = self._build_short_lower_garment_cleanup_mask(
+                        current_rgb=final_rgb,
+                        source_rgb=img_rgb,
+                        removal_mask=removal_mask_for_post,
+                        cloth_mask=cloth_mask_dilated,
+                        face_bbox=face_bbox,
+                        cutoff_y=cutoff_y_for_post,
+                        hair_length=hair_length,
+                        protect_mask=protect_mask_for_sd,
+                        final_hair_mask=final_hair_mask,
+                    )
+                    garment_source_rescue_mask = self._build_final_source_cloth_rescue_mask(
+                        current_rgb=final_rgb,
+                        source_rgb=img_rgb,
+                        removal_mask=removal_mask_for_post,
+                        cloth_mask=cloth_mask_dilated,
+                        face_bbox=face_bbox,
+                        cutoff_y=cutoff_y_for_post,
+                        hair_length=hair_length,
+                        protect_mask=protect_mask_for_sd,
+                        final_hair_mask=final_hair_mask,
+                    )
+                    garment_repaint_mask = np.maximum(
+                        np.clip(garment_subject_mask.astype(np.float32), 0.0, 1.0),
+                        np.clip(garment_lower_mask.astype(np.float32) * 0.86, 0.0, 1.0),
+                    ).astype(np.float32)
+                    garment_repaint_mask = np.maximum(
+                        garment_repaint_mask,
+                        np.clip(garment_source_rescue_mask.astype(np.float32) * 0.68, 0.0, 1.0),
+                    ).astype(np.float32)
+                    garment_repaint_mask = np.clip(
+                        garment_repaint_mask
+                        * np.clip(cloth_mask_dilated.astype(np.float32), 0.0, 1.0),
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
+                    if final_hair_mask is not None and final_hair_mask.shape == (H, W):
+                        garment_hair_guard = cv2.dilate(
+                            (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.12).astype(np.uint8) * 255,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 25)),
+                            iterations=1,
+                        ).astype(np.float32) / 255.0
+                        garment_repaint_mask = np.clip(
+                            garment_repaint_mask - garment_hair_guard * 0.96,
+                            0.0,
+                            1.0,
+                        )
+                    if protect_mask_for_sd is not None and protect_mask_for_sd.shape == (H, W):
+                        garment_repaint_mask = np.clip(
+                            garment_repaint_mask - np.clip(protect_mask_for_sd.astype(np.float32), 0.0, 1.0) * 0.96,
+                            0.0,
+                            1.0,
+                        )
+                    garment_repaint_mask = cv2.GaussianBlur(
+                        garment_repaint_mask.astype(np.float32),
+                        (0, 0),
+                        sigmaX=4.2,
+                        sigmaY=6.4,
+                    ).astype(np.float32)
+                    garment_repaint_mask = np.clip(garment_repaint_mask, 0.0, 1.0)
+                    garment_repaint_u8 = (
+                        (garment_repaint_mask > 0.08).astype(np.uint8) * 255
+                    )
+                    garment_repaint_px = int((garment_repaint_u8 > 0).sum())
+                    if garment_repaint_px >= 120:
+                        final_rgb = self._sd_refine_removed_region(
+                            base_rgb=final_rgb,
+                            removal_mask=garment_repaint_mask,
+                            face_bbox=face_bbox,
+                            face_crop_pil=face_crop_pil,
+                            protect_mask=protect_mask_for_sd,
+                            cloth_mask=cloth_mask_dilated,
+                            hair_length=hair_length,
+                            seed=int(cand["seed"]) + 2411,
+                            refine_mode="garment",
+                        )
+                        final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                    if debug_images_common is not None and rank == 0:
+                        debug_images_common["pipeline_controlnet_garment_repaint_mask"] = cv2.cvtColor(
+                            garment_repaint_u8,
+                            cv2.COLOR_GRAY2BGR,
+                        )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] controlnet garment repaint failed (ignored): {e}")
             try:
                 final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                 final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
