@@ -3817,10 +3817,10 @@ def _build_short_bob_tail_suppress_mask(
         )
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    top = max(0, int(max(y2 + face_h * 0.12, cutoff_y + face_h * 0.08)))
+    top = max(0, int(max(y2 + face_h * 0.08, cutoff_y + face_h * 0.06)))
     bottom = min(H, int(cutoff_y + face_h * 1.56))
-    left = max(0, int(x1 - face_w * 1.38))
-    right = min(W, int(x2 + face_w * 1.38))
+    left = max(0, int(x1 - face_w * 1.46))
+    right = min(W, int(x2 + face_w * 1.46))
     if top >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
@@ -3834,8 +3834,8 @@ def _build_short_bob_tail_suppress_mask(
         lane_u8[top:bottom, left_lane_left:left_lane_right] = 255
     if right_lane_left < right_lane_right:
         lane_u8[top:bottom, right_lane_left:right_lane_right] = 255
-    center_lane_top = min(bottom, int(y2 + face_h * 0.34))
-    center_half = max(16, int(face_w * 0.12))
+    center_lane_top = min(bottom, int(y2 + face_h * 0.24))
+    center_half = max(22, int(face_w * 0.20))
     center_x1 = max(left, int(cx - center_half))
     center_x2 = min(right, int(cx + center_half))
     if center_lane_top < bottom and center_x1 < center_x2:
@@ -3863,18 +3863,42 @@ def _build_short_bob_tail_suppress_mask(
         candidate_u8 = cv2.bitwise_or(candidate_u8, cv2.bitwise_and(dark_tail_u8, removal_u8))
     else:
         candidate_u8 = cv2.bitwise_or(candidate_u8, dark_tail_u8)
+    hair_tail_u8 = cv2.bitwise_and(hair_u8, corridor_u8)
     if cloth_u8 is not None:
         cloth_support_u8 = cv2.dilate(
             cloth_u8,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 29)),
             iterations=1,
         )
+        hair_tail_u8 = cv2.bitwise_and(hair_tail_u8, cloth_support_u8)
         deep_lane_u8 = lane_u8.copy()
         deep_lane_u8[:max(0, int(y2 + face_h * 0.12)), :] = 0
         candidate_u8 = cv2.bitwise_and(
             candidate_u8,
             cv2.bitwise_or(cloth_support_u8, deep_lane_u8),
         )
+    hair_tail_u8 = cv2.bitwise_and(hair_tail_u8, lane_u8)
+    if removal_u8 is not None:
+        hair_tail_u8 = cv2.bitwise_or(
+            hair_tail_u8,
+            cv2.bitwise_and(
+                cv2.dilate(
+                    removal_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 47)),
+                    iterations=1,
+                ),
+                cv2.bitwise_and(hair_u8, corridor_u8),
+            ),
+        )
+    lower_keepout = min(H, int(y2 + face_h * 0.10))
+    if lower_keepout < H:
+        hair_tail_u8[:lower_keepout, :] = 0
+    hair_tail_u8 = cv2.morphologyEx(
+        hair_tail_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 19)),
+    )
+    candidate_u8 = cv2.bitwise_or(candidate_u8, hair_tail_u8)
     candidate_u8 = cv2.bitwise_and(candidate_u8, corridor_u8)
     candidate_u8 = cv2.bitwise_and(candidate_u8, lane_u8)
     if int((candidate_u8 > 0).sum()) < 40:
