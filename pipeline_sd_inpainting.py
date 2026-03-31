@@ -495,6 +495,7 @@ class MirrAISDPipeline:
         sparse_dark_cloth_support_mask = segface_debug.get("sparse_dark_cloth_support_mask")
         subject_cloth_anchor_mask = segface_debug.get("subject_cloth_anchor_mask")
         subject_cloth_filtered_mask = segface_debug.get("subject_cloth_filtered_mask")
+        subject_shoulder_bridge_mask = segface_debug.get("subject_shoulder_bridge_mask")
         if isinstance(custom_hair_mask, np.ndarray):
             _store_mask("segface_custom_hair_mask", custom_hair_mask)
         if isinstance(base_hair_mask, np.ndarray):
@@ -513,6 +514,8 @@ class MirrAISDPipeline:
             _store_mask("segface_subject_cloth_anchor_mask", subject_cloth_anchor_mask)
         if isinstance(subject_cloth_filtered_mask, np.ndarray):
             _store_mask("segface_subject_cloth_filtered_mask", subject_cloth_filtered_mask)
+        if isinstance(subject_shoulder_bridge_mask, np.ndarray):
+            _store_mask("segface_subject_shoulder_bridge_mask", subject_shoulder_bridge_mask)
         subject_torso_anchor_mask = segface_debug.get("subject_torso_anchor_mask")
         subject_torso_filtered_mask = segface_debug.get("subject_torso_filtered_mask")
         if isinstance(subject_torso_anchor_mask, np.ndarray):
@@ -3857,11 +3860,19 @@ class MirrAISDPipeline:
             max_width_scale=1.72,
             max_area_scale=0.90,
         )
+        shoulder_bridge_u8 = self._build_subject_shoulder_bridge_mask(
+            image_shape=(H, W),
+            face_bbox=face_bbox,
+            base_cloth_mask_u8=raw_cloth_u8,
+            torso_cloth_mask_u8=filtered_subject_torso_u8 if int((filtered_subject_torso_u8 > 0).sum()) >= 80 else torso_cloth_u8,
+        )
         cloth_u8 = np.zeros((H, W), dtype=np.uint8)
         if int((filtered_subject_cloth_u8 > 0).sum()) >= 60:
             cloth_u8 = cv2.bitwise_or(cloth_u8, filtered_subject_cloth_u8)
         if int((filtered_subject_torso_u8 > 0).sum()) >= 80:
             cloth_u8 = cv2.bitwise_or(cloth_u8, filtered_subject_torso_u8)
+        if int((shoulder_bridge_u8 > 0).sum()) >= 60:
+            cloth_u8 = cv2.bitwise_or(cloth_u8, shoulder_bridge_u8)
         if isinstance(self._last_segface_mask_debug, dict):
             self._last_segface_mask_debug["subject_cloth_anchor_mask"] = (
                 subject_anchor_u8 > 0
@@ -3874,6 +3885,9 @@ class MirrAISDPipeline:
             ).astype(np.float32)
             self._last_segface_mask_debug["subject_torso_filtered_mask"] = (
                 filtered_subject_torso_u8 > 0
+            ).astype(np.float32)
+            self._last_segface_mask_debug["subject_shoulder_bridge_mask"] = (
+                shoulder_bridge_u8 > 0
             ).astype(np.float32)
 
         sparse_thresh_px = max(900, int(bw * bh * 0.020))
@@ -3903,9 +3917,17 @@ class MirrAISDPipeline:
                     ).astype(np.float32)
 
         cloth_f = (cloth_u8 > 0).astype(np.float32)
-        cloth_ratio = self._mask_ratio(cloth_f)
+        overlap_guard_u8 = cloth_u8.copy()
+        if int((shoulder_bridge_u8 > 0).sum()) > 0:
+            overlap_guard_u8 = cv2.bitwise_and(
+                overlap_guard_u8,
+                cv2.bitwise_not(shoulder_bridge_u8),
+            )
+        overlap_guard_f = (overlap_guard_u8 > 0).astype(np.float32)
+        cloth_ratio = self._mask_ratio(overlap_guard_f if float(overlap_guard_f.sum()) > 0.0 else cloth_f)
         hair_area = float((hair_mask > 0.5).sum())
-        overlap = float(((cloth_f > 0.5) & (hair_mask > 0.5)).sum())
+        overlap_probe_f = overlap_guard_f if float(overlap_guard_f.sum()) > 0.0 else cloth_f
+        overlap = float(((overlap_probe_f > 0.5) & (hair_mask > 0.5)).sum())
         overlap_ratio = overlap / max(hair_area, 1.0)
 
         if cloth_ratio > 0.118 or overlap_ratio > 0.34:
@@ -4000,6 +4022,92 @@ class MirrAISDPipeline:
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 27)),
         )
         return anchor_u8
+
+    def _build_subject_shoulder_bridge_mask(
+        self,
+        *,
+        image_shape: Tuple[int, int],
+        face_bbox: Tuple[int, int, int, int],
+        base_cloth_mask_u8: np.ndarray,
+        torso_cloth_mask_u8: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        H, W = image_shape
+        if base_cloth_mask_u8.shape[:2] != (H, W):
+            return np.zeros((H, W), dtype=np.uint8)
+        if torso_cloth_mask_u8 is not None and torso_cloth_mask_u8.shape[:2] != (H, W):
+            torso_cloth_mask_u8 = None
+
+        x1, y1, x2, y2 = face_bbox
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+        cx = float(0.5 * (x1 + x2))
+
+        corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+        top = max(0, int(y2 + face_h * 0.12))
+        bottom = min(H, int(y2 + face_h * 1.26))
+        left = max(0, int(x1 - face_w * 1.16))
+        right = min(W, int(x2 + face_w * 1.16))
+        if top >= bottom or left >= right:
+            return np.zeros((H, W), dtype=np.uint8)
+        corridor_u8[top:bottom, left:right] = 255
+
+        support_u8 = cv2.bitwise_and(base_cloth_mask_u8, corridor_u8)
+        if torso_cloth_mask_u8 is not None:
+            support_u8 = cv2.bitwise_or(
+                support_u8,
+                cv2.bitwise_and(torso_cloth_mask_u8, corridor_u8),
+            )
+        support_u8 = cv2.morphologyEx(
+            support_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 15)),
+        )
+        if int((support_u8 > 0).sum()) < max(120, int(face_w * face_h * 0.010)):
+            return np.zeros((H, W), dtype=np.uint8)
+
+        bridge_u8 = np.zeros((H, W), dtype=np.uint8)
+        main_thickness = max(18, int(face_w * 0.16))
+        sub_thickness = max(12, int(face_w * 0.10))
+        side_specs = (
+            (
+                (int(cx - face_w * 0.92), int(y2 + face_h * 0.30)),
+                (int(cx - face_w * 0.28), int(y2 + face_h * 0.86)),
+                (int(cx - face_w * 0.74), int(y2 + face_h * 0.24)),
+                (int(cx - face_w * 0.20), int(y2 + face_h * 0.64)),
+            ),
+            (
+                (int(cx + face_w * 0.92), int(y2 + face_h * 0.30)),
+                (int(cx + face_w * 0.28), int(y2 + face_h * 0.86)),
+                (int(cx + face_w * 0.74), int(y2 + face_h * 0.24)),
+                (int(cx + face_w * 0.20), int(y2 + face_h * 0.64)),
+            ),
+        )
+        for outer_pt, inner_pt, upper_pt, lower_pt in side_specs:
+            cv2.line(bridge_u8, outer_pt, inner_pt, 255, thickness=main_thickness)
+            cv2.line(bridge_u8, upper_pt, lower_pt, 255, thickness=sub_thickness)
+            cv2.ellipse(
+                bridge_u8,
+                outer_pt,
+                (max(14, int(face_w * 0.14)), max(10, int(face_h * 0.12))),
+                0,
+                0,
+                360,
+                255,
+                -1,
+            )
+
+        bridge_u8 = cv2.bitwise_and(bridge_u8, corridor_u8)
+        bridge_u8 = cv2.morphologyEx(
+            bridge_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 17)),
+        )
+        bridge_u8 = cv2.dilate(
+            bridge_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+            iterations=1,
+        )
+        return bridge_u8
 
     def _filter_cloth_mask_to_subject_anchor(
         self,
