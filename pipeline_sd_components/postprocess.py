@@ -2752,6 +2752,7 @@ def _build_side_column_cloth_restore_mask(
     )
 
     keep_u8 = np.zeros((H, W), dtype=np.uint8)
+    use_lane_mask = True
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(zone_u8, 8)
     min_area = max(120, int(face_w * face_h * 0.014))
     max_area = max(4200, int(face_w * face_h * (0.22 if hair_length == "short" else 0.34)))
@@ -3012,9 +3013,9 @@ def _build_short_below_bob_cloth_restore_mask(
         ),
     )
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    left = max(0, int(x1 - face_w * 1.26))
-    right = min(W, int(x2 + face_w * 1.26))
-    bottom = min(H, int(cutoff_y + face_h * 1.78))
+    left = max(0, int(x1 - face_w * 1.38))
+    right = min(W, int(x2 + face_w * 1.38))
+    bottom = min(H, int(cutoff_y + face_h * 1.92))
     if bob_floor >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[bob_floor:bottom, left:right] = 255
@@ -3035,9 +3036,12 @@ def _build_short_below_bob_cloth_restore_mask(
     if center_lane_top < bottom and center_x1 < center_x2:
         lane_u8[center_lane_top:bottom, center_x1:center_x2] = 255
 
+    pre_lane_zone_u8 = zone_u8.copy()
     zone_u8 = cv2.bitwise_and(zone_u8, lane_u8)
     if int((zone_u8 > 0).sum()) < 60:
-        return np.zeros((H, W), dtype=np.float32)
+        if int((pre_lane_zone_u8 > 0).sum()) < 120:
+            return np.zeros((H, W), dtype=np.float32)
+        zone_u8 = pre_lane_zone_u8
 
     zone_u8 = cv2.morphologyEx(
         zone_u8,
@@ -3053,12 +3057,12 @@ def _build_short_below_bob_cloth_restore_mask(
     keep_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(zone_u8, 8)
     min_area = max(36, int(face_w * face_h * 0.002))
-    max_area = max(12000, int(face_w * face_h * 0.28))
+    max_area = max(22000, int(face_w * face_h * 0.48))
     min_height = max(18, int(face_h * 0.10))
-    max_width = max(152, int(face_w * 0.98))
+    max_width = max(236, int(face_w * 1.44))
     center_keepout = max(16, int(face_w * 0.16))
-    deep_center_bottom = int(y2 + face_h * 0.52)
-    max_offset = max(170, int(face_w * 0.95))
+    deep_center_bottom = int(y2 + face_h * 0.78)
+    max_offset = max(244, int(face_w * 1.30))
     center_reject_offset = max(26, int(face_w * 0.30))
 
     for idx in range(1, num_labels):
@@ -3096,7 +3100,10 @@ def _build_short_below_bob_cloth_restore_mask(
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 23)),
         iterations=1,
     )
-    keep_u8 = cv2.bitwise_and(keep_u8, lane_u8)
+    pre_trim_keep_u8 = cv2.bitwise_and(keep_u8, lane_u8)
+    if int((pre_trim_keep_u8 > 0).sum()) < 40 and int((keep_u8 > 0).sum()) >= 40:
+        pre_trim_keep_u8 = keep_u8.copy()
+    keep_u8 = pre_trim_keep_u8
     keep_u8 = self._trim_blocky_short_restore_mask_u8(
         mask_u8=keep_u8,
         face_bbox=face_bbox,
@@ -3104,7 +3111,9 @@ def _build_short_below_bob_cloth_restore_mask(
         min_keep_px=40,
     )
     if int((keep_u8 > 0).sum()) < 40:
-        return np.zeros((H, W), dtype=np.float32)
+        if int((pre_trim_keep_u8 > 0).sum()) < 40:
+            return np.zeros((H, W), dtype=np.float32)
+        keep_u8 = pre_trim_keep_u8
 
     return cv2.GaussianBlur(
         keep_u8.astype(np.float32) / 255.0,
@@ -3153,9 +3162,9 @@ def _build_short_below_bob_generation_block_mask(
             int(cutoff_y + face_h * 0.04),
         ),
     )
-    bottom = min(H, int(cutoff_y + face_h * 1.46))
-    left = max(0, int(x1 - face_w * 1.22))
-    right = min(W, int(x2 + face_w * 1.22))
+    bottom = min(H, int(cutoff_y + face_h * 1.72))
+    left = max(0, int(x1 - face_w * 1.36))
+    right = min(W, int(x2 + face_w * 1.36))
     if bob_floor >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -3177,9 +3186,12 @@ def _build_short_below_bob_generation_block_mask(
     center_x2 = min(right, int(cx + center_half))
     if center_lane_top < bottom and center_x1 < center_x2:
         lane_u8[center_lane_top:bottom, center_x1:center_x2] = 255
+    pre_lane_zone_u8 = zone_u8.copy()
     zone_u8 = cv2.bitwise_and(zone_u8, lane_u8)
     if int((zone_u8 > 0).sum()) < 60:
-        return np.zeros((H, W), dtype=np.float32)
+        if int((pre_lane_zone_u8 > 0).sum()) < 120:
+            return np.zeros((H, W), dtype=np.float32)
+        zone_u8 = pre_lane_zone_u8
 
     zone_u8 = cv2.morphologyEx(
         zone_u8,
@@ -3196,9 +3208,9 @@ def _build_short_below_bob_generation_block_mask(
     min_area = max(36, int(face_w * face_h * 0.0018))
     max_area = max(32000, int(face_w * face_h * 0.56))
     min_height = max(20, int(face_h * 0.10))
-    max_width = max(228, int(face_w * 1.36))
+    max_width = max(360, int(face_w * 2.04))
     center_keepout = max(20, int(face_w * 0.18))
-    deep_center_bottom = int(y2 + face_h * 0.34)
+    deep_center_bottom = int(y2 + face_h * 0.64)
 
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
@@ -3220,14 +3232,17 @@ def _build_short_below_bob_generation_block_mask(
         keep_u8[labels == idx] = 255
 
     if int((keep_u8 > 0).sum()) < 40:
-        return np.zeros((H, W), dtype=np.float32)
+        if int((zone_u8 > 0).sum()) < 120:
+            return np.zeros((H, W), dtype=np.float32)
+        keep_u8 = zone_u8.copy()
+        use_lane_mask = False
 
     keep_u8 = cv2.dilate(
         keep_u8,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 33)),
         iterations=1,
     )
-    keep_u8 = cv2.bitwise_and(keep_u8, lane_u8)
+    keep_u8 = cv2.bitwise_and(keep_u8, lane_u8 if use_lane_mask else corridor_u8)
     return cv2.GaussianBlur(
         keep_u8.astype(np.float32) / 255.0,
         (0, 0),

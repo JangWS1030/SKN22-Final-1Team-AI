@@ -650,8 +650,34 @@ class MirrAISDPipeline:
                 self._mask_ratio(cloth_mask_dilated),
             )
             cloth_mask_dilated = np.zeros_like(cloth_mask_dilated, dtype=np.float32)
+        cloth_restore_mask_for_post = cloth_mask_dilated.astype(np.float32)
+        if (
+            hair_length == "short"
+            and isinstance(subject_cloth_anchor_mask, np.ndarray)
+            and subject_cloth_anchor_mask.shape == cloth_mask_dilated.shape
+        ):
+            anchor_mask_f = np.clip(subject_cloth_anchor_mask.astype(np.float32), 0.0, 1.0)
+            cloth_ratio = self._mask_ratio(cloth_mask_dilated)
+            anchor_ratio = self._mask_ratio(anchor_mask_f)
+            if cloth_ratio < 0.07 and anchor_ratio > max(0.08, cloth_ratio + 0.05):
+                anchor_u8 = cv2.erode(
+                    (anchor_mask_f > 0.04).astype(np.uint8) * 255,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+                    iterations=1,
+                )
+                cloth_restore_mask_for_post = np.maximum(
+                    cloth_restore_mask_for_post,
+                    anchor_u8.astype(np.float32) / 255.0,
+                ).astype(np.float32)
+                logger.info(
+                    "[SDPipeline] short restore cloth fallback enabled: cloth_ratio=%.4f anchor_ratio=%.4f",
+                    cloth_ratio,
+                    anchor_ratio,
+                )
         hair_mask = np.clip(hair_mask - cloth_mask_dilated, 0.0, 1.0)
         _store_mask("segface_cloth_mask_dilated", cloth_mask_dilated)
+        if hair_length == "short":
+            _store_mask("pipeline_short_restore_cloth_mask", cloth_restore_mask_for_post)
         _store_mask("pipeline_hair_mask_cloth_protected", hair_mask)
         logger.info(
             f"[SDPipeline] 옷 픽셀 제거 완료, pixels={hair_mask.sum():.0f}"
@@ -1042,7 +1068,7 @@ class MirrAISDPipeline:
                 )
                 below_bob_cloth_restore_for_post = self._build_short_below_bob_cloth_restore_mask(
                     removal_mask=removal_mask_for_post,
-                    cloth_mask=cloth_mask_dilated,
+                    cloth_mask=cloth_restore_mask_for_post,
                     face_bbox=face_bbox,
                     cutoff_y=cutoff_y,
                     hair_length=hair_length,
@@ -1528,7 +1554,7 @@ class MirrAISDPipeline:
                         ).astype(np.float32)
                     preclean_side_restore_mask = self._build_side_column_cloth_restore_mask(
                         img_rgb=img_rgb_cleaned,
-                        cloth_mask=cloth_mask_dilated,
+                        cloth_mask=cloth_restore_mask_for_post,
                         candidate_mask=preclean_side_candidate_mask,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y,
@@ -1537,7 +1563,7 @@ class MirrAISDPipeline:
                     )
                     direct_preclean_side_restore_mask = self._build_direct_short_column_restore_mask(
                         removal_mask=removal_mask_for_post,
-                        cloth_mask=cloth_mask_dilated,
+                        cloth_mask=cloth_restore_mask_for_post,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y,
                         hair_length=hair_length,
@@ -2089,7 +2115,7 @@ class MirrAISDPipeline:
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     cloth_refine_mask = self._build_post_cloth_refine_mask(
                         removal_mask=removal_mask_for_post,
-                        cloth_mask=cloth_mask_dilated,
+                        cloth_mask=cloth_restore_mask_for_post,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
@@ -2105,7 +2131,7 @@ class MirrAISDPipeline:
                             face_bbox=face_bbox,
                             face_crop_pil=face_crop_pil,
                             protect_mask=protect_mask_for_sd,
-                            cloth_mask=cloth_mask_dilated,
+                            cloth_mask=cloth_restore_mask_for_post,
                             hair_length=hair_length,
                             seed=int(cand["seed"]) + 1701,
                             refine_mode="cloth",
@@ -2121,7 +2147,7 @@ class MirrAISDPipeline:
                             final_rgb,
                             cloth_refine_mask,
                             reference_rgb=img_rgb,
-                            reference_mask=cloth_mask_dilated,
+                            reference_mask=cloth_restore_mask_for_post,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                 except Exception as e:
@@ -2495,7 +2521,7 @@ class MirrAISDPipeline:
                         ).astype(np.float32)
                     side_column_restore_mask = self._build_side_column_cloth_restore_mask(
                         img_rgb=final_rgb,
-                        cloth_mask=cloth_mask_dilated,
+                        cloth_mask=cloth_restore_mask_for_post,
                         candidate_mask=side_column_candidate_mask,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
@@ -2504,7 +2530,7 @@ class MirrAISDPipeline:
                     )
                     direct_side_column_restore_mask = self._build_direct_short_column_restore_mask(
                         removal_mask=removal_mask_for_post,
-                        cloth_mask=cloth_mask_dilated,
+                        cloth_mask=cloth_restore_mask_for_post,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
@@ -2544,7 +2570,7 @@ class MirrAISDPipeline:
                                 source_rgb=img_rgb,
                                 current_rgb=final_rgb,
                                 cleanup_mask=side_column_restore_mask,
-                                cloth_mask=cloth_mask_dilated,
+                                cloth_mask=cloth_restore_mask_for_post,
                                 final_hair_mask=final_hair_mask,
                                 ignore_final_hair_for_cloth_restore=True,
                                 cleanup_dark_tail=True,
@@ -2799,7 +2825,7 @@ class MirrAISDPipeline:
                         current_rgb=final_rgb,
                         source_rgb=img_rgb,
                         removal_mask=removal_mask_for_post,
-                        cloth_mask=cloth_mask_dilated,
+                        cloth_mask=cloth_restore_mask_for_post,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
@@ -2816,7 +2842,7 @@ class MirrAISDPipeline:
                             source_rgb=img_rgb,
                             current_rgb=final_rgb,
                             cleanup_mask=short_lower_garment_cleanup_mask,
-                            cloth_mask=cloth_mask_dilated,
+                            cloth_mask=cloth_restore_mask_for_post,
                             ignore_final_hair_for_cloth_restore=True,
                             cleanup_dark_tail=True,
                         )
@@ -2880,7 +2906,7 @@ class MirrAISDPipeline:
                         current_rgb=final_rgb,
                         source_rgb=img_rgb,
                         removal_mask=removal_mask_for_post,
-                        cloth_mask=cloth_mask_dilated,
+                        cloth_mask=cloth_restore_mask_for_post,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
@@ -2898,7 +2924,7 @@ class MirrAISDPipeline:
                             source_rgb=img_rgb,
                             current_rgb=final_rgb,
                             cleanup_mask=final_source_cloth_rescue_mask,
-                            cloth_mask=cloth_mask_dilated,
+                            cloth_mask=cloth_restore_mask_for_post,
                             final_hair_mask=final_hair_mask,
                             ignore_final_hair_for_cloth_restore=(hair_length == "short"),
                             cleanup_dark_tail=(hair_length == "short"),
