@@ -5637,6 +5637,8 @@ def _build_center_chest_strand_support_mask(
     dark_u8 = cv2.bitwise_and(dark_u8, zone_u8)
     if int((support_hint_u8 > 0).sum()) >= 8:
         dark_u8 = cv2.bitwise_and(dark_u8, support_hint_u8)
+        if int((dark_u8 > 0).sum()) < 8 and int((support_hint_u8 > 0).sum()) >= 24:
+            dark_u8 = support_hint_u8.copy()
     if int((dark_u8 > 0).sum()) < 8:
         return np.zeros((H, W), dtype=np.float32)
 
