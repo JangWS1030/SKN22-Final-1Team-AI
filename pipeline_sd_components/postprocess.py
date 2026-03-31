@@ -1656,21 +1656,21 @@ def _restrict_short_removal_to_tail_lanes(
 
     side_lane_u8 = cv2.dilate(
         side_seed_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 41)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 57)),
         iterations=1,
     )
     center_lane_u8 = cv2.dilate(
         center_seed_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 41)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 53)),
         iterations=1,
     )
     lane_u8 = cv2.bitwise_or(side_lane_u8, center_lane_u8)
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    top = max(0, int(cutoff_y))
-    bottom = min(H, int(cutoff_y + face_h * 1.35))
-    left = max(0, int(x1 - face_w * 0.95))
-    right = min(W, int(x2 + face_w * 0.95))
+    top = max(0, int(cutoff_y - face_h * 0.04))
+    bottom = min(H, int(cutoff_y + face_h * 1.62))
+    left = max(0, int(x1 - face_w * 1.24))
+    right = min(W, int(x2 + face_w * 1.24))
     if top >= bottom or left >= right:
         return np.clip(removal_mask, 0.0, 1.0).astype(np.float32)
     corridor_u8[top:bottom, left:right] = 255
@@ -1682,10 +1682,10 @@ def _restrict_short_removal_to_tail_lanes(
     filtered_u8 = cv2.morphologyEx(
         filtered_u8,
         cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 13)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 21)),
     )
     filtered_px = int((filtered_u8 > 0).sum())
-    if filtered_px < max(180, int(original_px * 0.16)):
+    if filtered_px < max(220, int(original_px * 0.34)):
         return np.clip(removal_mask, 0.0, 1.0).astype(np.float32)
 
     filtered = removal_mask.astype(np.float32) * (filtered_u8.astype(np.float32) / 255.0)
@@ -3144,14 +3144,14 @@ def _build_short_below_bob_generation_block_mask(
 
     removal_u8 = cv2.dilate(
         (np.clip(removal_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 23)),
         iterations=1,
     )
     zone_u8 = removal_u8.copy()
     if support_mask is not None and support_mask.shape == (H, W):
         support_u8 = cv2.dilate(
             (np.clip(support_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 21)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 27)),
             iterations=1,
         )
         zone_u8 = cv2.bitwise_or(zone_u8, support_u8)
@@ -3159,13 +3159,13 @@ def _build_short_below_bob_generation_block_mask(
     bob_floor = max(
         0,
         min(
-            int(y2 + face_h * 0.02),
-            int(cutoff_y + face_h * 0.04),
+            int(y2 + face_h * 0.00),
+            int(cutoff_y + face_h * 0.01),
         ),
     )
-    bottom = min(H, int(cutoff_y + face_h * 1.46))
-    left = max(0, int(x1 - face_w * 1.22))
-    right = min(W, int(x2 + face_w * 1.22))
+    bottom = min(H, int(cutoff_y + face_h * 1.78))
+    left = max(0, int(x1 - face_w * 1.36))
+    right = min(W, int(x2 + face_w * 1.36))
     if bob_floor >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -3176,13 +3176,13 @@ def _build_short_below_bob_generation_block_mask(
         return np.zeros((H, W), dtype=np.float32)
 
     lane_u8 = np.zeros((H, W), dtype=np.uint8)
-    side_inner_gap = max(12, int(face_w * 0.06))
+    side_inner_gap = max(10, int(face_w * 0.03))
     left_lane_right = max(left + 1, int(cx - side_inner_gap))
     right_lane_left = min(right - 1, int(cx + side_inner_gap))
     lane_u8[bob_floor:bottom, left:left_lane_right] = 255
     lane_u8[bob_floor:bottom, right_lane_left:right] = 255
-    center_lane_top = min(bottom, int(cutoff_y + face_h * 0.28))
-    center_half = max(20, int(face_w * 0.22))
+    center_lane_top = min(bottom, int(cutoff_y + face_h * 0.16))
+    center_half = max(24, int(face_w * 0.34))
     center_x1 = max(left, int(cx - center_half))
     center_x2 = min(right, int(cx + center_half))
     if center_lane_top < bottom and center_x1 < center_x2:
@@ -3194,11 +3194,11 @@ def _build_short_below_bob_generation_block_mask(
     zone_u8 = cv2.morphologyEx(
         zone_u8,
         cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 27)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 35)),
     )
     zone_u8 = cv2.dilate(
         zone_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 15)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 23)),
         iterations=1,
     )
     keep_u8 = np.zeros((H, W), dtype=np.uint8)
@@ -3206,9 +3206,9 @@ def _build_short_below_bob_generation_block_mask(
     min_area = max(36, int(face_w * face_h * 0.0018))
     max_area = max(32000, int(face_w * face_h * 0.56))
     min_height = max(20, int(face_h * 0.10))
-    max_width = max(228, int(face_w * 1.36))
-    center_keepout = max(20, int(face_w * 0.18))
-    deep_center_bottom = int(y2 + face_h * 0.34)
+    max_width = max(248, int(face_w * 1.62))
+    center_keepout = max(16, int(face_w * 0.12))
+    deep_center_bottom = int(y2 + face_h * 0.20)
 
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
@@ -3234,15 +3234,15 @@ def _build_short_below_bob_generation_block_mask(
 
     keep_u8 = cv2.dilate(
         keep_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 33)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 41)),
         iterations=1,
     )
     keep_u8 = cv2.bitwise_and(keep_u8, lane_u8)
     return cv2.GaussianBlur(
         keep_u8.astype(np.float32) / 255.0,
         (0, 0),
-        sigmaX=2.4,
-        sigmaY=4.2,
+        sigmaX=3.2,
+        sigmaY=5.2,
     ).astype(np.float32)
 
 def _build_preclean_side_column_cleanup_mask(
@@ -5437,10 +5437,10 @@ def _build_lower_tail_removal_extension_mask(
         return np.zeros((H, W), dtype=np.float32)
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    x_min = max(0, int(x1 - face_w * (0.72 if hair_length == "short" else 0.84)))
-    x_max = min(W, int(x2 + face_w * (0.72 if hair_length == "short" else 0.84)))
+    x_min = max(0, int(x1 - face_w * (0.96 if hair_length == "short" else 0.84)))
+    x_max = min(W, int(x2 + face_w * (0.96 if hair_length == "short" else 0.84)))
     y_min = max(0, int(cutoff_y - face_h * 0.03))
-    y_max = min(H, int(cutoff_y + face_h * (1.20 if hair_length == "short" else 1.08)))
+    y_max = min(H, int(cutoff_y + face_h * (1.48 if hair_length == "short" else 1.08)))
     if x_min >= x_max or y_min >= y_max:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[y_min:y_max, x_min:x_max] = 255
@@ -5468,11 +5468,11 @@ def _build_lower_tail_removal_extension_mask(
         support_u8 = cv2.bitwise_and(support_u8, cv2.bitwise_or(base_hint_u8, corridor_u8))
 
     front_lane_u8 = np.zeros((H, W), dtype=np.uint8)
-    center_half = max(12, int(face_w * (0.24 if hair_length == "short" else 0.20)))
+    center_half = max(16, int(face_w * (0.34 if hair_length == "short" else 0.20)))
     lane_x1 = max(0, int(0.5 * (x1 + x2)) - center_half)
     lane_x2 = min(W, int(0.5 * (x1 + x2)) + center_half)
     lane_y1 = max(0, int(cutoff_y - face_h * 0.04))
-    lane_y2 = min(H, int(cutoff_y + face_h * (1.58 if hair_length == "short" else 0.96)))
+    lane_y2 = min(H, int(cutoff_y + face_h * (1.78 if hair_length == "short" else 0.96)))
     if lane_x1 < lane_x2 and lane_y1 < lane_y2:
         front_lane_u8[lane_y1:lane_y2, lane_x1:lane_x2] = 255
 
@@ -5502,12 +5502,12 @@ def _build_lower_tail_removal_extension_mask(
         if base_overlap < 8 and not is_front_strand:
             continue
         if hair_length == "short":
-            if w > max(24, int(face_w * 0.24)) and not is_front_strand:
+            if w > max(34, int(face_w * 0.34)) and not is_front_strand:
                 continue
             if is_side_component:
                 if base_overlap < max(18, int(area * 0.18)) and front_overlap < 12:
                     continue
-                if area > max(92, int(face_w * face_h * 0.030)):
+                if area > max(132, int(face_w * face_h * 0.050)):
                     continue
         filtered_u8 = cv2.bitwise_or(filtered_u8, comp_u8)
 
@@ -5518,7 +5518,7 @@ def _build_lower_tail_removal_extension_mask(
         filtered_u8,
         cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE,
-            (7, 15) if hair_length == "short" else (5, 11),
+            (11, 21) if hair_length == "short" else (5, 11),
         ),
         iterations=1,
     )

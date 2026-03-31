@@ -830,13 +830,13 @@ class MirrAISDPipeline:
                 )
             if torso_cloth_preserve_for_post is not None and torso_cloth_preserve_for_post.shape == (H, W):
                 removal_mask = np.clip(
-                    removal_mask - torso_cloth_preserve_for_post * (0.76 if hair_length == "short" else 0.34),
+                    removal_mask - torso_cloth_preserve_for_post * (0.48 if hair_length == "short" else 0.34),
                     0.0,
                     1.0,
                 )
             if bright_cloth_preserve_for_post is not None and bright_cloth_preserve_for_post.shape == (H, W):
                 removal_mask = np.clip(
-                    removal_mask - bright_cloth_preserve_for_post * (0.92 if hair_length == "short" else 0.44),
+                    removal_mask - bright_cloth_preserve_for_post * (0.58 if hair_length == "short" else 0.44),
                     0.0,
                     1.0,
                 )
@@ -860,7 +860,7 @@ class MirrAISDPipeline:
                 )
                 if shoulder_cloth_release_for_post is not None and shoulder_cloth_release_for_post.shape == (H, W):
                     removal_mask = np.clip(
-                        removal_mask - shoulder_cloth_release_for_post * 0.98,
+                        removal_mask - shoulder_cloth_release_for_post * 0.72,
                         0.0,
                         1.0,
                     )
@@ -911,7 +911,7 @@ class MirrAISDPipeline:
                 )
                 if shoulder_cloth_release_for_post is not None and shoulder_cloth_release_for_post.shape == (H, W):
                     removal_mask = np.clip(
-                        removal_mask - shoulder_cloth_release_for_post,
+                        removal_mask - shoulder_cloth_release_for_post * 0.74,
                         0.0,
                         1.0,
                     )
@@ -928,7 +928,7 @@ class MirrAISDPipeline:
                     and lateral_neck_preserve_for_post.shape == (H, W)
                 ):
                     removal_mask = np.clip(
-                        removal_mask - lateral_neck_preserve_for_post * 0.92,
+                        removal_mask - lateral_neck_preserve_for_post * 0.70,
                         0.0,
                         1.0,
                     )
@@ -1035,7 +1035,7 @@ class MirrAISDPipeline:
                     and below_bob_generation_block_for_post.shape == (H, W)
                 ):
                     gen_mask = np.clip(
-                        gen_mask - below_bob_generation_block_for_post * 1.45,
+                        gen_mask - below_bob_generation_block_for_post * 1.75,
                         0.0,
                         1.0,
                     )
@@ -1044,7 +1044,7 @@ class MirrAISDPipeline:
                     and below_bob_cloth_restore_for_post.shape == (H, W)
                 ):
                     gen_mask = np.clip(
-                        gen_mask - below_bob_cloth_restore_for_post * 1.30,
+                        gen_mask - below_bob_cloth_restore_for_post * 1.55,
                         0.0,
                         1.0,
                     )
