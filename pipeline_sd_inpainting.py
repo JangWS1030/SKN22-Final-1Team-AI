@@ -513,6 +513,16 @@ class MirrAISDPipeline:
             _store_mask("segface_subject_cloth_anchor_mask", subject_cloth_anchor_mask)
         if isinstance(subject_cloth_filtered_mask, np.ndarray):
             _store_mask("segface_subject_cloth_filtered_mask", subject_cloth_filtered_mask)
+        subject_cloth_anchor_for_post = None
+        if (
+            isinstance(subject_cloth_anchor_mask, np.ndarray)
+            and subject_cloth_anchor_mask.shape == (H, W)
+        ):
+            subject_cloth_anchor_for_post = np.clip(
+                subject_cloth_anchor_mask.astype(np.float32),
+                0.0,
+                1.0,
+            )
         if debug_data_common is not None and segface_debug.get("meta"):
             debug_data_common["segface_mask_debug"] = segface_debug["meta"]
 
@@ -1065,6 +1075,7 @@ class MirrAISDPipeline:
                     cutoff_y=cutoff_y,
                     hair_length=hair_length,
                     support_mask=lower_tail_support_for_post,
+                    anchor_mask=subject_cloth_anchor_for_post,
                 )
                 below_bob_cloth_restore_for_post = self._build_short_below_bob_cloth_restore_mask(
                     removal_mask=removal_mask_for_post,
@@ -1073,6 +1084,7 @@ class MirrAISDPipeline:
                     cutoff_y=cutoff_y,
                     hair_length=hair_length,
                     support_mask=lower_tail_support_for_post,
+                    anchor_mask=subject_cloth_anchor_for_post,
                 )
                 if (
                     below_bob_generation_block_for_post is not None
@@ -2831,13 +2843,14 @@ class MirrAISDPipeline:
                         hair_length=hair_length,
                         protect_mask=protect_mask_for_sd,
                         final_hair_mask=final_hair_mask,
+                        anchor_mask=subject_cloth_anchor_for_post,
                     )
                     short_lower_garment_cleanup_u8 = (
                         (np.clip(short_lower_garment_cleanup_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
                         * 255
                     )
                     short_lower_garment_cleanup_px = int((short_lower_garment_cleanup_u8 > 0).sum())
-                    if short_lower_garment_cleanup_px >= 140:
+                    if short_lower_garment_cleanup_px >= 100:
                         final_rgb = self._cleanup_region_with_cloth_restore(
                             source_rgb=img_rgb,
                             current_rgb=final_rgb,
@@ -2913,6 +2926,7 @@ class MirrAISDPipeline:
                         protect_mask=protect_mask_for_sd,
                         final_hair_mask=final_hair_mask,
                         center_support_mask=center_chest_strand_removal_mask,
+                        anchor_mask=subject_cloth_anchor_for_post,
                     )
                     final_source_cloth_rescue_u8 = (
                         (np.clip(final_source_cloth_rescue_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
