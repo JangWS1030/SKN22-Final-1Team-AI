@@ -513,6 +513,12 @@ class MirrAISDPipeline:
             _store_mask("segface_subject_cloth_anchor_mask", subject_cloth_anchor_mask)
         if isinstance(subject_cloth_filtered_mask, np.ndarray):
             _store_mask("segface_subject_cloth_filtered_mask", subject_cloth_filtered_mask)
+        subject_torso_anchor_mask = segface_debug.get("subject_torso_anchor_mask")
+        subject_torso_filtered_mask = segface_debug.get("subject_torso_filtered_mask")
+        if isinstance(subject_torso_anchor_mask, np.ndarray):
+            _store_mask("segface_subject_torso_anchor_mask", subject_torso_anchor_mask)
+        if isinstance(subject_torso_filtered_mask, np.ndarray):
+            _store_mask("segface_subject_torso_filtered_mask", subject_torso_filtered_mask)
         if debug_data_common is not None and segface_debug.get("meta"):
             debug_data_common["segface_mask_debug"] = segface_debug["meta"]
 
@@ -2871,10 +2877,18 @@ class MirrAISDPipeline:
                 try:
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    short_below_bob_torso_mask = self._build_short_below_bob_torso_mask(
+                        cloth_mask=cloth_mask_dilated,
+                        face_bbox=face_bbox,
+                        cutoff_y=cutoff_y_for_post,
+                        hair_length=hair_length,
+                        final_hair_mask=final_hair_mask,
+                    )
                     short_subject_cloth_cleanup_mask = self._build_short_subject_cloth_cleanup_mask(
                         current_rgb=final_rgb,
                         source_rgb=img_rgb,
                         cloth_mask=cloth_mask_dilated,
+                        torso_mask=short_below_bob_torso_mask,
                         face_mask=face_region_mask,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
@@ -2900,6 +2914,10 @@ class MirrAISDPipeline:
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     if debug_images_common is not None and rank == 0:
+                        debug_images_common["pipeline_short_below_bob_torso_mask"] = cv2.cvtColor(
+                            ((np.clip(short_below_bob_torso_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255),
+                            cv2.COLOR_GRAY2BGR,
+                        )
                         debug_images_common["pipeline_short_subject_cloth_cleanup_mask"] = cv2.cvtColor(
                             short_subject_cloth_cleanup_u8,
                             cv2.COLOR_GRAY2BGR,
@@ -3797,12 +3815,13 @@ class MirrAISDPipeline:
         hair_mask: np.ndarray,
         face_bbox: Tuple[int, int, int, int],
     ) -> np.ndarray:
-        """Keep cloth protection local to the shoulder band and drop noisy masks."""
+        """Keep subject cloth local while preserving the torso area below the bob line."""
         H, W = cloth_mask.shape[:2]
         x1, y1, x2, y2 = face_bbox
         bw = max(int(x2 - x1), 1)
         bh = max(int(y2 - y1), 1)
 
+        raw_cloth_u8 = (np.clip(cloth_mask, 0.0, 1.0) > 0.5).astype(np.uint8) * 255
         corridor = np.zeros((H, W), dtype=np.uint8)
         x_min = max(0, int(x1 - bw * 1.20))
         x_max = min(W, int(x2 + bw * 1.20))
@@ -3812,7 +3831,7 @@ class MirrAISDPipeline:
             corridor[y_min:y_max, x_min:x_max] = 255
 
         cloth_u8 = cv2.bitwise_and(
-            (np.clip(cloth_mask, 0.0, 1.0) > 0.5).astype(np.uint8) * 255,
+            raw_cloth_u8,
             corridor,
         )
         cloth_u8 = cv2.morphologyEx(
@@ -3831,21 +3850,60 @@ class MirrAISDPipeline:
             image_shape=(H, W),
             face_bbox=face_bbox,
         )
+        subject_torso_anchor_u8 = self._build_subject_torso_anchor_mask(
+            image_shape=(H, W),
+            face_bbox=face_bbox,
+        )
         filtered_subject_cloth_u8 = self._filter_cloth_mask_to_subject_anchor(
             cloth_mask_u8=cloth_u8,
             subject_anchor_u8=subject_anchor_u8,
             face_bbox=face_bbox,
         )
+        torso_cloth_u8 = cv2.bitwise_and(
+            raw_cloth_u8,
+            cv2.dilate(
+                subject_torso_anchor_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+                iterations=1,
+            ),
+        )
+        torso_cloth_u8 = cv2.morphologyEx(
+            torso_cloth_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        )
+        torso_cloth_u8 = cv2.morphologyEx(
+            torso_cloth_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+        )
+        filtered_subject_torso_u8 = self._filter_cloth_mask_to_subject_anchor(
+            cloth_mask_u8=torso_cloth_u8,
+            subject_anchor_u8=subject_torso_anchor_u8,
+            face_bbox=face_bbox,
+            min_area_scale=0.004,
+            max_dx_scale=1.18,
+            min_bottom_scale=0.18,
+            max_width_scale=1.72,
+            max_area_scale=0.90,
+        )
+        cloth_u8 = np.zeros((H, W), dtype=np.uint8)
         if int((filtered_subject_cloth_u8 > 0).sum()) >= 60:
-            cloth_u8 = filtered_subject_cloth_u8
-        else:
-            cloth_u8 = np.zeros((H, W), dtype=np.uint8)
+            cloth_u8 = cv2.bitwise_or(cloth_u8, filtered_subject_cloth_u8)
+        if int((filtered_subject_torso_u8 > 0).sum()) >= 80:
+            cloth_u8 = cv2.bitwise_or(cloth_u8, filtered_subject_torso_u8)
         if isinstance(self._last_segface_mask_debug, dict):
             self._last_segface_mask_debug["subject_cloth_anchor_mask"] = (
                 subject_anchor_u8 > 0
             ).astype(np.float32)
+            self._last_segface_mask_debug["subject_torso_anchor_mask"] = (
+                subject_torso_anchor_u8 > 0
+            ).astype(np.float32)
             self._last_segface_mask_debug["subject_cloth_filtered_mask"] = (
                 cloth_u8 > 0
+            ).astype(np.float32)
+            self._last_segface_mask_debug["subject_torso_filtered_mask"] = (
+                filtered_subject_torso_u8 > 0
             ).astype(np.float32)
 
         sparse_thresh_px = max(900, int(bw * bh * 0.020))
@@ -3859,12 +3917,13 @@ class MirrAISDPipeline:
             )
         )
         if should_add_sparse_support:
+            support_anchor_u8 = cv2.bitwise_or(subject_anchor_u8, subject_torso_anchor_u8)
             sparse_dark_support = self._build_sparse_dark_cloth_support_mask(
                 img_rgb=img_rgb,
                 base_cloth_mask_u8=cloth_u8,
                 hair_mask=hair_mask,
                 face_bbox=face_bbox,
-                subject_anchor_u8=subject_anchor_u8,
+                subject_anchor_u8=support_anchor_u8,
             )
             if int((sparse_dark_support > 0).sum()) >= 120:
                 cloth_u8 = cv2.bitwise_or(cloth_u8, sparse_dark_support)
@@ -3879,7 +3938,7 @@ class MirrAISDPipeline:
         overlap = float(((cloth_f > 0.5) & (hair_mask > 0.5)).sum())
         overlap_ratio = overlap / max(hair_area, 1.0)
 
-        if cloth_ratio > 0.085 or overlap_ratio > 0.28:
+        if cloth_ratio > 0.118 or overlap_ratio > 0.34:
             logger.info(
                 "[SDPipeline] cloth mask disabled: ratio=%.4f overlap_ratio=%.4f",
                 cloth_ratio,
@@ -3927,12 +3986,62 @@ class MirrAISDPipeline:
         )
         return anchor_u8
 
+    def _build_subject_torso_anchor_mask(
+        self,
+        *,
+        image_shape: Tuple[int, int],
+        face_bbox: Tuple[int, int, int, int],
+    ) -> np.ndarray:
+        H, W = image_shape
+        x1, y1, x2, y2 = face_bbox
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+        cx = int(0.5 * (x1 + x2))
+
+        anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+        top = max(0, int(y2 + face_h * 0.14))
+        bottom = min(H, int(y2 + face_h * 1.92))
+        left = max(0, int(cx - face_w * 0.82))
+        right = min(W, int(cx + face_w * 0.82))
+        if top < bottom and left < right:
+            anchor_u8[top:bottom, left:right] = 255
+
+        chest_center = (cx, min(H - 1, int(y2 + face_h * 0.66)))
+        chest_axes = (
+            max(22, int(face_w * 0.58)),
+            max(26, int(face_h * 0.54)),
+        )
+        cv2.ellipse(anchor_u8, chest_center, chest_axes, 0, 0, 360, 255, -1)
+
+        shoulder_centers = (
+            (int(cx - face_w * 0.46), int(y2 + face_h * 0.32)),
+            (int(cx + face_w * 0.46), int(y2 + face_h * 0.32)),
+        )
+        shoulder_axes = (
+            max(24, int(face_w * 0.34)),
+            max(18, int(face_h * 0.22)),
+        )
+        for center in shoulder_centers:
+            cv2.ellipse(anchor_u8, center, shoulder_axes, 0, 0, 360, 255, -1)
+
+        anchor_u8 = cv2.morphologyEx(
+            anchor_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 27)),
+        )
+        return anchor_u8
+
     def _filter_cloth_mask_to_subject_anchor(
         self,
         *,
         cloth_mask_u8: np.ndarray,
         subject_anchor_u8: np.ndarray,
         face_bbox: Tuple[int, int, int, int],
+        min_area_scale: float = 0.002,
+        max_dx_scale: float = 0.95,
+        min_bottom_scale: float = 0.02,
+        max_width_scale: float | None = None,
+        max_area_scale: float | None = None,
     ) -> np.ndarray:
         H, W = cloth_mask_u8.shape[:2]
         if subject_anchor_u8.shape[:2] != (H, W):
@@ -3948,9 +4057,11 @@ class MirrAISDPipeline:
             8,
         )
         keep_u8 = np.zeros((H, W), dtype=np.uint8)
-        min_area = max(40, int(face_w * face_h * 0.002))
-        max_dx = max(72, int(face_w * 0.95))
-        min_bottom = int(y2 + face_h * 0.02)
+        min_area = max(40, int(face_w * face_h * min_area_scale))
+        max_dx = max(72, int(face_w * max_dx_scale))
+        min_bottom = int(y2 + face_h * min_bottom_scale)
+        max_width = max(140, int(face_w * max_width_scale)) if max_width_scale is not None else None
+        max_area = max(4800, int(face_w * face_h * max_area_scale)) if max_area_scale is not None else None
 
         for idx in range(1, num_labels):
             x = int(stats[idx, cv2.CC_STAT_LEFT])
@@ -3960,6 +4071,10 @@ class MirrAISDPipeline:
             area = int(stats[idx, cv2.CC_STAT_AREA])
             bottom_y = y + h
             if area < min_area or bottom_y < min_bottom:
+                continue
+            if max_width is not None and w > max_width:
+                continue
+            if max_area is not None and area > max_area:
                 continue
             comp_u8 = (labels == idx).astype(np.uint8) * 255
             overlap_px = int((cv2.bitwise_and(comp_u8, subject_anchor_u8) > 0).sum())
