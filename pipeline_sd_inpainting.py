@@ -1659,11 +1659,12 @@ class MirrAISDPipeline:
                 try:
                     preclean_dark_lane_mask = self._build_dark_lane_cleanup_mask(
                         img_rgb=img_rgb_cleaned,
-                        cloth_mask=cloth_mask_dilated,
+                        cloth_mask=cloth_restore_mask_for_post,
                         removal_mask=removal_mask_for_post,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y,
                         hair_length=hair_length,
+                        anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
                     )
                     preclean_dark_lane_u8 = (
                         (np.clip(preclean_dark_lane_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
@@ -2736,11 +2737,12 @@ class MirrAISDPipeline:
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     dark_lane_mask = self._build_dark_lane_cleanup_mask(
                         img_rgb=final_rgb,
-                        cloth_mask=cloth_mask_dilated,
+                        cloth_mask=cloth_restore_mask_for_post,
                         removal_mask=removal_mask_for_post,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
+                        anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
                     )
                     dark_lane_u8 = (
                         (np.clip(dark_lane_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
@@ -2773,11 +2775,12 @@ class MirrAISDPipeline:
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     final_hair_lane_mask = self._build_final_hair_lane_cleanup_mask(
                         final_hair_mask=final_hair_mask,
-                        cloth_mask=cloth_mask_dilated,
+                        cloth_mask=cloth_restore_mask_for_post,
                         removal_mask=removal_mask_for_post,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
+                        anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
                     )
                     final_hair_lane_u8 = (
                         (np.clip(final_hair_lane_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255

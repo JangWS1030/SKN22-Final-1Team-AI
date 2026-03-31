@@ -3899,6 +3899,7 @@ def _build_final_hair_lane_cleanup_mask(
     face_bbox: Tuple[int, int, int, int],
     cutoff_y: int,
     hair_length: str,
+    anchor_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if hair_length not in ("short", "medium"):
         shape = final_hair_mask.shape[:2] if isinstance(final_hair_mask, np.ndarray) else (0, 0)
@@ -3923,6 +3924,30 @@ def _build_final_hair_lane_cleanup_mask(
     )
     cloth_u8 = (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
     removal_u8 = (np.clip(removal_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+    anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+    anchor_lane_u8 = np.zeros((H, W), dtype=np.uint8)
+    use_anchor_fallback = False
+    if anchor_mask is not None and anchor_mask.shape == (H, W):
+        anchor_u8 = cv2.dilate(
+            (np.clip(anchor_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 25)),
+            iterations=1,
+        )
+        if int((anchor_u8 > 0).sum()) >= 80:
+            use_anchor_fallback = True
+            anchor_lane_u8 = cv2.dilate(
+                anchor_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (
+                        max(41, int(face_w * 1.18)) | 1,
+                        max(17, int(face_h * 0.24)) | 1,
+                    ),
+                ),
+                iterations=1,
+            )
+    cloth_u8 = cv2.bitwise_or(cloth_u8, anchor_u8)
+    cloth_u8 = cv2.bitwise_or(cloth_u8, anchor_lane_u8)
     zone_u8 = cv2.bitwise_and(hair_u8, cloth_u8)
     zone_u8 = cv2.bitwise_and(zone_u8, removal_u8)
     if int((zone_u8 > 0).sum()) < 24:
@@ -3953,8 +3978,16 @@ def _build_final_hair_lane_cleanup_mask(
 
     keep_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(zone_u8, 8)
-    max_area = max(2200, int(face_w * face_h * 0.10))
-    max_width = max(58, int(face_w * 0.30))
+    max_area = (
+        max(12000, int(face_w * face_h * 0.56))
+        if use_anchor_fallback
+        else max(2200, int(face_w * face_h * 0.10))
+    )
+    max_width = (
+        max(168, int(face_w * 0.96))
+        if use_anchor_fallback
+        else max(58, int(face_w * 0.30))
+    )
     min_height = max(24, int(face_h * 0.12))
     max_offset = max(240, int(face_w * 1.00))
     for idx in range(1, num_labels):
@@ -3976,14 +4009,22 @@ def _build_final_hair_lane_cleanup_mask(
         keep_u8[labels == idx] = 255
 
     if int((keep_u8 > 0).sum()) < 24:
-        return np.zeros((H, W), dtype=np.float32)
+        if use_anchor_fallback and int((zone_u8 > 0).sum()) >= 80:
+            keep_u8 = zone_u8.copy()
+        else:
+            return np.zeros((H, W), dtype=np.float32)
 
     keep_u8 = cv2.dilate(
         keep_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 13)),
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (9, 19) if use_anchor_fallback else (5, 13),
+        ),
         iterations=1,
     )
     keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
+    if int((keep_u8 > 0).sum()) < 24:
+        return np.zeros((H, W), dtype=np.float32)
     return cv2.GaussianBlur(
         keep_u8.astype(np.float32) / 255.0,
         (0, 0),
@@ -4623,6 +4664,7 @@ def _build_dark_lane_cleanup_mask(
     face_bbox: Tuple[int, int, int, int],
     cutoff_y: int,
     hair_length: str,
+    anchor_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if hair_length not in ("short", "medium"):
         return np.zeros(img_rgb.shape[:2], dtype=np.float32)
@@ -4640,9 +4682,9 @@ def _build_dark_lane_cleanup_mask(
 
     cloth_u8 = (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
     removal_u8 = (np.clip(removal_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
-    zone_u8 = cv2.bitwise_and(cloth_u8, removal_u8)
-    if int((zone_u8 > 0).sum()) < 30:
-        return np.zeros((H, W), dtype=np.float32)
+    anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+    anchor_lane_u8 = np.zeros((H, W), dtype=np.uint8)
+    use_anchor_fallback = False
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
     top = max(0, int(cutoff_y + face_h * 0.18))
@@ -4652,6 +4694,32 @@ def _build_dark_lane_cleanup_mask(
     if top >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
+    cloth_u8 = cv2.bitwise_and(cloth_u8, corridor_u8)
+    if anchor_mask is not None and anchor_mask.shape == (H, W):
+        anchor_u8 = cv2.dilate(
+            (np.clip(anchor_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 25)),
+            iterations=1,
+        )
+        anchor_u8 = cv2.bitwise_and(anchor_u8, corridor_u8)
+        if int((anchor_u8 > 0).sum()) >= 80:
+            use_anchor_fallback = True
+            anchor_lane_u8 = cv2.dilate(
+                anchor_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (
+                        max(45, int(face_w * 1.26)) | 1,
+                        max(17, int(face_h * 0.22)) | 1,
+                    ),
+                ),
+                iterations=1,
+            )
+            anchor_lane_u8 = cv2.bitwise_and(anchor_lane_u8, corridor_u8)
+    zone_u8 = cv2.bitwise_and(cv2.bitwise_or(cloth_u8, anchor_u8), removal_u8)
+    zone_u8 = cv2.bitwise_or(zone_u8, cv2.bitwise_and(removal_u8, anchor_lane_u8))
+    if int((zone_u8 > 0).sum()) < 30:
+        return np.zeros((H, W), dtype=np.float32)
     zone_u8 = cv2.bitwise_and(zone_u8, corridor_u8)
     if int((zone_u8 > 0).sum()) < 30:
         return np.zeros((H, W), dtype=np.float32)
@@ -4666,18 +4734,46 @@ def _build_dark_lane_cleanup_mask(
         & (lap < (20.0 if hair_length == "short" else 22.0))
     ).astype(np.uint8) * 255
     candidate_u8 = cv2.bitwise_and(candidate_u8, zone_u8)
+    if use_anchor_fallback:
+        anchor_candidate_u8 = (
+            (
+                (gray < 188.0)
+                & (sat < 132.0)
+                & (lap < 26.0)
+            ).astype(np.uint8)
+            * 255
+        )
+        anchor_candidate_u8 = cv2.bitwise_and(anchor_candidate_u8, zone_u8)
+        anchor_candidate_u8 = cv2.bitwise_and(anchor_candidate_u8, anchor_lane_u8)
+        candidate_u8 = cv2.bitwise_or(candidate_u8, anchor_candidate_u8)
     candidate_u8 = cv2.morphologyEx(
         candidate_u8,
         cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+    )
+    candidate_u8 = cv2.morphologyEx(
+        candidate_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (11, 25) if use_anchor_fallback else (5, 11),
+        ),
     )
     if int((candidate_u8 > 0).sum()) < 24:
         return np.zeros((H, W), dtype=np.float32)
 
     keep_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(candidate_u8, 8)
-    max_area = max(3000, int(face_w * face_h * 0.12))
-    max_width = max(82, int(face_w * 0.42))
+    max_area = (
+        max(24000, int(face_w * face_h * 1.20))
+        if use_anchor_fallback
+        else max(3000, int(face_w * face_h * 0.12))
+    )
+    max_width = (
+        max(220, int(face_w * 1.26))
+        if use_anchor_fallback
+        else max(82, int(face_w * 0.42))
+    )
     min_height = max(26, int(face_h * 0.12))
     max_offset = max(260, int(face_w * 1.08))
     for idx in range(1, num_labels):
@@ -4699,11 +4795,17 @@ def _build_dark_lane_cleanup_mask(
         keep_u8[labels == idx] = 255
 
     if int((keep_u8 > 0).sum()) < 24:
-        return np.zeros((H, W), dtype=np.float32)
+        if use_anchor_fallback and int((candidate_u8 > 0).sum()) >= 80:
+            keep_u8 = candidate_u8.copy()
+        else:
+            return np.zeros((H, W), dtype=np.float32)
 
     keep_u8 = cv2.dilate(
         keep_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 15)),
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (11, 23) if use_anchor_fallback else (7, 15),
+        ),
         iterations=1,
     )
     keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
