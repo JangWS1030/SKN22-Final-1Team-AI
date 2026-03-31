@@ -2552,10 +2552,10 @@ def _build_short_lower_cloth_hard_override_mask(
     if int((zone_u8 > 0).sum()) < 100:
         return np.zeros((H, W), dtype=np.float32)
 
-    top = max(0, int(cutoff_y + face_h * 0.10))
+    top = max(0, int(cutoff_y + face_h * 0.06))
     bottom = min(H, int(cutoff_y + face_h * 1.52))
-    left = max(0, int(x1 - face_w * 1.18))
-    right = min(W, int(x2 + face_w * 1.18))
+    left = max(0, int(x1 - face_w * 1.30))
+    right = min(W, int(x2 + face_w * 1.30))
     if top >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -2572,13 +2572,13 @@ def _build_short_lower_cloth_hard_override_mask(
     gray_delta = np.abs(current_gray - source_gray)
 
     shallow_zone_u8 = np.zeros((H, W), dtype=np.uint8)
-    shallow_bottom = min(bottom, int(cutoff_y + face_h * 0.44))
+    shallow_bottom = min(bottom, int(cutoff_y + face_h * 0.52))
     if top < shallow_bottom:
         shallow_zone_u8[top:shallow_bottom, left:right] = 255
     shallow_zone_u8 = cv2.bitwise_and(shallow_zone_u8, zone_u8)
 
     deep_zone_u8 = np.zeros((H, W), dtype=np.uint8)
-    deep_top = min(bottom, int(cutoff_y + face_h * 0.44))
+    deep_top = min(bottom, int(cutoff_y + face_h * 0.40))
     if deep_top < bottom:
         deep_zone_u8[deep_top:bottom, left:right] = 255
     deep_zone_u8 = cv2.bitwise_and(deep_zone_u8, zone_u8)
@@ -2602,8 +2602,8 @@ def _build_short_lower_cloth_hard_override_mask(
         return np.zeros((H, W), dtype=np.float32)
 
     shoulder_guard_u8 = np.zeros((H, W), dtype=np.uint8)
-    shoulder_guard_bottom = min(bottom, int(cutoff_y + face_h * 0.28))
-    shoulder_inner_half = max(48, int(face_w * 0.42))
+    shoulder_guard_bottom = min(bottom, int(cutoff_y + face_h * 0.16))
+    shoulder_inner_half = max(60, int(face_w * 0.54))
     shoulder_inner_left = max(left, int(cx - shoulder_inner_half))
     shoulder_inner_right = min(right, int(cx + shoulder_inner_half))
     if top < shoulder_guard_bottom:
@@ -2619,6 +2619,20 @@ def _build_short_lower_cloth_hard_override_mask(
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 23)),
             iterations=1,
         )
+        lower_final_hair_u8 = cv2.bitwise_and(
+            final_hair_u8,
+            cv2.bitwise_or(cloth_u8, removal_u8),
+        )
+        lower_final_hair_u8 = cv2.bitwise_and(lower_final_hair_u8, corridor_u8)
+        lower_final_hair_top = max(0, int(max(y2 + face_h * 0.10, cutoff_y + face_h * 0.08)))
+        if lower_final_hair_top < H:
+            lower_final_hair_u8[:lower_final_hair_top, :] = 0
+        lower_final_hair_u8 = cv2.morphologyEx(
+            lower_final_hair_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 25)),
+        )
+        keep_u8 = cv2.bitwise_or(keep_u8, lower_final_hair_u8)
         upper_hair_guard_u8 = np.zeros((H, W), dtype=np.uint8)
         hair_guard_bottom = min(H, int(cutoff_y + face_h * 0.34))
         hair_guard_left = max(0, int(x1 - face_w * 0.90))
