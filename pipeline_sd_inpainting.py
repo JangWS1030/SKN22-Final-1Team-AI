@@ -721,11 +721,6 @@ class MirrAISDPipeline:
                 cutoff_y=cutoff_y,
                 hair_length=hair_length,
             )
-            if float(center_chest_strand_mask.sum()) > 0.0:
-                lower_tail_support_for_post = np.maximum(
-                    lower_tail_support_for_post,
-                    center_chest_strand_mask,
-                ).astype(np.float32)
             if shoulder_protect_for_post.sum() > 0:
                 logger.info(
                     "[SDPipeline] 어깨 보호 마스크 적용: "
