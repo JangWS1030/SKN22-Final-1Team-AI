@@ -2739,6 +2739,59 @@ class MirrAISDPipeline:
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short lower garment cleanup failed (ignored): {e}")
+                try:
+                    final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
+                    final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    short_lower_cloth_hard_override_mask = self._build_short_lower_cloth_hard_override_mask(
+                        current_rgb=final_rgb,
+                        source_rgb=img_rgb,
+                        removal_mask=removal_mask_for_post,
+                        cloth_mask=cloth_mask_dilated,
+                        face_bbox=face_bbox,
+                        cutoff_y=cutoff_y_for_post,
+                        hair_length=hair_length,
+                        final_hair_mask=final_hair_mask,
+                    )
+                    short_lower_cloth_hard_override_u8 = (
+                        (
+                            np.clip(short_lower_cloth_hard_override_mask.astype(np.float32), 0.0, 1.0) > 0.08
+                        ).astype(np.uint8)
+                        * 255
+                    )
+                    short_lower_cloth_hard_override_px = int((short_lower_cloth_hard_override_u8 > 0).sum())
+                    if short_lower_cloth_hard_override_px >= 160:
+                        final_rgb = self._restore_reference_region(
+                            final_rgb,
+                            img_rgb,
+                            short_lower_cloth_hard_override_mask,
+                            strength=0.995,
+                        )
+                        final_rgb = self._overlay_reference_cloth_fill(
+                            final_rgb,
+                            img_rgb,
+                            short_lower_cloth_hard_override_mask,
+                            cloth_mask=cloth_mask_dilated,
+                        )
+                        final_rgb = self._blend_neighbor_cloth_tone(
+                            final_rgb,
+                            short_lower_cloth_hard_override_mask,
+                            cloth_mask=cloth_mask_dilated,
+                            reference_rgb=img_rgb,
+                        )
+                        final_rgb = self._cv2_refine_cloth_region(
+                            final_rgb,
+                            short_lower_cloth_hard_override_mask,
+                            reference_rgb=img_rgb,
+                            reference_mask=cloth_mask_dilated,
+                        )
+                        final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                    if debug_images_common is not None and rank == 0:
+                        debug_images_common["pipeline_short_lower_cloth_hard_override_mask"] = cv2.cvtColor(
+                            short_lower_cloth_hard_override_u8,
+                            cv2.COLOR_GRAY2BGR,
+                        )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] short lower cloth hard override failed (ignored): {e}")
             if (
                 hair_length in ("short", "medium")
                 and cloth_mask_dilated is not None
