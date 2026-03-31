@@ -4016,10 +4016,10 @@ def _build_short_final_side_lane_refine_mask(
     cx = float(0.5 * (x1 + x2))
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    top = max(0, int(max(float(y2) - face_h * 0.08, cutoff_y + face_h * 0.04)))
-    bottom = min(H, int(y2 + face_h * 1.16))
-    left = max(0, int(x1 - face_w * 1.26))
-    right = min(W, int(x2 + face_w * 1.26))
+    top = max(0, int(max(float(y2) + face_h * 0.04, cutoff_y + face_h * 0.08)))
+    bottom = min(H, int(y2 + face_h * 1.26))
+    left = max(0, int(x1 - face_w * 1.34))
+    right = min(W, int(x2 + face_w * 1.34))
     if top >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
@@ -4114,6 +4114,10 @@ def _build_short_final_side_lane_refine_mask(
         )
         candidate_u8 = cv2.bitwise_or(candidate_u8, cv2.bitwise_and(cloth_support_u8, corridor_u8))
 
+    lower_keepout = min(H, int(y2 + face_h * 0.10))
+    if lower_keepout < H:
+        candidate_u8[:lower_keepout, :] = 0
+
     candidate_u8 = cv2.morphologyEx(
         candidate_u8,
         cv2.MORPH_CLOSE,
@@ -4131,12 +4135,12 @@ def _build_short_final_side_lane_refine_mask(
     keep_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(candidate_u8, 8)
     min_area = max(28, int(face_w * face_h * 0.0014))
-    max_area = max(24000, int(face_w * face_h * 0.44))
+    max_area = max(18000, int(face_w * face_h * 0.36))
     min_height = max(18, int(face_h * 0.08))
-    max_width = max(196, int(face_w * 1.18))
+    max_width = max(156, int(face_w * 0.94))
     center_keepout = max(14, int(face_w * 0.12))
-    deep_start = int(y2 + face_h * 0.10)
-    deep_center_start = int(y2 + face_h * 0.32)
+    deep_start = int(y2 + face_h * 0.16)
+    deep_center_start = int(y2 + face_h * 0.42)
 
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
@@ -4154,9 +4158,13 @@ def _build_short_final_side_lane_refine_mask(
         if y < top or bottom_y < deep_start:
             continue
         cloth_overlap = int((cv2.bitwise_and((labels == idx).astype(np.uint8) * 255, cloth_u8) > 0).sum())
+        if cloth_overlap < max(12, int(area * 0.06)) and bottom_y < int(cutoff_y + face_h * 0.74):
+            continue
         if offset < center_keepout and bottom_y < deep_center_start and cloth_overlap < 10:
             continue
-        if offset < center_keepout and w > max(92, int(face_w * 0.56)) and cloth_overlap < 10:
+        if offset < center_keepout and cloth_overlap < 24:
+            continue
+        if offset < center_keepout and w > max(76, int(face_w * 0.42)) and cloth_overlap < 24:
             continue
 
         comp_u8 = (labels == idx).astype(np.uint8) * 255

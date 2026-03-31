@@ -2507,16 +2507,14 @@ class MirrAISDPipeline:
                     )
                     short_side_lane_px = int((short_side_lane_refine_u8 > 0).sum())
                     if short_side_lane_px >= 140:
-                        final_rgb = self._sd_refine_removed_region(
-                            base_rgb=final_rgb,
-                            removal_mask=short_side_lane_refine_mask,
-                            face_bbox=face_bbox,
-                            face_crop_pil=face_crop_pil,
-                            protect_mask=protect_mask_for_sd,
+                        final_rgb = self._cleanup_region_with_cloth_restore(
+                            source_rgb=img_rgb,
+                            current_rgb=final_rgb,
+                            cleanup_mask=short_side_lane_refine_mask,
                             cloth_mask=cloth_mask_dilated,
-                            hair_length=hair_length,
-                            seed=int(cand["seed"]) + 1823,
-                            refine_mode="short_tail",
+                            final_hair_mask=final_hair_mask,
+                            ignore_final_hair_for_cloth_restore=True,
+                            cleanup_dark_tail=True,
                         )
                         short_side_lane_cloth_mask = np.clip(
                             short_side_lane_refine_mask.astype(np.float32)
@@ -2525,6 +2523,12 @@ class MirrAISDPipeline:
                             1.0,
                         )
                         if float(short_side_lane_cloth_mask.sum()) >= 80.0:
+                            final_rgb = self._restore_reference_region(
+                                final_rgb,
+                                img_rgb,
+                                short_side_lane_cloth_mask,
+                                strength=0.985,
+                            )
                             final_rgb = self._restore_cloth_overlap_from_source(
                                 source_rgb=img_rgb,
                                 current_rgb=final_rgb,
