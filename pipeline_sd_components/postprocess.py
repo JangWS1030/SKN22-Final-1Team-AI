@@ -383,6 +383,82 @@ def _blend_neighbor_cloth_tone(
     out = filled * alpha + base_rgb.astype(np.float32) * (1.0 - alpha)
     return np.clip(out, 0, 255).astype(np.uint8)
 
+def _resolve_background_fill_mode(
+    self,
+    requested_mode: str,
+    *,
+    removal_mask: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    hair_length: str,
+    lower_tail_support_mask: Optional[np.ndarray] = None,
+    center_support_mask: Optional[np.ndarray] = None,
+) -> str:
+    mode = str(requested_mode or "cv2").strip().lower() or "cv2"
+    if mode == "sd":
+        return "sd"
+    if mode != "cv2":
+        logger.warning(
+            "[SDPipeline] unsupported bg_fill_mode '%s', falling back to cv2",
+            requested_mode,
+        )
+        mode = "cv2"
+    if hair_length not in ("short", "medium"):
+        return mode
+
+    H, W = removal_mask.shape[:2]
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    face_area = float(face_w * face_h)
+
+    removal_u8 = (np.clip(removal_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+    removal_px = int((removal_u8 > 0).sum())
+    if removal_px < max(120, int(face_area * 0.05)):
+        return mode
+
+    support_px = 0
+    if lower_tail_support_mask is not None and lower_tail_support_mask.shape == (H, W):
+        support_px += int((np.clip(lower_tail_support_mask.astype(np.float32), 0.0, 1.0) > 0.08).sum())
+    center_px = 0
+    if center_support_mask is not None and center_support_mask.shape == (H, W):
+        center_px = int((np.clip(center_support_mask.astype(np.float32), 0.0, 1.0) > 0.08).sum())
+        support_px += center_px
+
+    cloth_overlap_px = 0
+    cloth_ratio = 0.0
+    if cloth_mask is not None and cloth_mask.shape == (H, W):
+        cloth_u8 = (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255
+        cloth_overlap_px = int((cv2.bitwise_and(removal_u8, cloth_u8) > 0).sum())
+        cloth_ratio = float(cloth_overlap_px) / float(max(removal_px, 1))
+
+    if hair_length == "short":
+        promote = (
+            cloth_overlap_px >= max(90, int(face_area * 0.12))
+            or cloth_ratio >= 0.18
+            or support_px >= max(84, int(face_area * 0.035))
+            or center_px >= max(20, int(face_area * 0.008))
+        )
+    else:
+        promote = (
+            cloth_overlap_px >= max(120, int(face_area * 0.16))
+            or cloth_ratio >= 0.22
+            or support_px >= max(110, int(face_area * 0.045))
+        )
+
+    if promote:
+        logger.info(
+            "[SDPipeline] bg_fill_mode auto-promoted to sd: hair_length=%s removal_px=%s cloth_overlap_px=%s support_px=%s center_px=%s",
+            hair_length,
+            removal_px,
+            cloth_overlap_px,
+            support_px,
+            center_px,
+        )
+        return "sd"
+
+    return mode
+
 def _sd_refine_removed_region(
     self,
     base_rgb: np.ndarray,          # H×W×3 RGB (cv2 inpaint 1차 결과)
@@ -1498,14 +1574,23 @@ def _filter_short_torso_box_mask(
                 deep_torso_u8 = cv2.bitwise_and(deep_torso_u8, cloth_u8.astype(np.uint8) * 255)
             precise_keep_u8 = cv2.dilate(
                 support_hint_u8,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 13)),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 25)),
                 iterations=1,
             )
             precise_keep_u8 = cv2.bitwise_and(precise_keep_u8, deep_torso_u8)
+            supported_keep_u8 = cv2.dilate(
+                support_hint_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 33)),
+                iterations=1,
+            )
+            supported_keep_u8 = cv2.bitwise_and(supported_keep_u8, deep_torso_u8)
             keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(deep_torso_u8))
             keep_u8 = cv2.bitwise_or(
                 keep_u8,
-                cv2.bitwise_and(removal_u8, precise_keep_u8),
+                cv2.bitwise_and(
+                    removal_u8,
+                    cv2.bitwise_or(precise_keep_u8, supported_keep_u8),
+                ),
             )
 
     kept_px = int((keep_u8 > 0).sum())
@@ -1656,21 +1741,21 @@ def _restrict_short_removal_to_tail_lanes(
 
     side_lane_u8 = cv2.dilate(
         side_seed_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 41)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 57)),
         iterations=1,
     )
     center_lane_u8 = cv2.dilate(
         center_seed_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 41)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 49)),
         iterations=1,
     )
     lane_u8 = cv2.bitwise_or(side_lane_u8, center_lane_u8)
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
     top = max(0, int(cutoff_y))
-    bottom = min(H, int(cutoff_y + face_h * 1.35))
-    left = max(0, int(x1 - face_w * 0.95))
-    right = min(W, int(x2 + face_w * 0.95))
+    bottom = min(H, int(cutoff_y + face_h * 1.62))
+    left = max(0, int(x1 - face_w * 1.18))
+    right = min(W, int(x2 + face_w * 1.18))
     if top >= bottom or left >= right:
         return np.clip(removal_mask, 0.0, 1.0).astype(np.float32)
     corridor_u8[top:bottom, left:right] = 255
@@ -1682,10 +1767,10 @@ def _restrict_short_removal_to_tail_lanes(
     filtered_u8 = cv2.morphologyEx(
         filtered_u8,
         cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 13)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 17)),
     )
     filtered_px = int((filtered_u8 > 0).sum())
-    if filtered_px < max(180, int(original_px * 0.16)):
+    if filtered_px < max(140, int(original_px * 0.12)):
         return np.clip(removal_mask, 0.0, 1.0).astype(np.float32)
 
     filtered = removal_mask.astype(np.float32) * (filtered_u8.astype(np.float32) / 255.0)
@@ -5061,15 +5146,18 @@ def _build_lower_tail_post_support_mask(
     if int((support_u8 > 0).sum()) < 12:
         return np.zeros((H, W), dtype=np.float32)
 
+    raw_support_u8 = support_u8.copy()
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    x_min = max(0, int(x1 - face_w * (1.18 if hair_length == "short" else 1.04)))
-    x_max = min(W, int(x2 + face_w * (1.18 if hair_length == "short" else 1.04)))
+    x_min = max(0, int(x1 - face_w * (1.34 if hair_length == "short" else 1.14)))
+    x_max = min(W, int(x2 + face_w * (1.34 if hair_length == "short" else 1.14)))
     y_min = max(0, int(cutoff_y - face_h * 0.03))
-    y_max = min(H, int(cutoff_y + face_h * (1.04 if hair_length == "short" else 0.88)))
+    y_max = min(H, int(cutoff_y + face_h * (1.32 if hair_length == "short" else 1.02)))
     if x_min >= x_max or y_min >= y_max:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[y_min:y_max, x_min:x_max] = 255
     support_u8 = cv2.bitwise_and(support_u8, corridor_u8)
+    raw_support_u8 = cv2.bitwise_and(raw_support_u8, corridor_u8)
+    raw_support_px = int((raw_support_u8 > 0).sum())
 
     if cloth_mask is not None and cloth_mask.shape == (H, W):
         cloth_near_u8 = cv2.dilate(
@@ -5077,7 +5165,11 @@ def _build_lower_tail_post_support_mask(
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
             iterations=1,
         )
-        support_u8 = cv2.bitwise_and(support_u8, cloth_near_u8)
+        support_on_cloth_u8 = cv2.bitwise_and(support_u8, cloth_near_u8)
+        if int((support_on_cloth_u8 > 0).sum()) >= max(12, int(raw_support_px * 0.22)):
+            support_u8 = support_on_cloth_u8
+        else:
+            support_u8 = raw_support_u8.copy()
 
     if int((support_u8 > 0).sum()) < 12:
         return np.zeros((H, W), dtype=np.float32)
@@ -5098,7 +5190,7 @@ def _build_lower_tail_post_support_mask(
 
     filtered_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(support_u8, 8)
-    max_area = max(640, int(face_w * face_h * (0.32 if hair_length == "short" else 0.22)))
+    max_area = max(960, int(face_w * face_h * (0.48 if hair_length == "short" else 0.30)))
     min_bottom = int(cutoff_y + face_h * 0.02)
     for idx in range(1, num_labels):
         y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -5117,7 +5209,7 @@ def _build_lower_tail_post_support_mask(
         filtered_u8,
         cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE,
-            (11, 19) if hair_length == "short" else (9, 13),
+            (13, 23) if hair_length == "short" else (11, 17),
         ),
         iterations=1,
     )
@@ -5149,15 +5241,18 @@ def _build_lower_tail_removal_extension_mask(
     if int((support_u8 > 0).sum()) < 12:
         return np.zeros((H, W), dtype=np.float32)
 
+    raw_support_u8 = support_u8.copy()
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    x_min = max(0, int(x1 - face_w * (0.72 if hair_length == "short" else 0.84)))
-    x_max = min(W, int(x2 + face_w * (0.72 if hair_length == "short" else 0.84)))
+    x_min = max(0, int(x1 - face_w * (1.08 if hair_length == "short" else 1.02)))
+    x_max = min(W, int(x2 + face_w * (1.08 if hair_length == "short" else 1.02)))
     y_min = max(0, int(cutoff_y - face_h * 0.03))
-    y_max = min(H, int(cutoff_y + face_h * (1.20 if hair_length == "short" else 1.08)))
+    y_max = min(H, int(cutoff_y + face_h * (1.52 if hair_length == "short" else 1.28)))
     if x_min >= x_max or y_min >= y_max:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[y_min:y_max, x_min:x_max] = 255
     support_u8 = cv2.bitwise_and(support_u8, corridor_u8)
+    raw_support_u8 = cv2.bitwise_and(raw_support_u8, corridor_u8)
+    raw_support_px = int((raw_support_u8 > 0).sum())
 
     if cloth_mask is not None and cloth_mask.shape == (H, W):
         cloth_hint_u8 = cv2.dilate(
@@ -5165,7 +5260,11 @@ def _build_lower_tail_removal_extension_mask(
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
             iterations=1,
         )
-        support_u8 = cv2.bitwise_and(support_u8, cloth_hint_u8)
+        support_on_cloth_u8 = cv2.bitwise_and(support_u8, cloth_hint_u8)
+        if int((support_on_cloth_u8 > 0).sum()) >= max(12, int(raw_support_px * 0.18)):
+            support_u8 = support_on_cloth_u8
+        else:
+            support_u8 = raw_support_u8.copy()
 
     base_hint_u8 = (np.clip(removal_mask.astype(np.float32), 0.0, 1.0) > 0.16).astype(np.uint8) * 255
     base_hint_u8[:cutoff_y, :] = 0
@@ -5191,7 +5290,7 @@ def _build_lower_tail_removal_extension_mask(
 
     filtered_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(support_u8, 8)
-    max_area = max(360, int(face_w * face_h * (0.18 if hair_length == "short" else 0.14)))
+    max_area = max(520, int(face_w * face_h * (0.30 if hair_length == "short" else 0.20)))
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
         y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -5215,12 +5314,12 @@ def _build_lower_tail_removal_extension_mask(
         if base_overlap < 8 and not is_front_strand:
             continue
         if hair_length == "short":
-            if w > max(24, int(face_w * 0.24)) and not is_front_strand:
+            if w > max(34, int(face_w * 0.30)) and not is_front_strand:
                 continue
             if is_side_component:
-                if base_overlap < max(18, int(area * 0.18)) and front_overlap < 12:
+                if base_overlap < max(14, int(area * 0.10)) and front_overlap < 8:
                     continue
-                if area > max(92, int(face_w * face_h * 0.030)):
+                if area > max(156, int(face_w * face_h * 0.050)):
                     continue
         filtered_u8 = cv2.bitwise_or(filtered_u8, comp_u8)
 
@@ -5231,7 +5330,7 @@ def _build_lower_tail_removal_extension_mask(
         filtered_u8,
         cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE,
-            (7, 15) if hair_length == "short" else (5, 11),
+            (11, 21) if hair_length == "short" else (7, 15),
         ),
         iterations=1,
     )
@@ -5827,6 +5926,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._cv2_refine_cloth_region = staticmethod(_cv2_refine_cloth_region)
     cls._overlay_reference_cloth_fill = staticmethod(_overlay_reference_cloth_fill)
     cls._blend_neighbor_cloth_tone = staticmethod(_blend_neighbor_cloth_tone)
+    cls._resolve_background_fill_mode = _resolve_background_fill_mode
     cls._sd_refine_removed_region = _sd_refine_removed_region
     cls._filter_short_center_cleanup_mask = _filter_short_center_cleanup_mask
     cls._build_post_cloth_refine_mask = _build_post_cloth_refine_mask

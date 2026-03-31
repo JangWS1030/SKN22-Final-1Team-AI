@@ -1101,8 +1101,19 @@ class MirrAISDPipeline:
                 f"head_box=({head_x1},{head_y1})-({head_x2},{head_y2})"
             )
 
-            bg_mode = self.config.bg_fill_mode
-            logger.info(f"[SDPipeline] bg_fill_mode={bg_mode}")
+            bg_mode_requested = self.config.bg_fill_mode
+            bg_mode = self._resolve_background_fill_mode(
+                bg_mode_requested,
+                removal_mask=removal_mask,
+                cloth_mask=cloth_mask_dilated,
+                face_bbox=face_bbox,
+                hair_length=hair_length,
+                lower_tail_support_mask=lower_tail_support_for_post,
+                center_support_mask=center_chest_strand_removal_mask,
+            )
+            logger.info(
+                f"[SDPipeline] bg_fill_mode requested={bg_mode_requested} resolved={bg_mode}"
+            )
             tail_core_mask = np.zeros((H, W), dtype=np.float32)
 
             if removal_mask.sum() > 50:
@@ -1356,6 +1367,7 @@ class MirrAISDPipeline:
                     try:
                         fill_seed = int(seeds[0]) if seeds else random.randint(0, 2**31 - 1)
                         face_crop_fill = self._crop_face(Image.fromarray(img_rgb), face_bbox)
+                        fill_refine_mode = "short_tail" if hair_length == "short" else "generic"
                         img_rgb_cleaned = self._sd_refine_removed_region(
                             base_rgb=img_rgb_cleaned,
                             removal_mask=removal_mask,
@@ -1365,6 +1377,7 @@ class MirrAISDPipeline:
                             cloth_mask=cloth_mask_dilated,
                             hair_length=hair_length,
                             seed=fill_seed,
+                            refine_mode=fill_refine_mode,
                         )
                         logger.info("[SDPipeline] bg_fill_mode=sd: 제거 영역 SD 보정 완료")
                     except Exception as e:
