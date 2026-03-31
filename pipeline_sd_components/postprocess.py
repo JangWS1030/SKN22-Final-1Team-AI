@@ -2204,6 +2204,7 @@ def _build_final_source_cloth_rescue_mask(
     hair_length: str,
     protect_mask: Optional[np.ndarray] = None,
     final_hair_mask: Optional[np.ndarray] = None,
+    center_support_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if hair_length not in ("short", "medium"):
         return np.zeros(current_rgb.shape[:2], dtype=np.float32)
@@ -2251,6 +2252,8 @@ def _build_final_source_cloth_rescue_mask(
     ).mean(axis=2)
     current_gray = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
     source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    current_blur = cv2.GaussianBlur(current_gray, (0, 0), sigmaX=4.2, sigmaY=4.2)
+    current_sat = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
     source_sat = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
     gray_delta = np.abs(current_gray - source_gray)
     strong_diff_u8 = (
@@ -2260,6 +2263,32 @@ def _build_final_source_cloth_rescue_mask(
         ).astype(np.uint8)
         * 255
     )
+    if hair_length == "short":
+        smooth_artifact_u8 = (
+            (
+                (
+                    (
+                        (current_gray + 12.0 < source_gray)
+                        | (current_gray > source_gray + 18.0)
+                        | (diff_rgb > 17.0)
+                    )
+                    & (current_sat < 142.0)
+                    & (np.abs(current_gray - current_blur) < 10.0)
+                )
+            ).astype(np.uint8)
+            * 255
+        )
+        strong_diff_u8 = cv2.bitwise_or(strong_diff_u8, smooth_artifact_u8)
+        if center_support_mask is not None and center_support_mask.shape == (H, W):
+            center_support_u8 = cv2.dilate(
+                (np.clip(center_support_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 31)),
+                iterations=1,
+            )
+            strong_diff_u8 = cv2.bitwise_or(
+                strong_diff_u8,
+                cv2.bitwise_and(center_support_u8, cv2.bitwise_and(cloth_u8, removal_u8)),
+            )
     strong_diff_u8 = cv2.bitwise_and(strong_diff_u8, cloth_u8)
     strong_diff_u8 = cv2.bitwise_and(strong_diff_u8, removal_u8)
     if int((strong_diff_u8 > 0).sum()) < 40:
@@ -2282,6 +2311,7 @@ def _build_final_source_cloth_rescue_mask(
         iterations=1,
     )
     keep_u8 = cv2.bitwise_and(keep_u8, cloth_u8)
+    pre_tone_keep_u8 = keep_u8.copy()
 
     visible_cloth_u8 = cv2.bitwise_and(
         cloth_u8,
@@ -2317,7 +2347,13 @@ def _build_final_source_cloth_rescue_mask(
             ).astype(np.uint8)
             * 255
         )
-        keep_u8 = cv2.bitwise_and(keep_u8, tone_match_u8)
+        toned_keep_u8 = cv2.bitwise_and(keep_u8, tone_match_u8)
+        toned_px = int((toned_keep_u8 > 0).sum())
+        pre_tone_px = int((pre_tone_keep_u8 > 0).sum())
+        if hair_length == "short" and pre_tone_px >= 80 and toned_px < max(80, int(pre_tone_px * 0.30)):
+            keep_u8 = pre_tone_keep_u8
+        else:
+            keep_u8 = toned_keep_u8
 
     if protect_mask is not None and protect_mask.shape == (H, W):
         protect_u8 = cv2.dilate(
@@ -2373,12 +2409,15 @@ def _build_final_source_cloth_rescue_mask(
     )
     filtered_u8 = cv2.bitwise_and(filtered_u8, cloth_u8)
     if hair_length == "short":
+        pre_trim_filtered_u8 = filtered_u8.copy()
         filtered_u8 = self._trim_blocky_short_restore_mask_u8(
             mask_u8=filtered_u8,
             face_bbox=face_bbox,
             cutoff_y=cutoff_y,
             min_keep_px=80,
         )
+        if int((filtered_u8 > 0).sum()) < 80 and int((pre_trim_filtered_u8 > 0).sum()) >= 80:
+            filtered_u8 = pre_trim_filtered_u8
     if int((filtered_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
     return (filtered_u8 > 0).astype(np.float32)

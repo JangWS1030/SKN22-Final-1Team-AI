@@ -2815,6 +2815,7 @@ class MirrAISDPipeline:
                         hair_length=hair_length,
                         protect_mask=protect_mask_for_sd,
                         final_hair_mask=final_hair_mask,
+                        center_support_mask=center_chest_strand_removal_mask,
                     )
                     final_source_cloth_rescue_u8 = (
                         (np.clip(final_source_cloth_rescue_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
