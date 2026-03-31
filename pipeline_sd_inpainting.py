@@ -681,6 +681,7 @@ class MirrAISDPipeline:
         lower_tail_support_for_post: Optional[np.ndarray] = None
         below_bob_generation_block_for_post: Optional[np.ndarray] = None
         below_bob_cloth_restore_for_post: Optional[np.ndarray] = None
+        shoulder_hair_forbid_for_post: Optional[np.ndarray] = None
         composite_bangs_release_mask = np.zeros((H, W), dtype=np.float32)
         center_chest_strand_mask = np.zeros((H, W), dtype=np.float32)
         center_chest_strand_removal_mask = np.zeros((H, W), dtype=np.float32)
@@ -741,6 +742,31 @@ class MirrAISDPipeline:
             _store_mask("pipeline_torso_cloth_preserve_mask", torso_cloth_preserve_for_post)
             _store_mask("pipeline_lower_tail_support_post_mask", lower_tail_support_for_post)
             _store_mask("pipeline_center_chest_strand_mask", center_chest_strand_mask)
+            if isinstance(subject_shoulder_bridge_mask, np.ndarray) and subject_shoulder_bridge_mask.shape == (H, W):
+                shoulder_hair_forbid_for_post = np.clip(
+                    subject_shoulder_bridge_mask.astype(np.float32),
+                    0.0,
+                    1.0,
+                )
+                shoulder_hair_forbid_for_post[:max(0, int(cutoff_y + face_h * 0.02)), :] = 0.0
+                if protect_mask_for_sd.shape == (H, W):
+                    shoulder_hair_forbid_for_post = np.clip(
+                        shoulder_hair_forbid_for_post - protect_mask_for_sd * 0.92,
+                        0.0,
+                        1.0,
+                    )
+                if face_region_mask.shape == (H, W):
+                    shoulder_hair_forbid_for_post = np.clip(
+                        shoulder_hair_forbid_for_post - face_region_mask * 1.20,
+                        0.0,
+                        1.0,
+                    )
+                shoulder_hair_forbid_for_post = cv2.dilate(
+                    (shoulder_hair_forbid_for_post > 0.08).astype(np.uint8) * 255,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 15)),
+                    iterations=1,
+                ).astype(np.float32) / 255.0
+            _store_mask("pipeline_shoulder_hair_forbid_mask", shoulder_hair_forbid_for_post)
 
             # v4 쪽이 더 안정적이었던 핵심:
             # 1) cutoff 아래 long hair를 먼저 실제 hair 기반으로 비운 뒤
@@ -941,6 +967,14 @@ class MirrAISDPipeline:
                         0.0,
                         1.0,
                     )
+                if (
+                    shoulder_hair_forbid_for_post is not None
+                    and shoulder_hair_forbid_for_post.shape == (H, W)
+                ):
+                    removal_mask = np.maximum(
+                        removal_mask,
+                        np.clip(shoulder_hair_forbid_for_post * 0.92, 0.0, 1.0),
+                    ).astype(np.float32)
             removal_mask_for_post = removal_mask.copy()
 
             _store_mask("pipeline_lower_tail_removal_extension_mask", lower_tail_removal_extension)
@@ -1060,6 +1094,15 @@ class MirrAISDPipeline:
             if shoulder_protect_for_post is not None and shoulder_protect_for_post.shape == (H, W):
                 gen_mask = np.clip(
                     gen_mask - (shoulder_protect_for_post * (0.42 if hair_length == "short" else 0.28)),
+                    0.0,
+                    1.0,
+                )
+            if (
+                shoulder_hair_forbid_for_post is not None
+                and shoulder_hair_forbid_for_post.shape == (H, W)
+            ):
+                gen_mask = np.clip(
+                    gen_mask - shoulder_hair_forbid_for_post * (1.85 if hair_length == "short" else 1.10),
                     0.0,
                     1.0,
                 )
@@ -3871,8 +3914,6 @@ class MirrAISDPipeline:
             cloth_u8 = cv2.bitwise_or(cloth_u8, filtered_subject_cloth_u8)
         if int((filtered_subject_torso_u8 > 0).sum()) >= 80:
             cloth_u8 = cv2.bitwise_or(cloth_u8, filtered_subject_torso_u8)
-        if int((shoulder_bridge_u8 > 0).sum()) >= 60:
-            cloth_u8 = cv2.bitwise_or(cloth_u8, shoulder_bridge_u8)
         if isinstance(self._last_segface_mask_debug, dict):
             self._last_segface_mask_debug["subject_cloth_anchor_mask"] = (
                 subject_anchor_u8 > 0
@@ -3917,17 +3958,9 @@ class MirrAISDPipeline:
                     ).astype(np.float32)
 
         cloth_f = (cloth_u8 > 0).astype(np.float32)
-        overlap_guard_u8 = cloth_u8.copy()
-        if int((shoulder_bridge_u8 > 0).sum()) > 0:
-            overlap_guard_u8 = cv2.bitwise_and(
-                overlap_guard_u8,
-                cv2.bitwise_not(shoulder_bridge_u8),
-            )
-        overlap_guard_f = (overlap_guard_u8 > 0).astype(np.float32)
-        cloth_ratio = self._mask_ratio(overlap_guard_f if float(overlap_guard_f.sum()) > 0.0 else cloth_f)
+        cloth_ratio = self._mask_ratio(cloth_f)
         hair_area = float((hair_mask > 0.5).sum())
-        overlap_probe_f = overlap_guard_f if float(overlap_guard_f.sum()) > 0.0 else cloth_f
-        overlap = float(((overlap_probe_f > 0.5) & (hair_mask > 0.5)).sum())
+        overlap = float(((cloth_f > 0.5) & (hair_mask > 0.5)).sum())
         overlap_ratio = overlap / max(hair_area, 1.0)
 
         if cloth_ratio > 0.118 or overlap_ratio > 0.34:
