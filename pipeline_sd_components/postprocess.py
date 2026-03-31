@@ -2313,7 +2313,6 @@ def _build_final_source_cloth_rescue_mask(
             else:
                 anchor_lane_u8 = np.zeros((H, W), dtype=np.uint8)
     candidate_cloth_u8 = cv2.bitwise_or(cloth_u8, anchor_u8)
-    candidate_cloth_u8 = cv2.bitwise_or(candidate_cloth_u8, anchor_lane_u8)
     if int((candidate_cloth_u8 > 0).sum()) < 60:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -2485,12 +2484,12 @@ def _build_final_source_cloth_rescue_mask(
     filtered_u8 = np.zeros((H, W), dtype=np.uint8)
     min_area = max(80, int(face_w * face_h * 0.010))
     max_area = (
-        max(140000, int(face_w * face_h * 6.40))
+        max(28000, int(face_w * face_h * 1.60))
         if use_anchor_fallback
         else max(3600, int(face_w * face_h * 0.44))
     )
     max_width = (
-        max(640, int(face_w * 3.40))
+        max(320, int(face_w * 2.10))
         if use_anchor_fallback
         else max(120, int(face_w * 1.26))
     )
@@ -2510,9 +2509,7 @@ def _build_final_source_cloth_rescue_mask(
         filtered_u8[labels == idx] = 255
 
     if int((filtered_u8 > 0).sum()) < 80:
-        if not use_anchor_fallback or int((pre_tone_keep_u8 > 0).sum()) < 120:
-            return np.zeros((H, W), dtype=np.float32)
-        filtered_u8 = pre_tone_keep_u8.copy()
+        return np.zeros((H, W), dtype=np.float32)
 
     filtered_u8 = cv2.dilate(
         filtered_u8,
@@ -2656,6 +2653,7 @@ def _build_short_lower_garment_cleanup_mask(
     )
     dark_tail_u8 = cv2.bitwise_and(dark_tail_u8, zone_u8)
     anchor_lane_diff_u8 = np.zeros((H, W), dtype=np.uint8)
+    column_rescue_u8 = np.zeros((H, W), dtype=np.uint8)
     if use_anchor_fallback:
         anchor_lane_diff_u8 = (
             (
@@ -2667,10 +2665,62 @@ def _build_short_lower_garment_cleanup_mask(
         )
         anchor_lane_diff_u8 = cv2.bitwise_and(anchor_lane_diff_u8, zone_u8)
         anchor_lane_diff_u8 = cv2.bitwise_and(anchor_lane_diff_u8, anchor_lane_u8)
+        column_seed_u8 = (
+            (
+                ((diff_rgb > 9.0) | (gray_delta > 9.0))
+                & (lap < 18.0)
+                & (gray < 196.0)
+            ).astype(np.uint8)
+            * 255
+        )
+        column_seed_u8 = cv2.bitwise_and(column_seed_u8, zone_u8)
+        column_seed_u8 = cv2.bitwise_and(column_seed_u8, anchor_lane_u8)
+        column_seed_u8 = cv2.morphologyEx(
+            column_seed_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 11)),
+        )
+        column_seed_u8 = cv2.morphologyEx(
+            column_seed_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 31)),
+        )
+        num_col_labels, col_labels, col_stats, col_centroids = cv2.connectedComponentsWithStats(
+            column_seed_u8,
+            8,
+        )
+        min_col_area = max(72, int(face_w * face_h * 0.004))
+        min_col_height = max(56, int(face_h * 0.28))
+        max_col_width = max(132, int(face_w * 0.92))
+        max_col_offset = max(260, int(face_w * 1.34))
+        for idx in range(1, num_col_labels):
+            x = int(col_stats[idx, cv2.CC_STAT_LEFT])
+            y = int(col_stats[idx, cv2.CC_STAT_TOP])
+            w = int(col_stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(col_stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(col_stats[idx, cv2.CC_STAT_AREA])
+            bottom_y = y + h
+            comp_cx = float(col_centroids[idx][0])
+            if area < min_col_area:
+                continue
+            if h < min_col_height or w > max_col_width:
+                continue
+            if bottom_y < int(cutoff_y + face_h * 0.22):
+                continue
+            if abs(comp_cx - cx) > max_col_offset:
+                continue
+            column_rescue_u8[col_labels == idx] = 255
+        if int((column_rescue_u8 > 0).sum()) >= 60:
+            column_rescue_u8 = cv2.dilate(
+                column_rescue_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 27)),
+                iterations=1,
+            )
 
     keep_u8 = cv2.bitwise_or(low_texture_u8, dark_tail_u8)
     keep_u8 = cv2.bitwise_or(keep_u8, deep_zone_u8)
     keep_u8 = cv2.bitwise_or(keep_u8, anchor_lane_diff_u8)
+    keep_u8 = cv2.bitwise_or(keep_u8, column_rescue_u8)
     keep_u8 = cv2.bitwise_and(keep_u8, zone_u8)
     if int((keep_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
@@ -2718,6 +2768,7 @@ def _build_short_lower_garment_cleanup_mask(
         )
         keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(protect_u8))
         anchor_fallback_u8 = cv2.bitwise_and(anchor_fallback_u8, cv2.bitwise_not(protect_u8))
+        column_rescue_u8 = cv2.bitwise_and(column_rescue_u8, cv2.bitwise_not(protect_u8))
 
     if final_hair_mask is not None:
         final_hair_u8 = cv2.dilate(
@@ -2733,6 +2784,7 @@ def _build_short_lower_garment_cleanup_mask(
         hair_protect_u8 = cv2.bitwise_and(final_hair_u8, hair_guard_u8)
         keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(hair_protect_u8))
         anchor_fallback_u8 = cv2.bitwise_and(anchor_fallback_u8, cv2.bitwise_not(hair_protect_u8))
+        column_rescue_u8 = cv2.bitwise_and(column_rescue_u8, cv2.bitwise_not(hair_protect_u8))
 
     keep_u8 = cv2.morphologyEx(
         keep_u8,
@@ -2774,7 +2826,9 @@ def _build_short_lower_garment_cleanup_mask(
         filtered_u8[labels == idx] = 255
 
     if int((filtered_u8 > 0).sum()) < 120:
-        if int((anchor_fallback_u8 > 0).sum()) >= 120:
+        if int((column_rescue_u8 > 0).sum()) >= 120:
+            filtered_u8 = column_rescue_u8.copy()
+        elif int((anchor_fallback_u8 > 0).sum()) >= 120:
             filtered_u8 = anchor_fallback_u8.copy()
         else:
             if int((keep_u8 > 0).sum()) < 160:
