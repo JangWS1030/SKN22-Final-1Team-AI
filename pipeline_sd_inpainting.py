@@ -1084,6 +1084,42 @@ class MirrAISDPipeline:
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
                     iterations=1,
                 )
+                short_volume_cap_u8 = np.zeros((H, W), dtype=np.uint8)
+                cap_center_y = int(max(seed_top + 1, min(H - 1, y1f + face_h * 0.18)))
+                cap_axes_x = max(24, int(face_w * 0.58))
+                cap_axes_y = max(30, int(face_h * 0.72))
+                cv2.ellipse(
+                    short_volume_cap_u8,
+                    (face_cx, cap_center_y),
+                    (cap_axes_x, cap_axes_y),
+                    0,
+                    0,
+                    360,
+                    255,
+                    thickness=-1,
+                )
+                cap_side_top = max(seed_top, int(y1f + face_h * 0.12))
+                cap_side_bottom = min(H, int(y2f + face_h * 0.18))
+                cap_inner_gap = max(10, int(face_w * 0.18))
+                cap_outer_span = max(18, int(face_w * 0.52))
+                cap_left_outer = max(0, int(face_cx - cap_outer_span))
+                cap_left_inner = max(cap_left_outer + 1, int(face_cx - cap_inner_gap))
+                cap_right_inner = min(W - 1, int(face_cx + cap_inner_gap))
+                cap_right_outer = min(W, int(face_cx + cap_outer_span))
+                if cap_side_top < cap_side_bottom:
+                    short_volume_cap_u8[cap_side_top:cap_side_bottom, cap_left_outer:cap_left_inner] = 255
+                    short_volume_cap_u8[cap_side_top:cap_side_bottom, cap_right_inner:cap_right_outer] = 255
+                short_volume_cap = cv2.GaussianBlur(
+                    short_volume_cap_u8.astype(np.float32) / 255.0,
+                    (0, 0),
+                    sigmaX=3.0,
+                    sigmaY=3.4,
+                ).astype(np.float32)
+                gen_mask = np.clip(
+                    gen_mask * np.clip(short_volume_cap * 1.24, 0.0, 1.0),
+                    0.0,
+                    1.0,
+                )
             composite_bangs_release_mask = np.zeros((H, W), dtype=np.float32)
             if float(bangs_restore_for_sd.sum()) > 0.0:
                 soft_bangs_generation_mask = self._build_soft_bangs_generation_mask(
@@ -1091,13 +1127,17 @@ class MirrAISDPipeline:
                     face_bbox=face_bbox,
                 )
                 composite_bangs_release_mask = np.clip(
-                    soft_bangs_generation_mask.astype(np.float32) * 1.15,
+                    soft_bangs_generation_mask.astype(np.float32) * (1.28 if has_color_request else 1.15),
                     0.0,
                     1.0,
                 )
                 gen_mask = np.maximum(
                     gen_mask,
-                    np.clip(soft_bangs_generation_mask.astype(np.float32), 0.0, 1.0),
+                    np.clip(
+                        soft_bangs_generation_mask.astype(np.float32) * (1.12 if has_color_request else 1.0),
+                        0.0,
+                        1.0,
+                    ),
                 )
                 _store_mask("pipeline_bangs_generation_soft_mask", soft_bangs_generation_mask)
                 _store_mask("pipeline_bangs_composite_release_mask", composite_bangs_release_mask)
