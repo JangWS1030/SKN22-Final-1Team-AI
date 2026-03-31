@@ -4865,6 +4865,7 @@ def _build_lower_hair_tail_support_mask(
     x1, y1, x2, y2 = face_bbox
     face_w = max(int(x2 - x1), 1)
     face_h = max(int(y2 - y1), 1)
+    cx = float(0.5 * (x1 + x2))
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
     x_min = max(0, int(x1 - face_w * (1.28 if hair_length == "short" else 1.10)))
@@ -4876,6 +4877,10 @@ def _build_lower_hair_tail_support_mask(
     corridor_u8[y_min:y_max, x_min:x_max] = 255
 
     hair_u8 = (np.clip(hair_mask.astype(np.float32), 0.0, 1.0) > 0.35).astype(np.uint8) * 255
+    raw_tail_u8 = hair_u8.copy()
+    raw_tail_u8[:max(0, int(y2 - face_h * 0.04)), :] = 0
+    raw_tail_u8 = cv2.bitwise_and(raw_tail_u8, corridor_u8)
+    raw_tail_px = int((raw_tail_u8 > 0).sum())
     anchor_u8 = cv2.dilate(
         hair_u8,
         cv2.getStructuringElement(
@@ -4905,6 +4910,102 @@ def _build_lower_hair_tail_support_mask(
     front_y2 = min(H, int(y2 + face_h * (0.82 if hair_length == "short" else 0.58)))
     if front_x1 < front_x2 and front_y1 < front_y2:
         front_strand_zone_u8[front_y1:front_y2, front_x1:front_x2] = 255
+
+    min_tail_bottom = int(y2 + face_h * (0.10 if hair_length == "short" else 0.08))
+    min_height = max(14, int(face_h * (0.10 if hair_length == "short" else 0.08)))
+
+    def _build_raw_tail_fallback_mask() -> np.ndarray:
+        if raw_tail_px < max(60, int(face_w * face_h * 0.010)):
+            return np.zeros((H, W), dtype=np.uint8)
+
+        fallback_u8 = raw_tail_u8.copy()
+        fallback_u8 = cv2.morphologyEx(
+            fallback_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (9, 31) if hair_length == "short" else (7, 23),
+            ),
+        )
+        fallback_u8 = cv2.morphologyEx(
+            fallback_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+
+        if int((anchor_support_u8 > 0).sum()) >= 40:
+            relaxed_anchor_u8 = cv2.dilate(
+                anchor_support_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (19, 49) if hair_length == "short" else (15, 37),
+                ),
+                iterations=1,
+            )
+            guided_u8 = cv2.bitwise_and(
+                fallback_u8,
+                cv2.bitwise_or(relaxed_anchor_u8, front_strand_zone_u8),
+            )
+            if int((guided_u8 > 0).sum()) >= max(48, int(raw_tail_px * 0.10)):
+                fallback_u8 = guided_u8
+
+        keep_u8 = np.zeros((H, W), dtype=np.uint8)
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(fallback_u8, 8)
+        max_shallow_width = max(88, int(face_w * 1.06))
+        center_half = max(18, int(face_w * 0.18))
+        max_center_width = max(42, int(face_w * 0.34))
+        for idx in range(1, num_labels):
+            x = int(stats[idx, cv2.CC_STAT_LEFT])
+            y = int(stats[idx, cv2.CC_STAT_TOP])
+            w = int(stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            bottom = y + h
+            if area < 24:
+                continue
+            if h < min_height:
+                continue
+            if bottom < min_tail_bottom:
+                continue
+            if w >= max_shallow_width and h < max(36, int(face_h * 0.28)):
+                continue
+
+            comp_u8 = (labels == idx).astype(np.uint8) * 255
+            anchor_overlap = int((cv2.bitwise_and(comp_u8, anchor_support_u8) > 0).sum())
+            front_overlap = int((cv2.bitwise_and(comp_u8, front_strand_zone_u8) > 0).sum())
+            comp_cx = float(centroids[idx][0])
+            is_center_component = abs(comp_cx - cx) <= center_half
+
+            if (
+                is_center_component
+                and w > max_center_width
+                and anchor_overlap < 12
+                and front_overlap < 10
+                and h < max(46, int(face_h * 0.34))
+            ):
+                continue
+            keep_u8 = cv2.bitwise_or(keep_u8, comp_u8)
+
+        if int((keep_u8 > 0).sum()) < 20:
+            return np.zeros((H, W), dtype=np.uint8)
+
+        keep_u8 = cv2.morphologyEx(
+            keep_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (9, 35) if hair_length == "short" else (7, 27),
+            ),
+        )
+        keep_u8 = cv2.dilate(
+            keep_u8,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (13, 27) if hair_length == "short" else (9, 17),
+            ),
+            iterations=1,
+        )
+        return cv2.bitwise_and(keep_u8, corridor_u8)
 
     support_zone_u8 = corridor_u8.copy()
     if cloth_mask is not None and cloth_mask.shape == (H, W):
@@ -4936,9 +5037,7 @@ def _build_lower_hair_tail_support_mask(
     ).astype(np.uint8) * 255
     dark_u8 = cv2.bitwise_and(dark_u8, support_zone_u8)
     dark_u8 = cv2.bitwise_and(dark_u8, candidate_zone_u8)
-    if int((dark_u8 > 0).sum()) < 18:
-        return np.zeros((H, W), dtype=np.float32)
-
+    raw_tail_fallback_u8 = _build_raw_tail_fallback_mask()
     main_seed_u8 = cv2.dilate(
         hair_u8,
         cv2.getStructuringElement(
@@ -4950,70 +5049,81 @@ def _build_lower_hair_tail_support_mask(
     main_seed_u8[:max(0, int(y2 - face_h * 0.08)), :] = 0
     main_seed_u8 = cv2.bitwise_and(main_seed_u8, corridor_u8)
     main_seed_u8 = cv2.bitwise_or(main_seed_u8, anchor_u8)
-
-    dark_u8 = cv2.morphologyEx(
-        dark_u8,
-        cv2.MORPH_OPEN,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
-    )
-    dark_u8 = cv2.morphologyEx(
-        dark_u8,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (7, 29) if hair_length == "short" else (5, 21),
-        ),
-    )
-    dark_u8 = cv2.dilate(
-        dark_u8,
-        cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (11, 17) if hair_length == "short" else (9, 13),
-        ),
-        iterations=1,
-    )
-
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(dark_u8, 8)
-    keep_u8 = np.zeros((H, W), dtype=np.uint8)
-    max_area = max(
-        280,
-        min(
-            int(H * W * 0.020),
-            int(face_w * face_h * (0.42 if hair_length == "short" else 0.28)),
-        ),
-    )
-    min_tail_bottom = int(y2 + face_h * (0.10 if hair_length == "short" else 0.08))
-    min_height = max(14, int(face_h * (0.10 if hair_length == "short" else 0.08)))
-    for idx in range(1, num_labels):
-        x = int(stats[idx, cv2.CC_STAT_LEFT])
-        y = int(stats[idx, cv2.CC_STAT_TOP])
-        w = int(stats[idx, cv2.CC_STAT_WIDTH])
-        h = int(stats[idx, cv2.CC_STAT_HEIGHT])
-        area = int(stats[idx, cv2.CC_STAT_AREA])
-        if area < 20 or area > max_area:
-            continue
-        if h < min_height:
-            continue
-        if (y + h) < min_tail_bottom:
-            continue
-        comp_u8 = (labels == idx).astype(np.uint8) * 255
-        dark_overlap = int((cv2.bitwise_and(comp_u8, dark_u8) > 0).sum())
-        if dark_overlap < 8:
-            continue
-        seed_overlap = int((cv2.bitwise_and(comp_u8, main_seed_u8) > 0).sum())
-        anchor_overlap = int((cv2.bitwise_and(comp_u8, anchor_support_u8) > 0).sum())
-        front_overlap = int((cv2.bitwise_and(comp_u8, front_strand_zone_u8) > 0).sum())
-        is_front_strand = (
-            front_overlap >= 10
-            and w <= max(26, int(face_w * 0.24))
-            and h >= max(26, int(face_h * 0.16))
+    if int((dark_u8 > 0).sum()) < 18:
+        if int((raw_tail_fallback_u8 > 0).sum()) < 20:
+            return np.zeros((H, W), dtype=np.float32)
+        keep_u8 = raw_tail_fallback_u8
+    else:
+        dark_u8 = cv2.morphologyEx(
+            dark_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
         )
-        if seed_overlap < 12 and anchor_overlap < 10 and not is_front_strand:
-            continue
-        keep_u8 = cv2.bitwise_or(keep_u8, comp_u8)
+        dark_u8 = cv2.morphologyEx(
+            dark_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (7, 29) if hair_length == "short" else (5, 21),
+            ),
+        )
+        dark_u8 = cv2.dilate(
+            dark_u8,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (11, 17) if hair_length == "short" else (9, 13),
+            ),
+            iterations=1,
+        )
 
-    if int((keep_u8 > 0).sum()) < 20:
-        return np.zeros((H, W), dtype=np.float32)
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(dark_u8, 8)
+        keep_u8 = np.zeros((H, W), dtype=np.uint8)
+        max_area = max(
+            280,
+            min(
+                int(H * W * 0.020),
+                int(face_w * face_h * (0.42 if hair_length == "short" else 0.28)),
+            ),
+        )
+        for idx in range(1, num_labels):
+            x = int(stats[idx, cv2.CC_STAT_LEFT])
+            y = int(stats[idx, cv2.CC_STAT_TOP])
+            w = int(stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            if area < 20 or area > max_area:
+                continue
+            if h < min_height:
+                continue
+            if (y + h) < min_tail_bottom:
+                continue
+            comp_u8 = (labels == idx).astype(np.uint8) * 255
+            dark_overlap = int((cv2.bitwise_and(comp_u8, dark_u8) > 0).sum())
+            if dark_overlap < 8:
+                continue
+            seed_overlap = int((cv2.bitwise_and(comp_u8, main_seed_u8) > 0).sum())
+            anchor_overlap = int((cv2.bitwise_and(comp_u8, anchor_support_u8) > 0).sum())
+            front_overlap = int((cv2.bitwise_and(comp_u8, front_strand_zone_u8) > 0).sum())
+            is_front_strand = (
+                front_overlap >= 10
+                and w <= max(26, int(face_w * 0.24))
+                and h >= max(26, int(face_h * 0.16))
+            )
+            if seed_overlap < 12 and anchor_overlap < 10 and not is_front_strand:
+                continue
+            keep_u8 = cv2.bitwise_or(keep_u8, comp_u8)
+
+        keep_px = int((keep_u8 > 0).sum())
+        fallback_px = int((raw_tail_fallback_u8 > 0).sum())
+        if keep_px < 20:
+            if fallback_px < 20:
+                return np.zeros((H, W), dtype=np.float32)
+            keep_u8 = raw_tail_fallback_u8
+        elif (
+            fallback_px >= max(48, int(keep_px * 1.10))
+            and keep_px < max(160, int(raw_tail_px * 0.22))
+        ):
+            keep_u8 = cv2.bitwise_or(keep_u8, raw_tail_fallback_u8)
 
     bridge_seed_u8 = cv2.dilate(
         main_seed_u8,
