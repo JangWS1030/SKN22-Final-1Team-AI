@@ -2022,6 +2022,7 @@ def _cleanup_region_with_cloth_restore(
     final_hair_mask: Optional[np.ndarray] = None,
     ignore_final_hair_for_cloth_restore: bool = False,
     cleanup_dark_tail: bool = True,
+    prefer_plain_cloth_fill: bool = False,
 ) -> np.ndarray:
     H, W = current_rgb.shape[:2]
     if source_rgb.shape[:2] != (H, W) or cleanup_mask.shape != (H, W):
@@ -2090,6 +2091,8 @@ def _cleanup_region_with_cloth_restore(
         plain_gray = float(np.median(source_gray[visible_cloth_u8 > 0]))
         plain_sat = float(np.median(source_sat[visible_cloth_u8 > 0]))
         use_plain_cloth_force = plain_gray >= 168.0 and plain_sat <= 84.0
+        if prefer_plain_cloth_fill:
+            use_plain_cloth_force = True
     if use_plain_cloth_force:
         plain_fill_rgb = source_rgb.copy()
         plain_fill_color = np.median(source_rgb[visible_cloth_u8 > 0], axis=0).astype(np.uint8)
@@ -2112,14 +2115,22 @@ def _cleanup_region_with_cloth_restore(
             reference_rgb=source_rgb,
             reference_mask=cloth_mask,
         )
-    cleaned = self._restore_cloth_overlap_from_source(
-        source_rgb=source_rgb,
-        current_rgb=cleaned,
-        restore_mask=cloth_cleanup_mask,
-        final_hair_mask=restore_final_hair_mask,
-        tone_reference_rgb=source_rgb,
-        tone_reference_mask=cloth_mask,
-    )
+    if prefer_plain_cloth_fill and (plain_fill_rgb is not None or reference_fill_rgb is not None):
+        cleaned = self._restore_reference_region(
+            cleaned,
+            plain_fill_rgb if plain_fill_rgb is not None else reference_fill_rgb,
+            cloth_cleanup_mask,
+            strength=0.985,
+        )
+    else:
+        cleaned = self._restore_cloth_overlap_from_source(
+            source_rgb=source_rgb,
+            current_rgb=cleaned,
+            restore_mask=cloth_cleanup_mask,
+            final_hair_mask=restore_final_hair_mask,
+            tone_reference_rgb=source_rgb,
+            tone_reference_mask=cloth_mask,
+        )
     if use_plain_cloth_force:
         cleaned_gray = cv2.cvtColor(cleaned, cv2.COLOR_RGB2GRAY).astype(np.float32)
         cleaned_sat = cv2.cvtColor(cleaned, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)

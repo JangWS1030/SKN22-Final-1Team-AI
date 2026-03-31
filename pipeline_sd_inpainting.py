@@ -2521,38 +2521,8 @@ class MirrAISDPipeline:
                             final_hair_mask=final_hair_mask,
                             ignore_final_hair_for_cloth_restore=True,
                             cleanup_dark_tail=True,
+                            prefer_plain_cloth_fill=True,
                         )
-                        short_side_lane_cloth_mask = np.clip(
-                            short_side_lane_refine_mask.astype(np.float32)
-                            * np.clip(cloth_mask_dilated.astype(np.float32), 0.0, 1.0),
-                            0.0,
-                            1.0,
-                        )
-                        if float(short_side_lane_cloth_mask.sum()) >= 80.0:
-                            final_rgb = self._restore_reference_region(
-                                final_rgb,
-                                img_rgb,
-                                short_side_lane_cloth_mask,
-                                strength=0.985,
-                            )
-                            final_rgb = self._restore_cloth_overlap_from_source(
-                                source_rgb=img_rgb,
-                                current_rgb=final_rgb,
-                                restore_mask=short_side_lane_cloth_mask,
-                                final_hair_mask=None,
-                            )
-                            final_rgb = self._blend_neighbor_cloth_tone(
-                                final_rgb,
-                                short_side_lane_cloth_mask,
-                                cloth_mask=cloth_mask_dilated,
-                                reference_rgb=img_rgb,
-                            )
-                            final_rgb = self._cv2_refine_cloth_region(
-                                final_rgb,
-                                short_side_lane_cloth_mask,
-                                reference_rgb=img_rgb,
-                                reference_mask=cloth_mask_dilated,
-                            )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_short_final_side_lane_refine_mask"] = cv2.cvtColor(
