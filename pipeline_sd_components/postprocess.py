@@ -2458,8 +2458,17 @@ def _build_final_source_cloth_rescue_mask(
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(keep_u8, 8)
     filtered_u8 = np.zeros((H, W), dtype=np.uint8)
     min_area = max(80, int(face_w * face_h * 0.010))
-    max_area = max(22000, int(face_w * face_h * 1.20))
-    max_width = max(260, int(face_w * 1.80))
+    use_anchor_fallback = int((anchor_u8 > 0).sum()) >= 120
+    max_area = (
+        max(22000, int(face_w * face_h * 1.20))
+        if use_anchor_fallback
+        else max(3600, int(face_w * face_h * 0.44))
+    )
+    max_width = (
+        max(260, int(face_w * 1.80))
+        if use_anchor_fallback
+        else max(120, int(face_w * 1.26))
+    )
     min_height = max(24, int(face_h * 0.10))
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
@@ -2498,7 +2507,7 @@ def _build_final_source_cloth_rescue_mask(
         if int((filtered_u8 > 0).sum()) < 80 and int((pre_trim_filtered_u8 > 0).sum()) >= 80:
             filtered_u8 = pre_trim_filtered_u8
     if int((filtered_u8 > 0).sum()) < 80:
-        if int((pre_tone_keep_u8 > 0).sum()) < 120:
+        if not use_anchor_fallback or int((pre_tone_keep_u8 > 0).sum()) < 120:
             return np.zeros((H, W), dtype=np.float32)
         filtered_u8 = pre_tone_keep_u8.copy()
     return (filtered_u8 > 0).astype(np.float32)
@@ -2618,15 +2627,15 @@ def _build_short_lower_garment_cleanup_mask(
 
     anchor_fallback_u8 = np.zeros((H, W), dtype=np.uint8)
     if int((anchor_u8 > 0).sum()) >= 120:
-        anchor_fallback_u8 = cv2.bitwise_and(deep_zone_u8, anchor_u8)
+        anchor_fallback_u8 = cv2.bitwise_and(zone_u8, anchor_u8)
         anchor_fallback_u8 = cv2.morphologyEx(
             anchor_fallback_u8,
             cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 21)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 25)),
         )
         anchor_fallback_u8 = cv2.dilate(
             anchor_fallback_u8,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 19)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 23)),
             iterations=1,
         )
         anchor_fallback_u8 = cv2.bitwise_and(anchor_fallback_u8, cv2.bitwise_not(upper_guard_u8))
