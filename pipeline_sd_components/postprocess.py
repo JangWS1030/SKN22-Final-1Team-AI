@@ -2533,7 +2533,16 @@ def _build_final_source_cloth_rescue_mask(
     if int((filtered_u8 > 0).sum()) < 80:
         if not use_anchor_fallback or int((pre_tone_keep_u8 > 0).sum()) < 120:
             return np.zeros((H, W), dtype=np.float32)
-        filtered_u8 = pre_tone_keep_u8.copy()
+        fallback_u8 = self._trim_blocky_short_restore_mask_u8(
+            mask_u8=pre_tone_keep_u8,
+            face_bbox=face_bbox,
+            cutoff_y=cutoff_y,
+            min_keep_px=80,
+        )
+        fallback_px = int((fallback_u8 > 0).sum())
+        if fallback_px < 80 or fallback_px > max(9000, int(face_w * face_h * 0.34)):
+            return np.zeros((H, W), dtype=np.float32)
+        filtered_u8 = fallback_u8
     return (filtered_u8 > 0).astype(np.float32)
 
 def _build_short_lower_garment_cleanup_mask(
@@ -4010,7 +4019,18 @@ def _build_final_hair_lane_cleanup_mask(
 
     if int((keep_u8 > 0).sum()) < 24:
         if use_anchor_fallback and int((zone_u8 > 0).sum()) >= 80:
-            keep_u8 = zone_u8.copy()
+            fallback_u8 = cv2.bitwise_and(zone_u8, anchor_lane_u8)
+            fallback_u8 = self._trim_blocky_short_restore_mask_u8(
+                mask_u8=fallback_u8,
+                face_bbox=face_bbox,
+                cutoff_y=cutoff_y,
+                min_keep_px=24,
+            )
+            fallback_px = int((fallback_u8 > 0).sum())
+            if 24 <= fallback_px <= max(2800, int(face_w * face_h * 0.14)):
+                keep_u8 = fallback_u8
+            else:
+                return np.zeros((H, W), dtype=np.float32)
         else:
             return np.zeros((H, W), dtype=np.float32)
 
@@ -4709,8 +4729,8 @@ def _build_dark_lane_cleanup_mask(
                 cv2.getStructuringElement(
                     cv2.MORPH_ELLIPSE,
                     (
-                        max(45, int(face_w * 1.26)) | 1,
-                        max(17, int(face_h * 0.22)) | 1,
+                        max(33, int(face_w * 0.92)) | 1,
+                        max(15, int(face_h * 0.18)) | 1,
                     ),
                 ),
                 iterations=1,
@@ -4796,7 +4816,18 @@ def _build_dark_lane_cleanup_mask(
 
     if int((keep_u8 > 0).sum()) < 24:
         if use_anchor_fallback and int((candidate_u8 > 0).sum()) >= 80:
-            keep_u8 = candidate_u8.copy()
+            fallback_u8 = cv2.bitwise_and(candidate_u8, anchor_lane_u8)
+            fallback_u8 = self._trim_blocky_short_restore_mask_u8(
+                mask_u8=fallback_u8,
+                face_bbox=face_bbox,
+                cutoff_y=cutoff_y,
+                min_keep_px=24,
+            )
+            fallback_px = int((fallback_u8 > 0).sum())
+            if 24 <= fallback_px <= max(4200, int(face_w * face_h * 0.20)):
+                keep_u8 = fallback_u8
+            else:
+                return np.zeros((H, W), dtype=np.float32)
         else:
             return np.zeros((H, W), dtype=np.float32)
 

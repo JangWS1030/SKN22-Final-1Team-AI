@@ -3966,10 +3966,27 @@ class MirrAISDPipeline:
         anchor_u8 = np.zeros((H, W), dtype=np.uint8)
         top = max(0, int(y2 - face_h * 0.02))
         bottom = min(H, int(y2 + face_h * 1.18))
-        left = max(0, int(cx - face_w * 0.66))
-        right = min(W, int(cx + face_w * 0.66))
+        left = max(0, int(cx - face_w * 0.82))
+        right = min(W, int(cx + face_w * 0.82))
         if top < bottom and left < right:
-            anchor_u8[top:bottom, left:right] = 255
+            anchor_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+            anchor_gate_u8[top:bottom, left:right] = 255
+        else:
+            anchor_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+
+        torso_center = (cx, int(y2 + face_h * 0.58))
+        torso_axes = (
+            max(20, int(face_w * 0.42)),
+            max(28, int(face_h * 0.56)),
+        )
+        cv2.ellipse(anchor_u8, torso_center, torso_axes, 0, 0, 360, 255, -1)
+
+        upper_center = (cx, int(y2 + face_h * 0.22))
+        upper_axes = (
+            max(16, int(face_w * 0.28)),
+            max(12, int(face_h * 0.16)),
+        )
+        cv2.ellipse(anchor_u8, upper_center, upper_axes, 0, 0, 360, 255, -1)
 
         shoulder_centers = (
             (int(cx - face_w * 0.40), int(y2 + face_h * 0.18)),
@@ -3987,6 +4004,7 @@ class MirrAISDPipeline:
             cv2.MORPH_CLOSE,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 19)),
         )
+        anchor_u8 = cv2.bitwise_and(anchor_u8, anchor_gate_u8)
         return anchor_u8
 
     def _filter_cloth_mask_to_subject_anchor(
