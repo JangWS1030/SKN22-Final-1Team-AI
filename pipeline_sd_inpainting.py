@@ -945,18 +945,18 @@ class MirrAISDPipeline:
                 face_h = max(int(y2f - y1f), 1)
                 face_cx = int(0.5 * (x1f + x2f))
                 seed_top = max(0, int(head_y1))
-                seed_bottom = min(H, int(cutoff_y + face_h * 0.12))
-                seed_left = max(0, int(x1f - face_w * 0.84))
-                seed_right = min(W, int(x2f + face_w * 0.84))
+                seed_bottom = min(H, int(cutoff_y + face_h * 0.08))
+                seed_left = max(0, int(x1f - face_w * 0.76))
+                seed_right = min(W, int(x2f + face_w * 0.76))
                 short_seed_u8 = np.zeros((H, W), dtype=np.uint8)
 
                 if seed_top < seed_bottom and seed_left < seed_right:
                     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
                     corridor_u8[seed_top:seed_bottom, seed_left:seed_right] = 255
 
-                    crown_center_y = int(max(seed_top + 1, min(seed_bottom - 1, y1f + face_h * 0.12)))
-                    crown_axes_y = max(26, int((seed_bottom - seed_top) * 0.44))
-                    crown_axes_x = max(28, int(face_w * 0.82))
+                    crown_center_y = int(max(seed_top + 1, min(seed_bottom - 1, y1f + face_h * 0.09)))
+                    crown_axes_y = max(18, int((seed_bottom - seed_top) * 0.30))
+                    crown_axes_x = max(24, int(face_w * 0.68))
                     cv2.ellipse(
                         short_seed_u8,
                         (face_cx, crown_center_y),
@@ -968,10 +968,10 @@ class MirrAISDPipeline:
                         thickness=-1,
                     )
 
-                    side_top = max(seed_top, int(y1f + face_h * 0.06))
-                    side_bottom = min(seed_bottom, int(y2f + face_h * 0.14))
-                    side_inner_gap = max(16, int(face_w * 0.18))
-                    side_outer_span = max(24, int(face_w * 0.64))
+                    side_top = max(seed_top, int(y1f + face_h * 0.10))
+                    side_bottom = min(seed_bottom, int(y2f + face_h * 0.08))
+                    side_inner_gap = max(18, int(face_w * 0.22))
+                    side_outer_span = max(22, int(face_w * 0.50))
                     left_outer = max(0, int(face_cx - side_outer_span))
                     left_inner = max(left_outer + 1, int(face_cx - side_inner_gap))
                     right_inner = min(W - 1, int(face_cx + side_inner_gap))
@@ -982,10 +982,10 @@ class MirrAISDPipeline:
 
                     upper_prior_u8 = cv2.dilate(
                         (np.clip(base_prior.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
                         iterations=1,
                     )
-                    prior_cap_y = min(H, int(cutoff_y + face_h * 0.04))
+                    prior_cap_y = min(H, int(cutoff_y + face_h * 0.01))
                     if prior_cap_y < H:
                         upper_prior_u8[prior_cap_y:, :] = 0
                     short_seed_u8 = cv2.bitwise_or(short_seed_u8, upper_prior_u8)
@@ -993,20 +993,20 @@ class MirrAISDPipeline:
                     short_seed_u8 = cv2.morphologyEx(
                         short_seed_u8,
                         cv2.MORPH_CLOSE,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
                     )
                     short_seed_u8 = cv2.dilate(
                         short_seed_u8,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
                         iterations=1,
                     )
 
                 if int((short_seed_u8 > 0).sum()) >= 120:
                     gen_mask = short_seed_u8.astype(np.float32) / 255.0
                 else:
-                    fallback_bottom = min(H, int(cutoff_y + face_h * 0.12))
-                    fallback_left = max(0, int(x1f - face_w * 0.78))
-                    fallback_right = min(W, int(x2f + face_w * 0.78))
+                    fallback_bottom = min(H, int(cutoff_y + face_h * 0.08))
+                    fallback_left = max(0, int(x1f - face_w * 0.70))
+                    fallback_right = min(W, int(x2f + face_w * 0.70))
                     if seed_top < fallback_bottom and fallback_left < fallback_right:
                         gen_mask[seed_top:fallback_bottom, fallback_left:fallback_right] = 1.0
                 short_generation_seed_mask_for_debug = gen_mask.copy()
