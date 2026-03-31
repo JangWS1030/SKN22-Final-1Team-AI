@@ -593,6 +593,97 @@ def _preserve_original_hair_tone(
     out = tuned_rgb.astype(np.float32) * alpha + target_rgb.astype(np.float32) * (1.0 - alpha)
     return np.clip(out, 0, 255).astype(np.uint8)
 
+def _harmonize_short_bangs_tone(
+    self,
+    img_rgb: np.ndarray,
+    face_bbox: Tuple[int, int, int, int],
+    bangs_mask: np.ndarray,
+    target_lab: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    H, W = img_rgb.shape[:2]
+    if bangs_mask is None or bangs_mask.shape != (H, W):
+        return img_rgb
+
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
+
+    final_hair, _, _ = self._segface_hair_mask(img_rgb, face_bbox)
+    hair_u8 = (np.clip(final_hair.astype(np.float32), 0.0, 1.0) > 0.26).astype(np.uint8) * 255
+    if int((hair_u8 > 0).sum()) < 120:
+        return img_rgb
+
+    bangs_u8 = (np.clip(bangs_mask.astype(np.float32), 0.0, 1.0) > 0.06).astype(np.uint8) * 255
+    if int((bangs_u8 > 0).sum()) < 20:
+        return img_rgb
+
+    band_top = max(0, int(y1 - face_h * 0.14))
+    band_bottom = min(H, int(y1 + face_h * 0.42))
+    band_left = max(0, int(cx - face_w * 0.64))
+    band_right = min(W, int(cx + face_w * 0.64))
+    if band_top >= band_bottom or band_left >= band_right:
+        return img_rgb
+
+    band_u8 = np.zeros((H, W), dtype=np.uint8)
+    band_u8[band_top:band_bottom, band_left:band_right] = 255
+    bangs_u8 = cv2.bitwise_and(bangs_u8, hair_u8)
+    bangs_u8 = cv2.bitwise_and(bangs_u8, band_u8)
+    bangs_u8 = cv2.morphologyEx(
+        bangs_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
+    )
+    if int((bangs_u8 > 0).sum()) < 36:
+        return img_rgb
+
+    ref_top = max(0, int(y1 - face_h * 0.18))
+    ref_bottom = min(H, int(y2 + face_h * 0.26))
+    ref_left = max(0, int(x1 - face_w * 0.88))
+    ref_right = min(W, int(x2 + face_w * 0.88))
+    if ref_top >= ref_bottom or ref_left >= ref_right:
+        return img_rgb
+
+    ref_u8 = np.zeros((H, W), dtype=np.uint8)
+    ref_u8[ref_top:ref_bottom, ref_left:ref_right] = 255
+    ref_u8 = cv2.bitwise_and(ref_u8, hair_u8)
+    ref_u8 = cv2.bitwise_and(
+        ref_u8,
+        cv2.bitwise_not(
+            cv2.dilate(
+                bangs_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
+                iterations=1,
+            )
+        ),
+    )
+    if int((ref_u8 > 0).sum()) < 80:
+        return img_rgb
+
+    lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    bangs_vals = lab[bangs_u8 > 0]
+    ref_vals = lab[ref_u8 > 0]
+    if bangs_vals.size == 0 or ref_vals.size == 0:
+        return img_rgb
+
+    bangs_mean = bangs_vals.mean(axis=0)
+    ref_mean = ref_vals.mean(axis=0)
+    if target_lab is not None and np.asarray(target_lab).shape == (3,):
+        ref_mean = ref_mean * 0.72 + np.asarray(target_lab, dtype=np.float32) * 0.28
+
+    tuned_lab = lab.copy()
+    tuned_vals = tuned_lab[bangs_u8 > 0]
+    tuned_vals[:, 0] = np.clip(tuned_vals[:, 0] + (ref_mean[0] - bangs_mean[0]) * 0.52, 0.0, 255.0)
+    tuned_vals[:, 1] = np.clip(tuned_vals[:, 1] + (ref_mean[1] - bangs_mean[1]) * 0.74, 0.0, 255.0)
+    tuned_vals[:, 2] = np.clip(tuned_vals[:, 2] + (ref_mean[2] - bangs_mean[2]) * 0.74, 0.0, 255.0)
+    tuned_lab[bangs_u8 > 0] = tuned_vals
+
+    tuned_rgb = cv2.cvtColor(tuned_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+    alpha = cv2.GaussianBlur(bangs_u8.astype(np.float32) / 255.0, (0, 0), sigmaX=2.4, sigmaY=2.8)
+    alpha = np.clip(alpha * 0.76, 0.0, 1.0)[..., np.newaxis]
+    out = tuned_rgb.astype(np.float32) * alpha + img_rgb.astype(np.float32) * (1.0 - alpha)
+    return np.clip(out, 0, 255).astype(np.uint8)
+
 def _build_prompt(
     hairstyle_text: str,
     color_text: str,
@@ -784,4 +875,5 @@ def bind_prompt_methods_to_pipeline(cls) -> None:
     cls._estimate_male_medium_fit_penalty = _estimate_male_medium_fit_penalty
     cls._estimate_mask_mass_center_offset = staticmethod(_estimate_mask_mass_center_offset)
     cls._preserve_original_hair_tone = _preserve_original_hair_tone
+    cls._harmonize_short_bangs_tone = _harmonize_short_bangs_tone
     cls._build_prompt = staticmethod(_build_prompt)

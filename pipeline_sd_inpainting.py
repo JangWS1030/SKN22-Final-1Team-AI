@@ -958,9 +958,9 @@ class MirrAISDPipeline:
                 face_h = max(int(y2f - y1f), 1)
                 face_cx = int(0.5 * (x1f + x2f))
                 seed_top = max(0, int(head_y1))
-                seed_bottom = min(H, int(cutoff_y + face_h * 0.12))
-                seed_left = max(0, int(x1f - face_w * 0.84))
-                seed_right = min(W, int(x2f + face_w * 0.84))
+                seed_bottom = min(H, int(min(cutoff_y + face_h * 0.06, y2f + face_h * 0.26)))
+                seed_left = max(0, int(x1f - face_w * 0.72))
+                seed_right = min(W, int(x2f + face_w * 0.72))
                 short_seed_u8 = np.zeros((H, W), dtype=np.uint8)
 
                 if seed_top < seed_bottom and seed_left < seed_right:
@@ -969,7 +969,7 @@ class MirrAISDPipeline:
 
                     crown_center_y = int(max(seed_top + 1, min(seed_bottom - 1, y1f + face_h * 0.12)))
                     crown_axes_y = max(26, int((seed_bottom - seed_top) * 0.44))
-                    crown_axes_x = max(28, int(face_w * 0.82))
+                    crown_axes_x = max(24, int(face_w * 0.72))
                     cv2.ellipse(
                         short_seed_u8,
                         (face_cx, crown_center_y),
@@ -982,9 +982,9 @@ class MirrAISDPipeline:
                     )
 
                     side_top = max(seed_top, int(y1f + face_h * 0.06))
-                    side_bottom = min(seed_bottom, int(y2f + face_h * 0.14))
+                    side_bottom = min(seed_bottom, int(y2f + face_h * 0.10))
                     side_inner_gap = max(16, int(face_w * 0.18))
-                    side_outer_span = max(24, int(face_w * 0.64))
+                    side_outer_span = max(22, int(face_w * 0.56))
                     left_outer = max(0, int(face_cx - side_outer_span))
                     left_inner = max(left_outer + 1, int(face_cx - side_inner_gap))
                     right_inner = min(W - 1, int(face_cx + side_inner_gap))
@@ -994,11 +994,11 @@ class MirrAISDPipeline:
                         short_seed_u8[side_top:side_bottom, right_inner:right_outer] = 255
 
                     upper_prior_u8 = cv2.dilate(
-                        (np.clip(base_prior.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+                        (np.clip(base_prior.astype(np.float32), 0.0, 1.0) > 0.10).astype(np.uint8) * 255,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
                         iterations=1,
                     )
-                    prior_cap_y = min(H, int(cutoff_y + face_h * 0.04))
+                    prior_cap_y = min(seed_bottom, int(y1f + face_h * 0.32))
                     if prior_cap_y < H:
                         upper_prior_u8[prior_cap_y:, :] = 0
                     short_seed_u8 = cv2.bitwise_or(short_seed_u8, upper_prior_u8)
@@ -1006,11 +1006,16 @@ class MirrAISDPipeline:
                     short_seed_u8 = cv2.morphologyEx(
                         short_seed_u8,
                         cv2.MORPH_CLOSE,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+                    )
+                    short_seed_u8 = cv2.erode(
+                        short_seed_u8,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
+                        iterations=1,
                     )
                     short_seed_u8 = cv2.dilate(
                         short_seed_u8,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
                         iterations=1,
                     )
 
@@ -1076,7 +1081,7 @@ class MirrAISDPipeline:
             if hair_length == "short":
                 gen_mask = cv2.erode(
                     gen_mask,
-                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
                     iterations=1,
                 )
             composite_bangs_release_mask = np.zeros((H, W), dtype=np.float32)
@@ -1891,6 +1896,24 @@ class MirrAISDPipeline:
                     composited_bgr = cv2.cvtColor(post_rgb, cv2.COLOR_RGB2BGR)
                 except Exception as e:
                     logger.warning(f"[SDPipeline] 원본 컬러 유지 보정 실패(무시): {e}")
+
+            if has_color_request and hair_length == "short":
+                try:
+                    post_rgb = cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB)
+                    bangs_tone_mask = (
+                        composite_bangs_release_mask
+                        if float(composite_bangs_release_mask.sum()) > 0.0
+                        else bangs_restore_for_sd
+                    )
+                    post_rgb = self._harmonize_short_bangs_tone(
+                        img_rgb=post_rgb,
+                        face_bbox=face_bbox,
+                        bangs_mask=bangs_tone_mask,
+                        target_lab=target_hair_lab,
+                    )
+                    composited_bgr = cv2.cvtColor(post_rgb, cv2.COLOR_RGB2BGR)
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] short bangs tone harmonization failed (ignored): {e}")
 
             color_distance: Optional[float] = None
             color_score = 0.0
