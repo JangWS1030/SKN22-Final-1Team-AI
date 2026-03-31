@@ -14,7 +14,7 @@ scikit-image==0.24.0
 PyYAML==6.0.2
 requests==2.32.3
 runpod==1.8.1
-huggingface_hub==0.30.2
+huggingface_hub[hf_xet]==0.30.2
 python-dotenv==1.0.1
 
 simple-lama-inpainting==0.1.1
