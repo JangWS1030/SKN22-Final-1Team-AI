@@ -83,6 +83,35 @@ MASK_DEBUG_KEYWORDS = (
     "mask",
 )
 
+RECOMMENDED_RUNPOD_ENV_KEYS = frozenset(
+    {
+        "HF_HOME",
+        "HF_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "SAM2_CHECKPOINT_PATH",
+        "SEGFACE_HF_REPO_ID",
+        "SEGFACE_HF_FILENAME",
+        "MIRRAI_LORA_HF_REPO_ID",
+        "MIRRAI_LORA_HF_FILENAME",
+        "ENABLE_SAM2",
+    }
+)
+
+LEGACY_RUNPOD_ENV_KEYS = frozenset(
+    {
+        "SEG_PTH_GITHUB_OWNER",
+        "SEG_PTH_GITHUB_REPO",
+        "SEG_PTH_GITHUB_PATH",
+        "SEG_PTH_GITHUB_REF",
+        "SEG_PTH_PATH",
+        "GITHUB_TOKEN",
+        "ENABLE_STARTUP_GIT_PULL",
+        "RUNPOD_DEBUG_LEVEL",
+        "MODEL_DOWNLOAD_TIMEOUT",
+        "TORCH_HOME",
+    }
+)
+
 _IMPORT_ERROR: Optional[str] = None
 try:
     import cv2
@@ -772,8 +801,58 @@ def _normalize_runpod_env() -> None:
             os.environ[env_key] = normalized
             logger.info("[handler_sd] normalized %s", env_key)
 
+
+def _warn_runtime_env_configuration() -> None:
+    """Log high-signal warnings for serverless env drift."""
+    if not os.environ.get("RUNPOD_ENDPOINT_ID"):
+        return
+
+    hf_home = str(os.environ.get("HF_HOME", "")).strip()
+    if not hf_home:
+        logger.warning(
+            "[handler_sd] HF_HOME is unset; Hugging Face cache may fall back to "
+            "container-local storage and cold starts can get slower."
+        )
+    elif not hf_home.startswith("/runpod-volume/"):
+        logger.warning(
+            "[handler_sd] HF_HOME is not on /runpod-volume (%s); model cache will "
+            "not persist across fresh workers.",
+            hf_home,
+        )
+
+    sam2_enabled = os.environ.get("ENABLE_SAM2", "1") in {"1", "true", "yes"}
+    sam2_checkpoint_path = str(os.environ.get("SAM2_CHECKPOINT_PATH", "")).strip()
+    if sam2_enabled and not sam2_checkpoint_path:
+        logger.warning(
+            "[handler_sd] ENABLE_SAM2 is on but SAM2_CHECKPOINT_PATH is unset; "
+            "SAM2 may auto-download into non-persistent storage."
+        )
+    elif sam2_enabled and not sam2_checkpoint_path.startswith("/runpod-volume/"):
+        logger.warning(
+            "[handler_sd] SAM2_CHECKPOINT_PATH is outside /runpod-volume (%s); "
+            "SAM2 checkpoint may not persist across worker refreshes.",
+            sam2_checkpoint_path,
+        )
+
+    legacy_keys = sorted(key for key in LEGACY_RUNPOD_ENV_KEYS if os.environ.get(key))
+    if legacy_keys:
+        logger.warning(
+            "[handler_sd] legacy serverless env keys detected: %s",
+            ", ".join(legacy_keys),
+        )
+
+    configured_runtime_keys = sorted(
+        key for key in RECOMMENDED_RUNPOD_ENV_KEYS if os.environ.get(key)
+    )
+    if configured_runtime_keys:
+        logger.info(
+            "[handler_sd] serverless runtime env keys active: %s",
+            ", ".join(configured_runtime_keys),
+        )
+
 if __name__ == "__main__":
     _normalize_runpod_env()
+    _warn_runtime_env_configuration()
 
     preload_flag = str(os.environ.get("MIRRAI_PRELOAD_ON_STARTUP", "")).strip().lower()
     should_preload = preload_flag in {"1", "true", "yes", "on"}

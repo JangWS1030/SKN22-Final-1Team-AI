@@ -194,17 +194,49 @@ def clone_payload(endpoint: dict[str, Any], new_name: str | None = None) -> dict
     return payload
 
 
+def _template_env_to_graphql_list(template_env: Any) -> list[dict[str, str]]:
+    if isinstance(template_env, dict):
+        return [
+            {"key": str(key), "value": str(value)}
+            for key, value in sorted(template_env.items())
+            if value is not None
+        ]
+    if isinstance(template_env, list):
+        normalized: list[dict[str, str]] = []
+        for item in template_env:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key")
+            value = item.get("value")
+            if key is None or value is None:
+                continue
+            normalized.append({"key": str(key), "value": str(value)})
+        return normalized
+    return []
+
+
 def clone_template_payload(template: dict[str, Any], template_name: str) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "imageName": template["imageName"],
         "name": template_name,
         "containerDiskInGb": template.get("containerDiskInGb") or 30,
         "dockerArgs": "",
-        "env": [],
+        "env": _template_env_to_graphql_list(template.get("env")),
         "isServerless": True,
         "readme": template.get("readme") or "",
-        "volumeInGb": 0,
+        "volumeInGb": template.get("volumeInGb") or 0,
     }
+    for key in (
+        "containerRegistryAuthId",
+        "dockerEntrypoint",
+        "dockerStartCmd",
+        "ports",
+        "volumeMountPath",
+    ):
+        value = template.get(key)
+        if value not in (None, "", []):
+            payload[key] = value
+    return payload
 
 
 def format_summary(endpoint: dict[str, Any]) -> dict[str, Any]:
