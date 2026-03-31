@@ -825,6 +825,7 @@ def _build_post_cloth_refine_mask(
         max_component_width = max(84, int(face_w * 0.88))
         min_component_height = max(12, int(face_h * 0.10))
         center_allow = max(44, int(face_w * 0.72))
+        artifact_bonus_present = int((artifact_bonus_u8 > 0).sum()) >= 24
         filtered_u8 = np.zeros((H, W), dtype=np.uint8)
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_u8, 8)
         for idx in range(1, num_labels):
@@ -844,8 +845,11 @@ def _build_post_cloth_refine_mask(
                 continue
             if abs(comp_cx - cx) > center_allow:
                 continue
-            if artifact_overlap < max(4, int(area * 0.04)):
-                continue
+            if artifact_bonus_present and artifact_overlap < max(4, int(area * 0.04)):
+                if area < max(48, int(face_w * face_h * 0.018)):
+                    continue
+                if h < max(18, int(face_h * 0.16)):
+                    continue
             if w > max(20, int(face_w * 0.26)) and h < max(20, int(face_h * 0.22)):
                 continue
             filtered_u8 = cv2.bitwise_or(filtered_u8, comp_u8)
@@ -2255,9 +2259,9 @@ def _build_final_source_cloth_rescue_mask(
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
     top = max(0, int(cutoff_y - face_h * 0.04))
-    bottom = min(H, int(cutoff_y + face_h * (1.40 if hair_length == "short" else 1.52)))
-    left = max(0, int(x1 - face_w * (1.34 if hair_length == "short" else 1.34)))
-    right = min(W, int(x2 + face_w * (1.34 if hair_length == "short" else 1.34)))
+    bottom = min(H, int(cutoff_y + face_h * (1.72 if hair_length == "short" else 1.52)))
+    left = max(0, int(x1 - face_w * (1.46 if hair_length == "short" else 1.34)))
+    right = min(W, int(x2 + face_w * (1.46 if hair_length == "short" else 1.34)))
     if top >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
@@ -2317,7 +2321,28 @@ def _build_final_source_cloth_rescue_mask(
             ).astype(np.uint8)
             * 255
         )
+        muddy_cloth_u8 = (
+            (
+                (
+                    (diff_rgb > 13.0)
+                    | (gray_delta > 12.0)
+                    | (current_sat > source_sat + 18.0)
+                )
+                & (np.abs(current_gray - current_blur) < 12.0)
+                & (current_sat < 188.0)
+            ).astype(np.uint8)
+            * 255
+        )
+        deep_torso_u8 = np.zeros((H, W), dtype=np.uint8)
+        deep_top = max(0, int(cutoff_y + face_h * 0.06))
+        deep_bottom = min(H, int(cutoff_y + face_h * 1.52))
+        deep_left = max(0, int(x1 - face_w * 1.34))
+        deep_right = min(W, int(x2 + face_w * 1.34))
+        if deep_top < deep_bottom and deep_left < deep_right:
+            deep_torso_u8[deep_top:deep_bottom, deep_left:deep_right] = 255
+        muddy_cloth_u8 = cv2.bitwise_and(muddy_cloth_u8, deep_torso_u8)
         strong_diff_u8 = cv2.bitwise_or(strong_diff_u8, smooth_artifact_u8)
+        strong_diff_u8 = cv2.bitwise_or(strong_diff_u8, muddy_cloth_u8)
         if center_support_mask is not None and center_support_mask.shape == (H, W):
             center_support_u8 = cv2.dilate(
                 (np.clip(center_support_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255,
