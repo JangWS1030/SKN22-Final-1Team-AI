@@ -2277,6 +2277,8 @@ def _build_final_source_cloth_rescue_mask(
     )
     cloth_u8 = cv2.bitwise_and(cloth_u8, corridor_u8)
     anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+    anchor_lane_u8 = np.zeros((H, W), dtype=np.uint8)
+    use_anchor_fallback = False
     if anchor_mask is not None and anchor_mask.shape == (H, W):
         anchor_u8 = cv2.dilate(
             (np.clip(anchor_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
@@ -2287,7 +2289,31 @@ def _build_final_source_cloth_rescue_mask(
             iterations=1,
         )
         anchor_u8 = cv2.bitwise_and(anchor_u8, corridor_u8)
+        if int((anchor_u8 > 0).sum()) >= 120:
+            use_anchor_fallback = True
+            anchor_lane_u8 = cv2.dilate(
+                anchor_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (
+                        max(41, int(face_w * 1.12)) | 1,
+                        max(21, int(face_h * 0.28)) | 1,
+                    ),
+                ),
+                iterations=1,
+            )
+            lane_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+            lane_top = max(top, int(cutoff_y + face_h * 0.04))
+            lane_bottom = min(bottom, int(cutoff_y + face_h * 1.50))
+            lane_left = max(0, int(x1 - face_w * 1.18))
+            lane_right = min(W, int(x2 + face_w * 1.18))
+            if lane_top < lane_bottom and lane_left < lane_right:
+                lane_gate_u8[lane_top:lane_bottom, lane_left:lane_right] = 255
+                anchor_lane_u8 = cv2.bitwise_and(anchor_lane_u8, lane_gate_u8)
+            else:
+                anchor_lane_u8 = np.zeros((H, W), dtype=np.uint8)
     candidate_cloth_u8 = cv2.bitwise_or(cloth_u8, anchor_u8)
+    candidate_cloth_u8 = cv2.bitwise_or(candidate_cloth_u8, anchor_lane_u8)
     if int((candidate_cloth_u8 > 0).sum()) < 60:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -2458,14 +2484,13 @@ def _build_final_source_cloth_rescue_mask(
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(keep_u8, 8)
     filtered_u8 = np.zeros((H, W), dtype=np.uint8)
     min_area = max(80, int(face_w * face_h * 0.010))
-    use_anchor_fallback = int((anchor_u8 > 0).sum()) >= 120
     max_area = (
-        max(22000, int(face_w * face_h * 1.20))
+        max(140000, int(face_w * face_h * 6.40))
         if use_anchor_fallback
         else max(3600, int(face_w * face_h * 0.44))
     )
     max_width = (
-        max(260, int(face_w * 1.80))
+        max(640, int(face_w * 3.40))
         if use_anchor_fallback
         else max(120, int(face_w * 1.26))
     )
@@ -2485,7 +2510,9 @@ def _build_final_source_cloth_rescue_mask(
         filtered_u8[labels == idx] = 255
 
     if int((filtered_u8 > 0).sum()) < 80:
-        return np.zeros((H, W), dtype=np.float32)
+        if not use_anchor_fallback or int((pre_tone_keep_u8 > 0).sum()) < 120:
+            return np.zeros((H, W), dtype=np.float32)
+        filtered_u8 = pre_tone_keep_u8.copy()
 
     filtered_u8 = cv2.dilate(
         filtered_u8,
@@ -2559,6 +2586,8 @@ def _build_short_lower_garment_cleanup_mask(
         return np.zeros((H, W), dtype=np.float32)
 
     anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+    anchor_lane_u8 = np.zeros((H, W), dtype=np.uint8)
+    use_anchor_fallback = False
     if anchor_mask is not None and anchor_mask.shape == (H, W):
         anchor_u8 = cv2.dilate(
             (np.clip(anchor_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
@@ -2567,7 +2596,30 @@ def _build_short_lower_garment_cleanup_mask(
         )
         anchor_u8 = cv2.bitwise_and(anchor_u8, corridor_u8)
         if int((anchor_u8 > 0).sum()) >= 120:
+            use_anchor_fallback = True
+            anchor_lane_u8 = cv2.dilate(
+                anchor_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (
+                        max(41, int(face_w * 1.18)) | 1,
+                        max(19, int(face_h * 0.24)) | 1,
+                    ),
+                ),
+                iterations=1,
+            )
+            lane_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+            lane_top = max(top, int(cutoff_y + face_h * 0.04))
+            lane_bottom = min(bottom, int(cutoff_y + face_h * 1.34))
+            lane_left = max(0, int(x1 - face_w * 1.18))
+            lane_right = min(W, int(x2 + face_w * 1.18))
+            if lane_top < lane_bottom and lane_left < lane_right:
+                lane_gate_u8[lane_top:lane_bottom, lane_left:lane_right] = 255
+                anchor_lane_u8 = cv2.bitwise_and(anchor_lane_u8, lane_gate_u8)
+            else:
+                anchor_lane_u8 = np.zeros((H, W), dtype=np.uint8)
             zone_u8 = cv2.bitwise_or(zone_u8, cv2.bitwise_and(removal_u8, anchor_u8))
+            zone_u8 = cv2.bitwise_or(zone_u8, cv2.bitwise_and(removal_u8, anchor_lane_u8))
 
     gray = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
     source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
@@ -2589,19 +2641,36 @@ def _build_short_lower_garment_cleanup_mask(
     if deep_start < bottom:
         deep_zone_u8[deep_start:bottom, left:right] = 255
     deep_zone_u8 = cv2.bitwise_and(deep_zone_u8, zone_u8)
-    if int((anchor_u8 > 0).sum()) >= 120:
+    if use_anchor_fallback:
         deep_zone_u8 = cv2.bitwise_or(
             deep_zone_u8,
             cv2.bitwise_and(zone_u8, anchor_u8),
+        )
+        deep_zone_u8 = cv2.bitwise_or(
+            deep_zone_u8,
+            cv2.bitwise_and(zone_u8, anchor_lane_u8),
         )
 
     dark_tail_u8 = (
         ((gray < 156.0) & ((blur - gray) > 2.2)).astype(np.uint8) * 255
     )
     dark_tail_u8 = cv2.bitwise_and(dark_tail_u8, zone_u8)
+    anchor_lane_diff_u8 = np.zeros((H, W), dtype=np.uint8)
+    if use_anchor_fallback:
+        anchor_lane_diff_u8 = (
+            (
+                ((diff_rgb > 11.0) | (gray_delta > 11.0))
+                & (lap < 14.0)
+                & (gray < 184.0)
+            ).astype(np.uint8)
+            * 255
+        )
+        anchor_lane_diff_u8 = cv2.bitwise_and(anchor_lane_diff_u8, zone_u8)
+        anchor_lane_diff_u8 = cv2.bitwise_and(anchor_lane_diff_u8, anchor_lane_u8)
 
     keep_u8 = cv2.bitwise_or(low_texture_u8, dark_tail_u8)
     keep_u8 = cv2.bitwise_or(keep_u8, deep_zone_u8)
+    keep_u8 = cv2.bitwise_or(keep_u8, anchor_lane_diff_u8)
     keep_u8 = cv2.bitwise_and(keep_u8, zone_u8)
     if int((keep_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
@@ -2614,8 +2683,9 @@ def _build_short_lower_garment_cleanup_mask(
         )
         cloth_support_u8 = cv2.bitwise_and(cloth_u8, corridor_u8)
         keep_u8 = cv2.bitwise_or(keep_u8, cv2.bitwise_and(deep_zone_u8, cloth_support_u8))
-    if int((anchor_u8 > 0).sum()) >= 120:
+    if use_anchor_fallback:
         keep_u8 = cv2.bitwise_or(keep_u8, cv2.bitwise_and(deep_zone_u8, anchor_u8))
+        keep_u8 = cv2.bitwise_or(keep_u8, cv2.bitwise_and(deep_zone_u8, anchor_lane_u8))
 
     upper_guard_u8 = np.zeros((H, W), dtype=np.uint8)
     upper_guard_bottom = min(H, int(cutoff_y + face_h * 0.32))
@@ -2626,16 +2696,16 @@ def _build_short_lower_garment_cleanup_mask(
         keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(upper_guard_u8))
 
     anchor_fallback_u8 = np.zeros((H, W), dtype=np.uint8)
-    if int((anchor_u8 > 0).sum()) >= 120:
-        anchor_fallback_u8 = cv2.bitwise_and(zone_u8, anchor_u8)
+    if use_anchor_fallback:
+        anchor_fallback_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_or(anchor_u8, anchor_lane_u8))
         anchor_fallback_u8 = cv2.morphologyEx(
             anchor_fallback_u8,
             cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 25)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (23, 35)),
         )
         anchor_fallback_u8 = cv2.dilate(
             anchor_fallback_u8,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 23)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 31)),
             iterations=1,
         )
         anchor_fallback_u8 = cv2.bitwise_and(anchor_fallback_u8, cv2.bitwise_not(upper_guard_u8))
