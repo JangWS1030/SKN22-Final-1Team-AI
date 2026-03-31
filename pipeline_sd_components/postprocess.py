@@ -5331,6 +5331,7 @@ def _build_lower_tail_post_support_mask(
     x1, y1, x2, y2 = face_bbox
     face_w = max(int(x2 - x1), 1)
     face_h = max(int(y2 - y1), 1)
+    cx = float(0.5 * (x1 + x2))
 
     support_u8 = (np.clip(support_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
     if int((support_u8 > 0).sum()) < 12:
@@ -5378,6 +5379,88 @@ def _build_lower_tail_post_support_mask(
         iterations=1,
     )
 
+    def _build_relaxed_post_support_mask(source_u8: np.ndarray) -> np.ndarray:
+        source_px = int((source_u8 > 0).sum())
+        if source_px < 20:
+            return np.zeros((H, W), dtype=np.uint8)
+
+        fallback_u8 = source_u8.copy()
+        fallback_u8 = cv2.morphologyEx(
+            fallback_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (9, 29) if hair_length == "short" else (7, 21),
+            ),
+        )
+        fallback_u8 = cv2.morphologyEx(
+            fallback_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+
+        if cloth_mask is not None and cloth_mask.shape == (H, W):
+            cloth_hint_u8 = cv2.dilate(
+                (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+                iterations=1,
+            )
+            fallback_on_cloth_u8 = cv2.bitwise_and(fallback_u8, cloth_hint_u8)
+            if int((fallback_on_cloth_u8 > 0).sum()) >= max(24, int(source_px * 0.10)):
+                fallback_u8 = fallback_on_cloth_u8
+
+        keep_u8 = np.zeros((H, W), dtype=np.uint8)
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(fallback_u8, 8)
+        min_bottom = int(cutoff_y + face_h * 0.02)
+        min_height = max(20, int(face_h * 0.16))
+        max_shallow_width = max(96, int(face_w * 1.06))
+        center_half = max(18, int(face_w * 0.20))
+        max_center_width = max(46, int(face_w * 0.36))
+        for idx in range(1, num_labels):
+            y = int(stats[idx, cv2.CC_STAT_TOP])
+            w = int(stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            bottom = y + h
+            if area < 20:
+                continue
+            if h < min_height:
+                continue
+            if bottom < min_bottom:
+                continue
+            if w >= max_shallow_width and h < max(40, int(face_h * 0.30)):
+                continue
+
+            comp_cx = float(centroids[idx][0])
+            if (
+                abs(comp_cx - cx) <= center_half
+                and w > max_center_width
+                and h < max(56, int(face_h * 0.40))
+            ):
+                continue
+            keep_u8[labels == idx] = 255
+
+        if int((keep_u8 > 0).sum()) < 12:
+            return np.zeros((H, W), dtype=np.uint8)
+
+        keep_u8 = cv2.morphologyEx(
+            keep_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (9, 31) if hair_length == "short" else (7, 23),
+            ),
+        )
+        keep_u8 = cv2.dilate(
+            keep_u8,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (13, 23) if hair_length == "short" else (11, 17),
+            ),
+            iterations=1,
+        )
+        return cv2.bitwise_and(keep_u8, corridor_u8)
+
     filtered_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(support_u8, 8)
     max_area = max(960, int(face_w * face_h * (0.48 if hair_length == "short" else 0.30)))
@@ -5392,8 +5475,18 @@ def _build_lower_tail_post_support_mask(
             continue
         filtered_u8[labels == idx] = 255
 
-    if int((filtered_u8 > 0).sum()) < 12:
-        return np.zeros((H, W), dtype=np.float32)
+    relaxed_filtered_u8 = _build_relaxed_post_support_mask(raw_support_u8)
+    filtered_px = int((filtered_u8 > 0).sum())
+    relaxed_px = int((relaxed_filtered_u8 > 0).sum())
+    if filtered_px < 12:
+        if relaxed_px < 12:
+            return np.zeros((H, W), dtype=np.float32)
+        filtered_u8 = relaxed_filtered_u8
+    elif (
+        relaxed_px >= max(36, int(filtered_px * 1.35))
+        and filtered_px < max(160, int(raw_support_px * 0.18))
+    ):
+        filtered_u8 = cv2.bitwise_or(filtered_u8, relaxed_filtered_u8)
 
     filtered_u8 = cv2.dilate(
         filtered_u8,
