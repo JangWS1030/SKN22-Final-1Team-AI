@@ -789,8 +789,16 @@ class MirrAISDPipeline:
 
             hair_below = (hair_mask_for_removal > 0.5).astype(np.uint8)
             hair_below[:cutoff_y, :] = 0
-            hair_below[:, :max(0, head_x1 - 20)] = 0
-            hair_below[:, min(W, head_x2 + 20):] = 0
+            face_x1, _, face_x2, _ = [int(v) for v in face_bbox]
+            face_w_for_tail = max(int(face_x2 - face_x1), 1)
+            if hair_length == "short":
+                tail_left = max(0, int(face_x1 - face_w_for_tail * 1.42))
+                tail_right = min(W, int(face_x2 + face_w_for_tail * 1.42))
+            else:
+                tail_left = max(0, head_x1 - 20)
+                tail_right = min(W, head_x2 + 20)
+            hair_below[:, :tail_left] = 0
+            hair_below[:, tail_right:] = 0
             if int((hair_below > 0).sum()) > 0:
                 expand_k = (
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 7))

@@ -1736,6 +1736,40 @@ def _restrict_short_removal_to_tail_lanes(
     if center_support_mask is not None and center_support_mask.shape == (H, W):
         center_seed_u8 = (np.clip(center_support_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
 
+    if int((side_seed_u8 > 0).sum()) < 24:
+        fallback_side_u8 = removal_u8.copy()
+        fallback_corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+        fallback_top = max(0, int(cutoff_y))
+        fallback_bottom = min(H, int(cutoff_y + face_h * 1.92))
+        fallback_left = max(0, int(x1 - face_w * 1.42))
+        fallback_right = min(W, int(x2 + face_w * 1.42))
+        if fallback_top < fallback_bottom and fallback_left < fallback_right:
+            fallback_corridor_u8[fallback_top:fallback_bottom, fallback_left:fallback_right] = 255
+            fallback_side_u8 = cv2.bitwise_and(fallback_side_u8, fallback_corridor_u8)
+
+            center_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
+            center_half = max(18, int(face_w * 0.24))
+            keepout_bottom = min(H, int(cutoff_y + face_h * 0.84))
+            if fallback_top < keepout_bottom:
+                center_keepout_u8[
+                    fallback_top:keepout_bottom,
+                    max(0, int(0.5 * (x1 + x2)) - center_half):min(W, int(0.5 * (x1 + x2)) + center_half),
+                ] = 255
+                fallback_side_u8 = cv2.bitwise_and(fallback_side_u8, cv2.bitwise_not(center_keepout_u8))
+
+            fallback_side_u8 = cv2.morphologyEx(
+                fallback_side_u8,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 21)),
+            )
+            fallback_side_u8 = cv2.morphologyEx(
+                fallback_side_u8,
+                cv2.MORPH_OPEN,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+            )
+            if int((fallback_side_u8 > 0).sum()) >= 60:
+                side_seed_u8 = fallback_side_u8
+
     if int((side_seed_u8 > 0).sum()) < 24 and int((center_seed_u8 > 0).sum()) < 12:
         return np.clip(removal_mask, 0.0, 1.0).astype(np.float32)
 
