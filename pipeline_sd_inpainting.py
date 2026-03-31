@@ -770,6 +770,7 @@ class MirrAISDPipeline:
                 face_bbox=face_bbox,
                 cutoff_y=cutoff_y,
                 hair_length=hair_length,
+                anchor_mask=subject_cloth_anchor_for_post,
             )
             if float(center_chest_strand_mask.sum()) > 0.0:
                 lower_tail_support_for_post = np.maximum(

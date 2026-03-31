@@ -5552,6 +5552,7 @@ def _build_center_chest_strand_support_mask(
     face_bbox: Tuple[int, int, int, int],
     cutoff_y: int,
     hair_length: str,
+    anchor_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if hair_length not in ("short", "medium"):
         return np.zeros(img_rgb.shape[:2], dtype=np.float32)
@@ -5580,7 +5581,15 @@ def _build_center_chest_strand_support_mask(
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
         iterations=1,
     )
-    zone_u8 = cv2.bitwise_and(lane_u8, cloth_u8)
+    anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+    if anchor_mask is not None and anchor_mask.shape == (H, W):
+        anchor_u8 = cv2.erode(
+            (np.clip(anchor_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+            iterations=1,
+        )
+        anchor_u8 = cv2.bitwise_and(anchor_u8, lane_u8)
+    zone_u8 = cv2.bitwise_and(lane_u8, cv2.bitwise_or(cloth_u8, anchor_u8))
     if int((zone_u8 > 0).sum()) < 20:
         return np.zeros((H, W), dtype=np.float32)
 
