@@ -2616,6 +2616,21 @@ def _build_short_lower_garment_cleanup_mask(
         upper_guard_u8[top:upper_guard_bottom, upper_guard_left:upper_guard_right] = 255
         keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(upper_guard_u8))
 
+    anchor_fallback_u8 = np.zeros((H, W), dtype=np.uint8)
+    if int((anchor_u8 > 0).sum()) >= 120:
+        anchor_fallback_u8 = cv2.bitwise_and(deep_zone_u8, anchor_u8)
+        anchor_fallback_u8 = cv2.morphologyEx(
+            anchor_fallback_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 21)),
+        )
+        anchor_fallback_u8 = cv2.dilate(
+            anchor_fallback_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 19)),
+            iterations=1,
+        )
+        anchor_fallback_u8 = cv2.bitwise_and(anchor_fallback_u8, cv2.bitwise_not(upper_guard_u8))
+
     if protect_mask is not None and protect_mask.shape == (H, W):
         protect_u8 = cv2.dilate(
             (np.clip(protect_mask.astype(np.float32), 0.0, 1.0) > 0.12).astype(np.uint8) * 255,
@@ -2623,6 +2638,7 @@ def _build_short_lower_garment_cleanup_mask(
             iterations=1,
         )
         keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(protect_u8))
+        anchor_fallback_u8 = cv2.bitwise_and(anchor_fallback_u8, cv2.bitwise_not(protect_u8))
 
     if final_hair_mask is not None:
         final_hair_u8 = cv2.dilate(
@@ -2637,6 +2653,7 @@ def _build_short_lower_garment_cleanup_mask(
         )
         hair_protect_u8 = cv2.bitwise_and(final_hair_u8, hair_guard_u8)
         keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(hair_protect_u8))
+        anchor_fallback_u8 = cv2.bitwise_and(anchor_fallback_u8, cv2.bitwise_not(hair_protect_u8))
 
     keep_u8 = cv2.morphologyEx(
         keep_u8,
@@ -2678,9 +2695,12 @@ def _build_short_lower_garment_cleanup_mask(
         filtered_u8[labels == idx] = 255
 
     if int((filtered_u8 > 0).sum()) < 120:
-        if int((keep_u8 > 0).sum()) < 160:
-            return np.zeros((H, W), dtype=np.float32)
-        filtered_u8 = keep_u8.copy()
+        if int((anchor_fallback_u8 > 0).sum()) >= 120:
+            filtered_u8 = anchor_fallback_u8.copy()
+        else:
+            if int((keep_u8 > 0).sum()) < 160:
+                return np.zeros((H, W), dtype=np.float32)
+            filtered_u8 = keep_u8.copy()
 
     filtered_u8 = cv2.dilate(
         filtered_u8,

@@ -661,6 +661,7 @@ class MirrAISDPipeline:
             )
             cloth_mask_dilated = np.zeros_like(cloth_mask_dilated, dtype=np.float32)
         cloth_restore_mask_for_post = cloth_mask_dilated.astype(np.float32)
+        use_short_dark_cloth_anchor_fallback = False
         if (
             hair_length == "short"
             and isinstance(subject_cloth_anchor_mask, np.ndarray)
@@ -669,7 +670,19 @@ class MirrAISDPipeline:
             anchor_mask_f = np.clip(subject_cloth_anchor_mask.astype(np.float32), 0.0, 1.0)
             cloth_ratio = self._mask_ratio(cloth_mask_dilated)
             anchor_ratio = self._mask_ratio(anchor_mask_f)
-            if cloth_ratio < 0.07 and anchor_ratio > max(0.08, cloth_ratio + 0.05):
+            cloth_visible_u8 = (np.clip(cloth_mask_dilated.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8)
+            dark_cloth_ready = False
+            if int(cloth_visible_u8.sum()) >= 80:
+                source_gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                source_sat = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+                cloth_gray_median = float(np.median(source_gray[cloth_visible_u8 > 0]))
+                cloth_sat_median = float(np.median(source_sat[cloth_visible_u8 > 0]))
+                dark_cloth_ready = cloth_gray_median <= 132.0 and cloth_sat_median <= 160.0
+            if (
+                dark_cloth_ready
+                and cloth_ratio < 0.07
+                and anchor_ratio > max(0.08, cloth_ratio + 0.05)
+            ):
                 anchor_u8 = cv2.erode(
                     (anchor_mask_f > 0.04).astype(np.uint8) * 255,
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
@@ -684,6 +697,7 @@ class MirrAISDPipeline:
                     cloth_ratio,
                     anchor_ratio,
                 )
+                use_short_dark_cloth_anchor_fallback = True
         hair_mask = np.clip(hair_mask - cloth_mask_dilated, 0.0, 1.0)
         _store_mask("segface_cloth_mask_dilated", cloth_mask_dilated)
         if hair_length == "short":
@@ -1075,7 +1089,7 @@ class MirrAISDPipeline:
                     cutoff_y=cutoff_y,
                     hair_length=hair_length,
                     support_mask=lower_tail_support_for_post,
-                    anchor_mask=subject_cloth_anchor_for_post,
+                    anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
                 )
                 below_bob_cloth_restore_for_post = self._build_short_below_bob_cloth_restore_mask(
                     removal_mask=removal_mask_for_post,
@@ -1084,7 +1098,7 @@ class MirrAISDPipeline:
                     cutoff_y=cutoff_y,
                     hair_length=hair_length,
                     support_mask=lower_tail_support_for_post,
-                    anchor_mask=subject_cloth_anchor_for_post,
+                    anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
                 )
                 if (
                     below_bob_generation_block_for_post is not None
@@ -2843,7 +2857,7 @@ class MirrAISDPipeline:
                         hair_length=hair_length,
                         protect_mask=protect_mask_for_sd,
                         final_hair_mask=final_hair_mask,
-                        anchor_mask=subject_cloth_anchor_for_post,
+                        anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
                     )
                     short_lower_garment_cleanup_u8 = (
                         (np.clip(short_lower_garment_cleanup_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
@@ -2926,7 +2940,7 @@ class MirrAISDPipeline:
                         protect_mask=protect_mask_for_sd,
                         final_hair_mask=final_hair_mask,
                         center_support_mask=center_chest_strand_removal_mask,
-                        anchor_mask=subject_cloth_anchor_for_post,
+                        anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
                     )
                     final_source_cloth_rescue_u8 = (
                         (np.clip(final_source_cloth_rescue_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
