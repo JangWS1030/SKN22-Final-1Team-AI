@@ -3731,10 +3731,10 @@ def _build_final_hair_lane_cleanup_mask(
         return np.zeros((H, W), dtype=np.float32)
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    top = max(0, int(cutoff_y + face_h * 0.14))
-    bottom = min(H, int(cutoff_y + face_h * 1.22))
-    left = max(0, int(x1 - face_w * 1.04))
-    right = min(W, int(x2 + face_w * 1.04))
+    top = max(0, int(cutoff_y + face_h * 0.10))
+    bottom = min(H, int(cutoff_y + face_h * 1.42))
+    left = max(0, int(x1 - face_w * 1.18))
+    right = min(W, int(x2 + face_w * 1.18))
     if top >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
@@ -3755,10 +3755,10 @@ def _build_final_hair_lane_cleanup_mask(
 
     keep_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(zone_u8, 8)
-    max_area = max(2200, int(face_w * face_h * 0.10))
-    max_width = max(58, int(face_w * 0.30))
-    min_height = max(24, int(face_h * 0.12))
-    max_offset = max(240, int(face_w * 1.00))
+    max_area = max(3200, int(face_w * face_h * 0.18))
+    max_width = max(74, int(face_w * 0.44))
+    min_height = max(22, int(face_h * 0.10))
+    max_offset = max(260, int(face_w * 1.16))
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
         y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -3771,7 +3771,7 @@ def _build_final_hair_lane_cleanup_mask(
             continue
         if w > max_width or h < min_height:
             continue
-        if bottom_y < int(cutoff_y + face_h * 0.26):
+        if bottom_y < int(cutoff_y + face_h * 0.20):
             continue
         if abs(comp_cx - cx) > max_offset:
             continue
@@ -3782,15 +3782,15 @@ def _build_final_hair_lane_cleanup_mask(
 
     keep_u8 = cv2.dilate(
         keep_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 13)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 17)),
         iterations=1,
     )
     keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
     return cv2.GaussianBlur(
         keep_u8.astype(np.float32) / 255.0,
         (0, 0),
-        sigmaX=1.6,
-        sigmaY=2.8,
+        sigmaX=2.2,
+        sigmaY=3.4,
     ).astype(np.float32)
 
 def _build_short_bob_tail_suppress_mask(
@@ -3844,7 +3844,7 @@ def _build_short_bob_tail_suppress_mask(
         )
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    top = max(0, int(max(y2 + face_h * 0.08, cutoff_y + face_h * 0.06)))
+    top = max(0, int(max(y2 + face_h * 0.04, cutoff_y + face_h * 0.04)))
     bottom = min(H, int(cutoff_y + face_h * 1.56))
     left = max(0, int(x1 - face_w * 1.46))
     right = min(W, int(x2 + face_w * 1.46))
@@ -3853,16 +3853,16 @@ def _build_short_bob_tail_suppress_mask(
     corridor_u8[top:bottom, left:right] = 255
 
     lane_u8 = np.zeros((H, W), dtype=np.uint8)
-    left_lane_left = max(left, int(x1 - face_w * 0.72))
-    left_lane_right = min(right, int(x1 + face_w * 0.14))
-    right_lane_left = max(left, int(x2 - face_w * 0.14))
-    right_lane_right = min(right, int(x2 + face_w * 0.72))
+    left_lane_left = max(left, int(x1 - face_w * 0.82))
+    left_lane_right = min(right, int(x1 + face_w * 0.20))
+    right_lane_left = max(left, int(x2 - face_w * 0.20))
+    right_lane_right = min(right, int(x2 + face_w * 0.82))
     if left_lane_left < left_lane_right:
         lane_u8[top:bottom, left_lane_left:left_lane_right] = 255
     if right_lane_left < right_lane_right:
         lane_u8[top:bottom, right_lane_left:right_lane_right] = 255
-    center_lane_top = min(bottom, int(y2 + face_h * 0.24))
-    center_half = max(22, int(face_w * 0.20))
+    center_lane_top = min(bottom, int(y2 + face_h * 0.16))
+    center_half = max(28, int(face_w * 0.28))
     center_x1 = max(left, int(cx - center_half))
     center_x2 = min(right, int(cx + center_half))
     if center_lane_top < bottom and center_x1 < center_x2:
@@ -3879,8 +3879,8 @@ def _build_short_bob_tail_suppress_mask(
     )
     dark_tail_u8 = (
         (
-            ((gray < 168.0) & (blur < 176.0) & (sat < 124.0))
-            | (blackhat > 9)
+            ((gray < 172.0) & (blur < 180.0) & (sat < 132.0))
+            | (blackhat > 7)
         ).astype(np.uint8)
         * 255
     )
@@ -3899,7 +3899,7 @@ def _build_short_bob_tail_suppress_mask(
         )
         hair_tail_u8 = cv2.bitwise_and(hair_tail_u8, cloth_support_u8)
         deep_lane_u8 = lane_u8.copy()
-        deep_lane_u8[:max(0, int(y2 + face_h * 0.12)), :] = 0
+        deep_lane_u8[:max(0, int(y2 + face_h * 0.08)), :] = 0
         candidate_u8 = cv2.bitwise_and(
             candidate_u8,
             cv2.bitwise_or(cloth_support_u8, deep_lane_u8),
@@ -3917,7 +3917,7 @@ def _build_short_bob_tail_suppress_mask(
                 cv2.bitwise_and(hair_u8, corridor_u8),
             ),
         )
-    lower_keepout = min(H, int(y2 + face_h * 0.10))
+    lower_keepout = min(H, int(y2 + face_h * 0.06))
     if lower_keepout < H:
         hair_tail_u8[:lower_keepout, :] = 0
     hair_tail_u8 = cv2.morphologyEx(
@@ -3931,7 +3931,7 @@ def _build_short_bob_tail_suppress_mask(
     if int((candidate_u8 > 0).sum()) < 40:
         return np.zeros((H, W), dtype=np.float32)
 
-    lower_start = min(H, int(y2 + face_h * 0.18))
+    lower_start = min(H, int(y2 + face_h * 0.12))
     if lower_start < H:
         candidate_u8[:lower_start, :] = 0
     candidate_u8 = cv2.morphologyEx(
@@ -3953,9 +3953,9 @@ def _build_short_bob_tail_suppress_mask(
     min_height = max(16, int(face_h * 0.08))
     min_area = max(24, int(face_w * face_h * 0.0011))
     max_area = max(24000, int(face_w * face_h * 0.48))
-    max_width = max(146, int(face_w * 0.94))
-    deep_bottom = int(y2 + face_h * 0.24)
-    deepest_bottom = int(y2 + face_h * 0.38)
+    max_width = max(172, int(face_w * 1.14))
+    deep_bottom = int(y2 + face_h * 0.18)
+    deepest_bottom = int(y2 + face_h * 0.28)
     max_offset = max(float(face_w * 1.30), 1.0)
 
     for idx in range(1, num_labels):
@@ -3983,9 +3983,9 @@ def _build_short_bob_tail_suppress_mask(
         lane_overlap = int((cv2.bitwise_and(comp_u8, lane_u8) > 0).sum())
         if cloth_u8 is not None:
             cloth_overlap = int((cv2.bitwise_and(comp_u8, cloth_u8) > 0).sum())
-            if cloth_overlap < 10 and lane_overlap < max(18, int(area * 0.10)) and bottom_y < int(cutoff_y + face_h * 0.72):
+            if cloth_overlap < 8 and lane_overlap < max(16, int(area * 0.08)) and bottom_y < int(cutoff_y + face_h * 0.72):
                 continue
-            if offset < center_keepout and bottom_y < deepest_bottom and cloth_overlap < 12:
+            if offset < center_keepout and bottom_y < deepest_bottom and cloth_overlap < 8:
                 continue
             if cloth_overlap > 0:
                 comp_u8 = cv2.dilate(
