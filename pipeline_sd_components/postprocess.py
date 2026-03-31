@@ -2552,7 +2552,7 @@ def _build_short_lower_cloth_hard_override_mask(
     if int((zone_u8 > 0).sum()) < 100:
         return np.zeros((H, W), dtype=np.float32)
 
-    top = max(0, int(cutoff_y + face_h * 0.06))
+    top = max(0, int(cutoff_y + face_h * 0.12))
     bottom = min(H, int(cutoff_y + face_h * 1.52))
     left = max(0, int(x1 - face_w * 1.30))
     right = min(W, int(x2 + face_w * 1.30))
@@ -2578,7 +2578,7 @@ def _build_short_lower_cloth_hard_override_mask(
     shallow_zone_u8 = cv2.bitwise_and(shallow_zone_u8, zone_u8)
 
     deep_zone_u8 = np.zeros((H, W), dtype=np.uint8)
-    deep_top = min(bottom, int(cutoff_y + face_h * 0.40))
+    deep_top = min(bottom, int(cutoff_y + face_h * 0.48))
     if deep_top < bottom:
         deep_zone_u8[deep_top:bottom, left:right] = 255
     deep_zone_u8 = cv2.bitwise_and(deep_zone_u8, zone_u8)
@@ -2596,9 +2596,22 @@ def _build_short_lower_cloth_hard_override_mask(
     )
     upper_residual_u8 = cv2.bitwise_and(upper_residual_u8, shallow_zone_u8)
 
-    keep_u8 = cv2.bitwise_or(deep_zone_u8, upper_residual_u8)
+    deep_residual_u8 = (
+        (
+            (
+                (current_gray + 12.0 < source_gray)
+                | (diff_rgb > 14.0)
+                | (gray_delta > 14.0)
+            )
+            & (current_sat < 164.0)
+        ).astype(np.uint8)
+        * 255
+    )
+    deep_residual_u8 = cv2.bitwise_and(deep_residual_u8, deep_zone_u8)
+
+    keep_u8 = cv2.bitwise_or(deep_residual_u8, upper_residual_u8)
     keep_u8 = cv2.bitwise_and(keep_u8, cloth_u8)
-    if int((keep_u8 > 0).sum()) < 100:
+    if int((keep_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
 
     shoulder_guard_u8 = np.zeros((H, W), dtype=np.uint8)
@@ -2624,13 +2637,13 @@ def _build_short_lower_cloth_hard_override_mask(
             cv2.bitwise_or(cloth_u8, removal_u8),
         )
         lower_final_hair_u8 = cv2.bitwise_and(lower_final_hair_u8, corridor_u8)
-        lower_final_hair_top = max(0, int(max(y2 + face_h * 0.10, cutoff_y + face_h * 0.08)))
+        lower_final_hair_top = max(0, int(max(y2 + face_h * 0.16, cutoff_y + face_h * 0.14)))
         if lower_final_hair_top < H:
             lower_final_hair_u8[:lower_final_hair_top, :] = 0
         lower_final_hair_u8 = cv2.morphologyEx(
             lower_final_hair_u8,
             cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 25)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 21)),
         )
         keep_u8 = cv2.bitwise_or(keep_u8, lower_final_hair_u8)
         upper_hair_guard_u8 = np.zeros((H, W), dtype=np.uint8)
@@ -2645,11 +2658,11 @@ def _build_short_lower_cloth_hard_override_mask(
     keep_u8 = cv2.morphologyEx(
         keep_u8,
         cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 21)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 17)),
     )
     keep_u8 = cv2.dilate(
         keep_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 23)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 17)),
         iterations=1,
     )
     keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
@@ -2657,9 +2670,9 @@ def _build_short_lower_cloth_hard_override_mask(
         mask_u8=keep_u8,
         face_bbox=face_bbox,
         cutoff_y=cutoff_y,
-        min_keep_px=120,
+        min_keep_px=80,
     )
-    if int((keep_u8 > 0).sum()) < 120:
+    if int((keep_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
 
     return cv2.GaussianBlur(

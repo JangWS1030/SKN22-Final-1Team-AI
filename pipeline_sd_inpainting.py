@@ -2763,30 +2763,15 @@ class MirrAISDPipeline:
                         * 255
                     )
                     short_lower_cloth_hard_override_px = int((short_lower_cloth_hard_override_u8 > 0).sum())
-                    if short_lower_cloth_hard_override_px >= 160:
-                        final_rgb = self._restore_reference_region(
-                            final_rgb,
-                            img_rgb,
-                            short_lower_cloth_hard_override_mask,
-                            strength=0.995,
-                        )
-                        final_rgb = self._overlay_reference_cloth_fill(
-                            final_rgb,
-                            img_rgb,
-                            short_lower_cloth_hard_override_mask,
+                    if short_lower_cloth_hard_override_px >= 96:
+                        final_rgb = self._cleanup_region_with_cloth_restore(
+                            source_rgb=img_rgb,
+                            current_rgb=final_rgb,
+                            cleanup_mask=short_lower_cloth_hard_override_mask,
                             cloth_mask=cloth_mask_dilated,
-                        )
-                        final_rgb = self._blend_neighbor_cloth_tone(
-                            final_rgb,
-                            short_lower_cloth_hard_override_mask,
-                            cloth_mask=cloth_mask_dilated,
-                            reference_rgb=img_rgb,
-                        )
-                        final_rgb = self._cv2_refine_cloth_region(
-                            final_rgb,
-                            short_lower_cloth_hard_override_mask,
-                            reference_rgb=img_rgb,
-                            reference_mask=cloth_mask_dilated,
+                            final_hair_mask=final_hair_mask,
+                            ignore_final_hair_for_cloth_restore=True,
+                            cleanup_dark_tail=True,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     if debug_images_common is not None and rank == 0:
