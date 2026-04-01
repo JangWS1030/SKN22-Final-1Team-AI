@@ -1009,6 +1009,7 @@ class MirrAISDPipeline:
                 face_h = max(int(y2f - y1f), 1)
                 face_cx = int(0.5 * (x1f + x2f))
                 male_short_volume_boost = subject_gender_mode == "male"
+                male_short_dominant_side: Optional[str] = None
                 seed_top = max(0, int(head_y1))
                 seed_bottom = min(H, int(min(cutoff_y + face_h * 0.06, y2f + face_h * 0.26)))
                 seed_left = max(0, int(x1f - face_w * 0.72))
@@ -1064,6 +1065,20 @@ class MirrAISDPipeline:
                     prior_cap_y = min(seed_bottom, int(y1f + face_h * (0.38 if male_short_volume_boost else 0.32)))
                     if prior_cap_y < H:
                         upper_prior_u8[prior_cap_y:, :] = 0
+                    if male_short_volume_boost:
+                        probe_bottom = min(seed_bottom, int(y1f + face_h * 0.26))
+                        if seed_top < probe_bottom and seed_left < face_cx < seed_right:
+                            left_prior_px = int((upper_prior_u8[seed_top:probe_bottom, seed_left:face_cx] > 0).sum())
+                            right_prior_px = int((upper_prior_u8[seed_top:probe_bottom, face_cx:seed_right] > 0).sum())
+                            dominant_side_boost = max(10, int(face_w * 0.12))
+                            if left_prior_px >= max(24, int(right_prior_px * 1.08)):
+                                male_short_dominant_side = "left"
+                                extra_left = max(0, left_outer - dominant_side_boost)
+                                short_seed_u8[seed_top:side_bottom, extra_left:left_inner] = 255
+                            elif right_prior_px >= max(24, int(left_prior_px * 1.08)):
+                                male_short_dominant_side = "right"
+                                extra_right = min(W, right_outer + dominant_side_boost)
+                                short_seed_u8[seed_top:side_bottom, right_inner:extra_right] = 255
                     short_seed_u8 = cv2.bitwise_or(short_seed_u8, upper_prior_u8)
                     short_seed_u8 = cv2.bitwise_and(short_seed_u8, corridor_u8)
                     short_seed_u8 = cv2.morphologyEx(
@@ -1150,6 +1165,11 @@ class MirrAISDPipeline:
                     iterations=1,
                 )
                 short_volume_cap_u8 = np.zeros((H, W), dtype=np.uint8)
+                cap_center_x = face_cx
+                if male_short_dominant_side == "left":
+                    cap_center_x = max(0, face_cx - max(6, int(face_w * 0.05)))
+                elif male_short_dominant_side == "right":
+                    cap_center_x = min(W - 1, face_cx + max(6, int(face_w * 0.05)))
                 cap_center_y = int(
                     max(
                         seed_top + 1,
@@ -1160,7 +1180,7 @@ class MirrAISDPipeline:
                 cap_axes_y = max(30, int(face_h * (0.84 if male_short_volume_boost else 0.72)))
                 cv2.ellipse(
                     short_volume_cap_u8,
-                    (face_cx, cap_center_y),
+                    (cap_center_x, cap_center_y),
                     (cap_axes_x, cap_axes_y),
                     0,
                     0,
@@ -1176,6 +1196,10 @@ class MirrAISDPipeline:
                 cap_left_inner = max(cap_left_outer + 1, int(face_cx - cap_inner_gap))
                 cap_right_inner = min(W - 1, int(face_cx + cap_inner_gap))
                 cap_right_outer = min(W, int(face_cx + cap_outer_span))
+                if male_short_dominant_side == "left":
+                    cap_left_outer = max(0, cap_left_outer - max(10, int(face_w * 0.12)))
+                elif male_short_dominant_side == "right":
+                    cap_right_outer = min(W, cap_right_outer + max(10, int(face_w * 0.12)))
                 if cap_side_top < cap_side_bottom:
                     short_volume_cap_u8[cap_side_top:cap_side_bottom, cap_left_outer:cap_left_inner] = 255
                     short_volume_cap_u8[cap_side_top:cap_side_bottom, cap_right_inner:cap_right_outer] = 255

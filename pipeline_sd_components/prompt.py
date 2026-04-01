@@ -123,6 +123,7 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
         base_style = "clean masculine layered haircut with natural crown lift and shorter back and sides"
         hints.extend([
             "soft lifted top volume",
+            "balanced left-right crown volume",
             "soft front movement",
             "balanced side silhouette",
         ])
