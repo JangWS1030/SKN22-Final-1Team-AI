@@ -3828,20 +3828,28 @@ class MirrAISDPipeline:
             size = max(int(minimum), int(round(float(value))))
             return size if size % 2 == 1 else size + 1
 
-        def _row_segments(xs: np.ndarray) -> List[Tuple[int, int]]:
-            if xs.size == 0:
-                return []
-            segments: List[Tuple[int, int]] = []
-            start = prev = int(xs[0])
-            for raw_x in xs[1:]:
-                x = int(raw_x)
-                if x == prev + 1:
-                    prev = x
+        def _filter_components_by_area(
+            mask_u8: np.ndarray,
+            *,
+            min_area: int,
+            max_area: Optional[int] = None,
+        ) -> np.ndarray:
+            if int((mask_u8 > 0).sum()) == 0:
+                return np.zeros((H, W), dtype=np.uint8)
+
+            filtered_u8 = np.zeros((H, W), dtype=np.uint8)
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                (mask_u8 > 0).astype(np.uint8),
+                8,
+            )
+            for label in range(1, num_labels):
+                area = int(stats[label, cv2.CC_STAT_AREA])
+                if area < int(min_area):
                     continue
-                segments.append((start, prev))
-                start = prev = x
-            segments.append((start, prev))
-            return segments
+                if max_area is not None and area > int(max_area):
+                    continue
+                filtered_u8[labels == label] = 255
+            return filtered_u8
 
         corridor_u8 = np.zeros((H, W), dtype=np.uint8)
         top = max(0, int(y2 + face_h * 0.02))
@@ -3873,6 +3881,24 @@ class MirrAISDPipeline:
         if int((candidate_u8 > 0).sum()) == 0:
             return np.zeros((H, W), dtype=np.float32)
 
+        cleaned_candidate_u8 = _filter_components_by_area(
+            candidate_u8,
+            min_area=max(24, int(face_w * face_h * 0.0012)),
+        )
+        if int((cleaned_candidate_u8 > 0).sum()) > 0:
+            candidate_u8 = cleaned_candidate_u8
+
+        candidate_ys, candidate_xs = np.where(candidate_u8 > 0)
+        if candidate_xs.size == 0 or candidate_ys.size == 0:
+            return np.zeros((H, W), dtype=np.float32)
+
+        candidate_x1 = int(candidate_xs.min())
+        candidate_y1 = int(candidate_ys.min())
+        candidate_x2 = int(candidate_xs.max())
+        candidate_y2 = int(candidate_ys.max())
+        candidate_w = max(candidate_x2 - candidate_x1 + 1, 1)
+        candidate_h = max(candidate_y2 - candidate_y1 + 1, 1)
+
         hair_u8 = np.zeros((H, W), dtype=np.uint8)
         if source_torso_hair_mask is not None:
             hair_u8 = (
@@ -3880,62 +3906,29 @@ class MirrAISDPipeline:
             ).astype(np.uint8) * 255
             hair_u8 = cv2.bitwise_and(hair_u8, corridor_u8)
 
-        hair_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+        hair_fill_gate_u8 = np.zeros((H, W), dtype=np.uint8)
         if int((hair_u8 > 0).sum()) > 0:
-            hair_gate_u8 = cv2.dilate(
+            hair_fill_gate_u8 = cv2.dilate(
                 hair_u8,
                 cv2.getStructuringElement(
                     cv2.MORPH_ELLIPSE,
-                    (_odd_size(face_w * 0.06, 5), _odd_size(face_h * 0.08, 7)),
+                    (_odd_size(face_w * 0.035, 5), _odd_size(face_h * 0.05, 5)),
                 ),
                 iterations=1,
             )
-
-        internal_fill_u8 = np.zeros((H, W), dtype=np.uint8)
-        if int((hair_gate_u8 > 0).sum()) > 0:
-            for row_y in np.where((candidate_u8 > 0).any(axis=1))[0]:
-                candidate_x = np.where(candidate_u8[row_y] > 0)[0]
-                if candidate_x.size < 2:
-                    continue
-                hair_x = np.where(hair_gate_u8[row_y] > 0)[0]
-                if hair_x.size == 0:
-                    continue
-
-                left_outer = int(candidate_x.min())
-                right_outer = int(candidate_x.max())
-                hair_x = hair_x[(hair_x > left_outer) & (hair_x < right_outer)]
-                if hair_x.size == 0:
-                    continue
-
-                for hx1, hx2 in _row_segments(hair_x):
-                    left_candidates = candidate_x[candidate_x < hx1]
-                    right_candidates = candidate_x[candidate_x > hx2]
-                    if left_candidates.size == 0 or right_candidates.size == 0:
-                        continue
-                    fill_left = int(left_candidates.max())
-                    fill_right = int(right_candidates.min())
-                    if fill_right - fill_left + 1 <= 2:
-                        continue
-                    internal_fill_u8[row_y, fill_left : fill_right + 1] = 255
-
-            internal_fill_u8 = cv2.morphologyEx(
-                internal_fill_u8,
-                cv2.MORPH_CLOSE,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
-            )
-            internal_fill_u8 = cv2.bitwise_and(
-                internal_fill_u8,
-                cv2.bitwise_not(candidate_u8),
-            )
-            internal_fill_u8 = cv2.bitwise_and(internal_fill_u8, corridor_u8)
+            hair_fill_gate_u8 = cv2.bitwise_and(hair_fill_gate_u8, corridor_u8)
 
         upper_band_u8 = np.zeros((H, W), dtype=np.uint8)
-        upper_top = max(0, int(y2 + face_h * 0.02))
-        upper_bottom = min(H, int(y2 + face_h * 0.52))
+        upper_top = max(candidate_y1 - 2, int(y2 + face_h * 0.02))
+        upper_bottom = min(
+            candidate_y2 + 1,
+            max(candidate_y1 + 1, int(y2 + face_h * 0.48)),
+        )
         if upper_top < upper_bottom:
             upper_band_u8[upper_top:upper_bottom, :] = 255
 
         upper_support_u8 = cv2.bitwise_and(candidate_u8, upper_band_u8)
+        bridge_u8 = np.zeros((H, W), dtype=np.uint8)
         if shoulder_bridge_mask is not None:
             bridge_u8 = (
                 np.clip(shoulder_bridge_mask.astype(np.float32), 0.0, 1.0) > 0.08
@@ -3943,13 +3936,15 @@ class MirrAISDPipeline:
             bridge_u8 = cv2.bitwise_and(bridge_u8, upper_band_u8)
             bridge_u8 = cv2.erode(
                 bridge_u8,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 9)),
                 iterations=1,
             )
             upper_support_u8 = cv2.bitwise_or(upper_support_u8, bridge_u8)
 
         top_profile = np.full(W, -1, dtype=np.int32)
-        for x in range(max(0, left), min(W, right)):
+        support_x_left = max(left, candidate_x1 - int(candidate_w * 0.02))
+        support_x_right = min(right - 1, candidate_x2 + int(candidate_w * 0.02))
+        for x in range(max(0, support_x_left), min(W, support_x_right + 1)):
             ys = np.where(upper_support_u8[:, x] > 0)[0]
             if ys.size > 0:
                 top_profile[x] = int(ys.min())
@@ -3967,12 +3962,12 @@ class MirrAISDPipeline:
             span_y = cv2.GaussianBlur(
                 span_y.reshape(1, -1).astype(np.float32),
                 (0, 0),
-                sigmaX=sigma_x,
+                sigmaX=max(2.0, min(sigma_x, face_w * 0.03)),
             ).reshape(-1)
             span_y = np.clip(
                 np.rint(span_y).astype(np.int32),
-                max(0, int(y2 + face_h * 0.10)),
-                min(H - 1, int(y2 + face_h * 0.46)),
+                upper_top,
+                min(upper_bottom - 1, candidate_y1 + max(6, int(candidate_h * 0.18))),
             )
             pts = np.stack([span_x, span_y], axis=1).reshape(-1, 1, 2)
             cv2.polylines(
@@ -3980,25 +3975,86 @@ class MirrAISDPipeline:
                 [pts],
                 isClosed=False,
                 color=255,
-                thickness=max(7, int(face_h * 0.035)),
+                thickness=max(5, int(face_h * 0.02)),
                 lineType=cv2.LINE_AA,
             )
             seam_guard_u8 = cv2.bitwise_or(
-                bridge_u8 if shoulder_bridge_mask is not None else np.zeros((H, W), dtype=np.uint8),
+                bridge_u8,
                 cv2.bitwise_and(candidate_u8, upper_band_u8),
             )
             seam_guard_u8 = cv2.dilate(
                 seam_guard_u8,
                 cv2.getStructuringElement(
                     cv2.MORPH_ELLIPSE,
-                    (_odd_size(face_w * 0.16, 7), _odd_size(face_h * 0.07, 5)),
+                    (_odd_size(face_w * 0.10, 5), _odd_size(face_h * 0.05, 5)),
                 ),
                 iterations=1,
             )
+            support_x_mask_u8 = np.zeros((H, W), dtype=np.uint8)
+            support_x_mask_u8[:, max(0, support_x_left) : min(W, support_x_right + 1)] = 255
             top_line_u8 = cv2.bitwise_and(top_line_u8, seam_guard_u8)
+            top_line_u8 = cv2.bitwise_and(top_line_u8, support_x_mask_u8)
 
-        filled_u8 = cv2.bitwise_or(candidate_u8, internal_fill_u8)
-        filled_u8 = cv2.bitwise_or(filled_u8, top_line_u8)
+        base_fill_u8 = cv2.bitwise_or(candidate_u8, top_line_u8)
+        local_fill_u8 = np.zeros((H, W), dtype=np.uint8)
+        if int((hair_fill_gate_u8 > 0).sum()) > 0:
+            closed_fill_u8 = cv2.morphologyEx(
+                base_fill_u8,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (_odd_size(face_w * 0.07, 5), _odd_size(face_h * 0.10, 7)),
+                ),
+            )
+            local_fill_u8 = cv2.bitwise_and(
+                closed_fill_u8,
+                cv2.bitwise_not(base_fill_u8),
+            )
+            local_fill_u8 = cv2.bitwise_and(local_fill_u8, hair_fill_gate_u8)
+
+            filtered_local_fill_u8 = np.zeros((H, W), dtype=np.uint8)
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                (local_fill_u8 > 0).astype(np.uint8),
+                8,
+            )
+            min_fill_area = max(12, int(face_w * face_h * 0.00012))
+            max_fill_area = max(600, int(face_w * face_h * 0.01))
+            max_fill_bottom = candidate_y1 + int(candidate_h * 0.55)
+            max_fill_height = max(28, int(candidate_h * 0.18))
+            lateral_margin = max(4, int(candidate_w * 0.03))
+            for label in range(1, num_labels):
+                x = int(stats[label, cv2.CC_STAT_LEFT])
+                y = int(stats[label, cv2.CC_STAT_TOP])
+                w = int(stats[label, cv2.CC_STAT_WIDTH])
+                h = int(stats[label, cv2.CC_STAT_HEIGHT])
+                area = int(stats[label, cv2.CC_STAT_AREA])
+                if area < min_fill_area or area > max_fill_area:
+                    continue
+                if y >= max_fill_bottom or h > max_fill_height:
+                    continue
+                if x <= candidate_x1 + lateral_margin or x + w >= candidate_x2 - lateral_margin:
+                    continue
+
+                component_u8 = np.zeros((H, W), dtype=np.uint8)
+                component_u8[labels == label] = 255
+                contact_u8 = cv2.dilate(
+                    component_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+                    iterations=1,
+                )
+                contact_pixels = int(
+                    np.logical_and(contact_u8 > 0, candidate_u8 > 0).sum()
+                )
+                contact_ratio = float(contact_pixels) / float(max(area, 1))
+                if contact_ratio < 1.8:
+                    continue
+                filtered_local_fill_u8 = cv2.bitwise_or(
+                    filtered_local_fill_u8,
+                    component_u8,
+                )
+            local_fill_u8 = filtered_local_fill_u8
+
+        filled_u8 = cv2.bitwise_or(base_fill_u8, local_fill_u8)
         filled_u8 = cv2.bitwise_and(filled_u8, corridor_u8)
 
         if protect_mask is not None:
@@ -4012,10 +4068,11 @@ class MirrAISDPipeline:
             )
             filled_u8 = cv2.bitwise_and(filled_u8, cv2.bitwise_not(protect_u8))
 
+        filled_u8 = np.where(filled_u8 > 0, 255, 0).astype(np.uint8)
         filled_u8 = cv2.morphologyEx(
             filled_u8,
             cv2.MORPH_OPEN,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
         )
         return filled_u8.astype(np.float32) / 255.0
 
