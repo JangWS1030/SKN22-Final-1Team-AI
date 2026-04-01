@@ -2887,6 +2887,48 @@ class MirrAISDPipeline:
                     logger.warning(f"[SDPipeline] short lower garment cleanup failed (ignored): {e}")
             if (
                 hair_length in ("short", "medium")
+                and cloth_restore_mask_for_post is not None
+                and removal_mask_for_post is not None
+                and cutoff_y_for_post is not None
+            ):
+                try:
+                    final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
+                    final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    center_residual_mask = self._build_center_residual_detector_mask(
+                        current_rgb=final_rgb,
+                        source_rgb=img_rgb,
+                        cloth_mask=cloth_restore_mask_for_post,
+                        removal_mask=removal_mask_for_post,
+                        face_bbox=face_bbox,
+                        cutoff_y=cutoff_y_for_post,
+                        hair_length=hair_length,
+                        final_hair_mask=final_hair_mask,
+                        center_support_mask=center_chest_strand_removal_mask,
+                        anchor_mask=subject_cloth_anchor_for_post,
+                    )
+                    center_residual_u8 = (
+                        (np.clip(center_residual_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+                    )
+                    center_residual_px = int((center_residual_u8 > 0).sum())
+                    if center_residual_px >= 24:
+                        final_rgb = self._cleanup_region_with_cloth_restore(
+                            source_rgb=img_rgb,
+                            current_rgb=final_rgb,
+                            cleanup_mask=center_residual_mask,
+                            cloth_mask=cloth_restore_mask_for_post,
+                            ignore_final_hair_for_cloth_restore=True,
+                            cleanup_dark_tail=True,
+                        )
+                        final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                    if debug_images_common is not None and rank == 0:
+                        debug_images_common["pipeline_center_residual_detector_mask"] = cv2.cvtColor(
+                            center_residual_u8,
+                            cv2.COLOR_GRAY2BGR,
+                        )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] center residual cleanup failed (ignored): {e}")
+            if (
+                hair_length in ("short", "medium")
                 and cloth_mask_dilated is not None
                 and removal_mask_for_post is not None
                 and cutoff_y_for_post is not None

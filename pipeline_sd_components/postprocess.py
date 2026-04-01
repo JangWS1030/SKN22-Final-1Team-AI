@@ -4052,6 +4052,298 @@ def _build_final_hair_lane_cleanup_mask(
         sigmaY=2.8,
     ).astype(np.float32)
 
+def _build_center_residual_detector_mask(
+    self,
+    *,
+    current_rgb: np.ndarray,
+    source_rgb: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    removal_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+    hair_length: str,
+    final_hair_mask: Optional[np.ndarray] = None,
+    center_support_mask: Optional[np.ndarray] = None,
+    anchor_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    if hair_length not in ("short", "medium"):
+        return np.zeros(current_rgb.shape[:2], dtype=np.float32)
+
+    H, W = current_rgb.shape[:2]
+    if source_rgb.shape[:2] != (H, W):
+        return np.zeros((H, W), dtype=np.float32)
+    if cloth_mask is None or removal_mask is None:
+        return np.zeros((H, W), dtype=np.float32)
+    if cloth_mask.shape != (H, W) or removal_mask.shape != (H, W):
+        return np.zeros((H, W), dtype=np.float32)
+    if final_hair_mask is not None and final_hair_mask.shape != (H, W):
+        final_hair_mask = None
+    if center_support_mask is not None and center_support_mask.shape != (H, W):
+        center_support_mask = None
+    if anchor_mask is not None and anchor_mask.shape != (H, W):
+        anchor_mask = None
+
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
+
+    corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+    lane_half = max(20, int(face_w * (0.34 if hair_length == "short" else 0.28)))
+    lane_top = max(0, int(cutoff_y + face_h * 0.02))
+    lane_bottom = min(H, int(cutoff_y + face_h * (1.34 if hair_length == "short" else 1.12)))
+    lane_left = max(0, cx - lane_half)
+    lane_right = min(W, cx + lane_half)
+    if lane_top >= lane_bottom or lane_left >= lane_right:
+        return np.zeros((H, W), dtype=np.float32)
+    corridor_u8[lane_top:lane_bottom, lane_left:lane_right] = 255
+
+    deep_top = max(lane_top, int(cutoff_y + face_h * 0.24))
+    deep_bottom = min(H, int(cutoff_y + face_h * (1.52 if hair_length == "short" else 1.24)))
+    deep_half = max(26, int(face_w * (0.54 if hair_length == "short" else 0.42)))
+    deep_left = max(0, cx - deep_half)
+    deep_right = min(W, cx + deep_half)
+    if deep_top < deep_bottom and deep_left < deep_right:
+        corridor_u8[deep_top:deep_bottom, deep_left:deep_right] = 255
+
+    removal_u8 = cv2.dilate(
+        (np.clip(removal_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (19, 27) if hair_length == "short" else (17, 23),
+        ),
+        iterations=1,
+    )
+    cloth_u8 = cv2.dilate(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (19, 19) if hair_length == "short" else (15, 15),
+        ),
+        iterations=1,
+    )
+    support_u8 = np.zeros((H, W), dtype=np.uint8)
+    if center_support_mask is not None:
+        support_u8 = cv2.dilate(
+            (np.clip(center_support_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (17, 35) if hair_length == "short" else (13, 27),
+            ),
+            iterations=1,
+        )
+    anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+    anchor_lane_u8 = np.zeros((H, W), dtype=np.uint8)
+    if anchor_mask is not None:
+        anchor_u8 = cv2.dilate(
+            (np.clip(anchor_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (23, 29) if hair_length == "short" else (17, 23),
+            ),
+            iterations=1,
+        )
+        anchor_u8 = cv2.bitwise_and(anchor_u8, corridor_u8)
+        if int((anchor_u8 > 0).sum()) >= 80:
+            anchor_lane_u8 = cv2.dilate(
+                anchor_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (
+                        max(41, int(face_w * (1.18 if hair_length == "short" else 0.92))) | 1,
+                        max(19, int(face_h * (0.28 if hair_length == "short" else 0.22))) | 1,
+                    ),
+                ),
+                iterations=1,
+            )
+            anchor_lane_u8 = cv2.bitwise_and(anchor_lane_u8, corridor_u8)
+
+    guide_lane_u8 = cv2.bitwise_or(support_u8, cv2.bitwise_or(anchor_u8, anchor_lane_u8))
+    zone_u8 = cv2.bitwise_and(
+        corridor_u8,
+        cv2.bitwise_and(
+            removal_u8,
+            cv2.bitwise_or(cloth_u8, guide_lane_u8),
+        ),
+    )
+    if int((zone_u8 > 0).sum()) < 40:
+        return np.zeros((H, W), dtype=np.float32)
+
+    current_gray = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    current_blur = cv2.GaussianBlur(current_gray, (0, 0), sigmaX=5.2, sigmaY=5.2)
+    current_hsv = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2HSV)
+    source_hsv = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2HSV)
+    current_sat = current_hsv[:, :, 1].astype(np.float32)
+    source_sat = source_hsv[:, :, 1].astype(np.float32)
+    diff_rgb = np.abs(current_rgb.astype(np.float32) - source_rgb.astype(np.float32)).mean(axis=2)
+    gray_delta = np.abs(current_gray - source_gray)
+    lap = np.abs(cv2.Laplacian(current_gray, cv2.CV_32F, ksize=3))
+    blackhat = cv2.morphologyEx(
+        current_gray.astype(np.uint8),
+        cv2.MORPH_BLACKHAT,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (7, 19) if hair_length == "short" else (5, 15),
+        ),
+    ).astype(np.float32)
+
+    diff_candidate_u8 = (
+        (
+            (diff_rgb > (11.0 if hair_length == "short" else 10.0))
+            | (gray_delta > (10.0 if hair_length == "short" else 9.0))
+            | (np.abs(current_sat - source_sat) > (16.0 if hair_length == "short" else 14.0))
+        ).astype(np.uint8)
+        * 255
+    )
+    dark_candidate_u8 = (
+        (
+            (
+                (current_gray < np.minimum(source_gray + (18.0 if hair_length == "short" else 16.0), 198.0))
+                & ((current_blur - current_gray) > (1.4 if hair_length == "short" else 1.6))
+            )
+            | (blackhat > (6.0 if hair_length == "short" else 7.0))
+            | (
+                (lap < (18.0 if hair_length == "short" else 16.0))
+                & (current_gray < (186.0 if hair_length == "short" else 178.0))
+                & (diff_rgb > (9.0 if hair_length == "short" else 8.0))
+            )
+        ).astype(np.uint8)
+        * 255
+    )
+    candidate_u8 = cv2.bitwise_and(diff_candidate_u8, dark_candidate_u8)
+    candidate_u8 = cv2.bitwise_and(candidate_u8, zone_u8)
+
+    if final_hair_mask is not None:
+        final_hair_u8 = cv2.dilate(
+            (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.16).astype(np.uint8) * 255,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (13, 21) if hair_length == "short" else (11, 17),
+            ),
+            iterations=1,
+        )
+        candidate_u8 = cv2.bitwise_or(candidate_u8, cv2.bitwise_and(final_hair_u8, zone_u8))
+
+    if int((guide_lane_u8 > 0).sum()) > 0:
+        guided_candidate_u8 = (
+            (
+                (
+                    (diff_rgb > (8.0 if hair_length == "short" else 7.0))
+                    | (gray_delta > (8.0 if hair_length == "short" else 7.0))
+                    | (np.abs(current_sat - source_sat) > 12.0)
+                )
+                & (lap < (24.0 if hair_length == "short" else 22.0))
+                & (current_gray < (202.0 if hair_length == "short" else 194.0))
+            ).astype(np.uint8)
+            * 255
+        )
+        guided_candidate_u8 = cv2.bitwise_and(guided_candidate_u8, zone_u8)
+        guided_candidate_u8 = cv2.bitwise_and(guided_candidate_u8, guide_lane_u8)
+        candidate_u8 = cv2.bitwise_or(candidate_u8, guided_candidate_u8)
+
+    candidate_u8 = cv2.morphologyEx(
+        candidate_u8,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+    )
+    candidate_u8 = cv2.morphologyEx(
+        candidate_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (11, 27) if int((guide_lane_u8 > 0).sum()) > 0 else (7, 17),
+        ),
+    )
+    if int((candidate_u8 > 0).sum()) < 24:
+        return np.zeros((H, W), dtype=np.float32)
+
+    guided_mode = int((guide_lane_u8 > 0).sum()) > 0
+    keep_u8 = np.zeros((H, W), dtype=np.uint8)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(candidate_u8, 8)
+    max_area = (
+        max(12000, int(face_w * face_h * 0.56))
+        if guided_mode
+        else max(3200, int(face_w * face_h * 0.16))
+    )
+    max_width = (
+        max(176, int(face_w * 0.92))
+        if guided_mode
+        else max(86, int(face_w * 0.42))
+    )
+    min_height = max(28, int(face_h * 0.16))
+    max_offset = max(34, int(face_w * (0.24 if hair_length == "short" else 0.20)))
+    for idx in range(1, num_labels):
+        x = int(stats[idx, cv2.CC_STAT_LEFT])
+        y = int(stats[idx, cv2.CC_STAT_TOP])
+        w = int(stats[idx, cv2.CC_STAT_WIDTH])
+        h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+        area = int(stats[idx, cv2.CC_STAT_AREA])
+        bottom_y = y + h
+        comp_cx = float(centroids[idx][0])
+        if area < 24 or area > max_area:
+            continue
+        if w > max_width or h < min_height:
+            continue
+        if y < int(cutoff_y + face_h * 0.02):
+            continue
+        if bottom_y < int(cutoff_y + face_h * 0.18):
+            continue
+        if abs(comp_cx - cx) > max_offset:
+            continue
+        fill_ratio = float(area) / float(max(w * h, 1))
+        if not guided_mode and fill_ratio > 0.92 and area > max(160, int(face_w * face_h * 0.010)):
+            continue
+        comp_u8 = (labels == idx).astype(np.uint8) * 255
+        if guided_mode:
+            guide_overlap = int((cv2.bitwise_and(comp_u8, guide_lane_u8) > 0).sum())
+            if guide_overlap < max(12, int(area * 0.04)):
+                continue
+        keep_u8 = cv2.bitwise_or(keep_u8, comp_u8)
+
+    if int((keep_u8 > 0).sum()) < 24:
+        fallback_u8 = cv2.bitwise_and(candidate_u8, guide_lane_u8)
+        if not guided_mode or int((fallback_u8 > 0).sum()) < 24:
+            return np.zeros((H, W), dtype=np.float32)
+        if hair_length == "short":
+            fallback_u8 = self._trim_blocky_short_restore_mask_u8(
+                mask_u8=fallback_u8,
+                face_bbox=face_bbox,
+                cutoff_y=cutoff_y,
+                min_keep_px=24,
+            )
+        if int((fallback_u8 > 0).sum()) < 24:
+            return np.zeros((H, W), dtype=np.float32)
+        keep_u8 = fallback_u8
+
+    keep_u8 = cv2.dilate(
+        keep_u8,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (9, 23) if hair_length == "short" else (7, 17),
+        ),
+        iterations=1,
+    )
+    keep_u8 = cv2.bitwise_and(keep_u8, zone_u8)
+    if hair_length == "short":
+        trimmed_u8 = self._trim_blocky_short_restore_mask_u8(
+            mask_u8=keep_u8,
+            face_bbox=face_bbox,
+            cutoff_y=cutoff_y,
+            min_keep_px=24,
+        )
+        if int((trimmed_u8 > 0).sum()) >= 24:
+            keep_u8 = trimmed_u8
+    if int((keep_u8 > 0).sum()) < 24:
+        return np.zeros((H, W), dtype=np.float32)
+
+    return cv2.GaussianBlur(
+        keep_u8.astype(np.float32) / 255.0,
+        (0, 0),
+        sigmaX=2.8 if hair_length == "short" else 2.1,
+        sigmaY=5.2 if hair_length == "short" else 4.0,
+    ).astype(np.float32)
+
 def _build_short_bob_tail_suppress_mask(
     self,
     img_rgb: np.ndarray,
@@ -6626,6 +6918,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._build_preclean_cloth_hair_cleanup_mask = _build_preclean_cloth_hair_cleanup_mask
     cls._build_residual_strand_cleanup_mask = _build_residual_strand_cleanup_mask
     cls._build_final_hair_lane_cleanup_mask = _build_final_hair_lane_cleanup_mask
+    cls._build_center_residual_detector_mask = _build_center_residual_detector_mask
     cls._build_short_bob_tail_suppress_mask = _build_short_bob_tail_suppress_mask
     cls._build_short_final_side_lane_refine_mask = _build_short_final_side_lane_refine_mask
     cls._build_short_lower_tail_cleanup_mask = _build_short_lower_tail_cleanup_mask
