@@ -729,6 +729,7 @@ def _build_post_cloth_refine_mask(
     protect_mask: Optional[np.ndarray] = None,
     final_hair_mask: Optional[np.ndarray] = None,
     artifact_cleanup_mask: Optional[np.ndarray] = None,
+    exclusion_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     H, W = removal_mask.shape[:2]
     if cloth_mask is None or cloth_mask.shape != (H, W):
@@ -785,6 +786,29 @@ def _build_post_cloth_refine_mask(
             iterations=1,
         )
 
+    exclusion_u8 = np.zeros((H, W), dtype=np.uint8)
+    if exclusion_mask is not None and exclusion_mask.shape == (H, W):
+        exclusion_u8 = (
+            (np.clip(exclusion_mask.astype(np.float32), 0.0, 1.0) > 0.06).astype(np.uint8) * 255
+        )
+        exclusion_u8 = cv2.dilate(
+            exclusion_u8,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (19, 31) if hair_length == "short" else (15, 25),
+            ),
+            iterations=1,
+        )
+        exclusion_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+        exclusion_half_w = max(24, int(face_w * (0.34 if hair_length == "short" else 0.28)))
+        exclusion_left = max(0, cx - exclusion_half_w)
+        exclusion_right = min(W, cx + exclusion_half_w)
+        exclusion_top = max(top, int(cutoff_y + face_h * 0.04))
+        exclusion_bottom = min(H, int(cutoff_y + face_h * (0.98 if hair_length == "short" else 1.20)))
+        if exclusion_top < exclusion_bottom and exclusion_left < exclusion_right:
+            exclusion_gate_u8[exclusion_top:exclusion_bottom, exclusion_left:exclusion_right] = 255
+            exclusion_u8 = cv2.bitwise_and(exclusion_u8, exclusion_gate_u8)
+
     if protect_mask is not None and protect_mask.shape == (H, W):
         protect_u8 = cv2.dilate(
             (np.clip(protect_mask.astype(np.float32), 0.0, 1.0) > 0.16).astype(np.uint8) * 255,
@@ -821,6 +845,11 @@ def _build_post_cloth_refine_mask(
             mask_u8[max_bottom:, :] = 0
             artifact_bonus_u8[max_bottom:, :] = 0
 
+    if int((exclusion_u8 > 0).sum()) > 0:
+        mask_u8 = cv2.bitwise_and(mask_u8, cv2.bitwise_not(exclusion_u8))
+        artifact_bonus_u8 = cv2.bitwise_and(artifact_bonus_u8, cv2.bitwise_not(exclusion_u8))
+
+    if hair_length == "short":
         max_component_area = max(320, int(face_w * face_h * 0.26))
         max_component_width = max(84, int(face_w * 0.88))
         min_component_height = max(12, int(face_h * 0.10))
@@ -2244,6 +2273,7 @@ def _build_final_source_cloth_rescue_mask(
     final_hair_mask: Optional[np.ndarray] = None,
     center_support_mask: Optional[np.ndarray] = None,
     anchor_mask: Optional[np.ndarray] = None,
+    exclusion_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if hair_length not in ("short", "medium"):
         return np.zeros(current_rgb.shape[:2], dtype=np.float32)
@@ -2257,6 +2287,7 @@ def _build_final_source_cloth_rescue_mask(
     x1, y1, x2, y2 = face_bbox
     face_w = max(int(x2 - x1), 1)
     face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
     top = max(0, int(cutoff_y - face_h * 0.04))
@@ -2266,6 +2297,29 @@ def _build_final_source_cloth_rescue_mask(
     if top >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
+
+    exclusion_u8 = np.zeros((H, W), dtype=np.uint8)
+    if exclusion_mask is not None and exclusion_mask.shape == (H, W):
+        exclusion_u8 = (
+            (np.clip(exclusion_mask.astype(np.float32), 0.0, 1.0) > 0.06).astype(np.uint8) * 255
+        )
+        exclusion_u8 = cv2.dilate(
+            exclusion_u8,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (27, 45) if hair_length == "short" else (21, 35),
+            ),
+            iterations=1,
+        )
+        exclusion_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+        exclusion_half_w = max(28, int(face_w * (0.42 if hair_length == "short" else 0.36)))
+        exclusion_left = max(0, cx - exclusion_half_w)
+        exclusion_right = min(W, cx + exclusion_half_w)
+        exclusion_top = max(top, int(cutoff_y + face_h * 0.04))
+        exclusion_bottom = min(bottom, int(cutoff_y + face_h * (1.34 if hair_length == "short" else 1.22)))
+        if exclusion_top < exclusion_bottom and exclusion_left < exclusion_right:
+            exclusion_gate_u8[exclusion_top:exclusion_bottom, exclusion_left:exclusion_right] = 255
+            exclusion_u8 = cv2.bitwise_and(exclusion_u8, exclusion_gate_u8)
 
     cloth_u8 = cv2.dilate(
         (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
@@ -2313,6 +2367,9 @@ def _build_final_source_cloth_rescue_mask(
             else:
                 anchor_lane_u8 = np.zeros((H, W), dtype=np.uint8)
     candidate_cloth_u8 = cv2.bitwise_or(cloth_u8, anchor_u8)
+    if int((exclusion_u8 > 0).sum()) > 0:
+        candidate_cloth_u8 = cv2.bitwise_and(candidate_cloth_u8, cv2.bitwise_not(exclusion_u8))
+        anchor_lane_u8 = cv2.bitwise_and(anchor_lane_u8, cv2.bitwise_not(exclusion_u8))
     if int((candidate_cloth_u8 > 0).sum()) < 60:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -2413,6 +2470,8 @@ def _build_final_source_cloth_rescue_mask(
         iterations=1,
     )
     keep_u8 = cv2.bitwise_and(keep_u8, candidate_cloth_u8)
+    if int((exclusion_u8 > 0).sum()) > 0:
+        keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(exclusion_u8))
     pre_tone_keep_u8 = keep_u8.copy()
 
     visible_cloth_u8 = cv2.bitwise_and(
@@ -2520,6 +2579,8 @@ def _build_final_source_cloth_rescue_mask(
         iterations=1,
     )
     filtered_u8 = cv2.bitwise_and(filtered_u8, candidate_cloth_u8)
+    if int((exclusion_u8 > 0).sum()) > 0:
+        filtered_u8 = cv2.bitwise_and(filtered_u8, cv2.bitwise_not(exclusion_u8))
     if hair_length == "short":
         pre_trim_filtered_u8 = filtered_u8.copy()
         filtered_u8 = self._trim_blocky_short_restore_mask_u8(
@@ -5006,6 +5067,7 @@ def _build_dark_lane_cleanup_mask(
     if top >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
+
     cloth_u8 = cv2.bitwise_and(cloth_u8, corridor_u8)
     if anchor_mask is not None and anchor_mask.shape == (H, W):
         anchor_u8 = cv2.dilate(

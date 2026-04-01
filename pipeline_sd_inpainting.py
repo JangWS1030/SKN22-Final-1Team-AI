@@ -2172,6 +2172,7 @@ class MirrAISDPipeline:
             if debug_images_common is not None and rank == 0:
                 debug_images_common["sd_generated_rank0_512"] = cand["preview_bgr"]
             final_bgr = cand["image_bgr"]
+            pre_post_cloth_center_residual_mask = np.zeros(final_bgr.shape[:2], dtype=np.float32)
             if (
                 self.config.enable_post_cloth_refine
                 and hair_length in ("short", "medium")
@@ -2182,6 +2183,24 @@ class MirrAISDPipeline:
                 try:
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    pre_post_cloth_center_residual_mask = np.clip(
+                        self._build_center_residual_detector_mask(
+                            current_rgb=final_rgb,
+                            source_rgb=img_rgb,
+                            cloth_mask=cloth_restore_mask_for_post,
+                            removal_mask=removal_mask_for_post,
+                            face_bbox=face_bbox,
+                            cutoff_y=cutoff_y_for_post,
+                            hair_length=hair_length,
+                            final_hair_mask=final_hair_mask,
+                            center_support_mask=center_chest_strand_removal_mask,
+                            anchor_mask=(
+                                subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None
+                            ),
+                        ).astype(np.float32),
+                        0.0,
+                        1.0,
+                    )
                     cloth_refine_mask = self._build_post_cloth_refine_mask(
                         removal_mask=removal_mask_for_post,
                         cloth_mask=cloth_restore_mask_for_post,
@@ -2191,8 +2210,20 @@ class MirrAISDPipeline:
                         protect_mask=protect_mask_for_sd,
                         final_hair_mask=final_hair_mask,
                         artifact_cleanup_mask=artifact_cleanup_mask_for_post,
+                        exclusion_mask=pre_post_cloth_center_residual_mask,
                     )
                     cloth_refine_u8 = (cloth_refine_mask > 0.08).astype(np.uint8) * 255
+                    if debug_images_common is not None and rank == 0:
+                        pre_post_cloth_center_residual_u8 = (
+                            (np.clip(pre_post_cloth_center_residual_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(
+                                np.uint8
+                            )
+                            * 255
+                        )
+                        debug_images_common["pipeline_pre_post_cloth_center_residual_exclusion_mask"] = cv2.cvtColor(
+                            pre_post_cloth_center_residual_u8,
+                            cv2.COLOR_GRAY2BGR,
+                        )
                     if int((cloth_refine_u8 > 0).sum()) >= 100:
                         final_rgb = self._sd_refine_removed_region(
                             base_rgb=final_rgb,
@@ -3030,30 +3061,37 @@ class MirrAISDPipeline:
                         final_hair_mask=final_hair_mask,
                         center_support_mask=center_chest_strand_removal_mask,
                         anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
+                        exclusion_mask=center_residual_mask_for_post,
                     )
                     center_residual_rescue_exclusion_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                     if hair_length == "short" and float(center_residual_mask_for_post.sum()) > 0.0:
                         center_residual_rescue_exclusion_u8 = cv2.dilate(
                             (np.clip(center_residual_mask_for_post.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
                             * 255,
-                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 33)),
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 47)),
                             iterations=1,
                         )
-                        center_residual_rescue_exclusion_u8 = cv2.bitwise_and(
-                            center_residual_rescue_exclusion_u8,
-                            (
-                                (np.clip(final_source_cloth_rescue_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(
-                                    np.uint8
-                                )
-                                * 255
-                            ),
-                        )
-                        if int((center_residual_rescue_exclusion_u8 > 0).sum()) >= 40:
+                        center_exclusion_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                        center_gate_half_w = max(28, int((x2 - x1) * 0.42))
+                        center_gate_left = max(0, int(0.5 * (x1 + x2)) - center_gate_half_w)
+                        center_gate_right = min(W, int(0.5 * (x1 + x2)) + center_gate_half_w)
+                        center_gate_top = max(0, int(cutoff_y_for_post + max(y2 - y1, 1) * 0.04))
+                        center_gate_bottom = min(H, int(cutoff_y_for_post + max(y2 - y1, 1) * 1.30))
+                        if center_gate_top < center_gate_bottom and center_gate_left < center_gate_right:
+                            center_exclusion_gate_u8[
+                                center_gate_top:center_gate_bottom,
+                                center_gate_left:center_gate_right,
+                            ] = 255
+                            center_residual_rescue_exclusion_u8 = cv2.bitwise_and(
+                                center_residual_rescue_exclusion_u8,
+                                center_exclusion_gate_u8,
+                            )
+                        if int((center_residual_rescue_exclusion_u8 > 0).sum()) >= 24:
                             exclusion_mask = cv2.GaussianBlur(
                                 center_residual_rescue_exclusion_u8.astype(np.float32) / 255.0,
                                 (0, 0),
-                                sigmaX=2.8,
-                                sigmaY=4.8,
+                                sigmaX=3.8,
+                                sigmaY=6.4,
                             ).astype(np.float32)
                             final_source_cloth_rescue_mask = np.clip(
                                 final_source_cloth_rescue_mask.astype(np.float32) * (1.0 - exclusion_mask),
