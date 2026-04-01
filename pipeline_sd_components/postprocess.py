@@ -1439,8 +1439,6 @@ def _filter_short_torso_box_mask(
     face_w = max(int(x2 - x1), 1)
     face_h = max(int(y2 - y1), 1)
     cx = float(0.5 * (x1 + x2))
-    gender_mode = str(subject_gender_mode or "").strip().lower()
-    lateral_only_short_restore = gender_mode != "male"
 
     removal_u8 = (np.clip(removal_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
     original_px = int((removal_u8 > 0).sum())
