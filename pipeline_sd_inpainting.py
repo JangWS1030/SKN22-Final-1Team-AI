@@ -717,9 +717,22 @@ class MirrAISDPipeline:
             protect_mask=protect_mask_for_sd,
             face_bbox=face_bbox,
         )
+        source_shoulder_contour_anchor_mask = self._build_source_shoulder_contour_anchor_mask(
+            source_torso_hair_mask=source_torso_hair_mask,
+            source_cloth_overlap_mask=source_cloth_overlap_mask,
+            cloth_mask=cloth_mask_dilated,
+            shoulder_bridge_mask=subject_shoulder_bridge_mask,
+            protect_mask=protect_mask_for_sd,
+            face_bbox=face_bbox,
+        )
         source_garment_prepass_px = int(
             (
                 np.clip(source_garment_prepass_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).sum()
+        )
+        source_shoulder_contour_anchor_px = int(
+            (
+                np.clip(source_shoulder_contour_anchor_mask.astype(np.float32), 0.0, 1.0) > 0.08
             ).sum()
         )
         face_w = max(int(face_bbox[2] - face_bbox[0]), 1)
@@ -729,11 +742,15 @@ class MirrAISDPipeline:
             and source_garment_prepass_px >= max(180, int(face_w * face_h * 0.016))
         )
         _store_mask("pipeline_source_garment_prepass_mask", source_garment_prepass_mask)
+        _store_mask("pipeline_source_shoulder_contour_anchor_mask", source_shoulder_contour_anchor_mask)
         if debug_data_common is not None:
             debug_data_common.setdefault("source_cloth_preclean", {})
             debug_data_common["source_cloth_preclean"]["garment_prepass_px"] = source_garment_prepass_px
             debug_data_common["source_cloth_preclean"]["garment_prepass_enabled"] = bool(
                 source_garment_prepass_enabled
+            )
+            debug_data_common["source_cloth_preclean"]["shoulder_contour_anchor_px"] = (
+                source_shoulder_contour_anchor_px
             )
 
         # ── Step 3-e: 숏컷/중단발 — 전략 2 (Post-Inpainting) ────────────────
@@ -837,6 +854,25 @@ class MirrAISDPipeline:
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 15)),
                     iterations=1,
                 ).astype(np.float32) / 255.0
+            if (
+                source_shoulder_contour_anchor_mask is not None
+                and source_shoulder_contour_anchor_mask.shape == (H, W)
+                and float(source_shoulder_contour_anchor_mask.sum()) > 0.0
+            ):
+                shoulder_anchor_forbid = cv2.dilate(
+                    (
+                        np.clip(source_shoulder_contour_anchor_mask.astype(np.float32), 0.0, 1.0) > 0.08
+                    ).astype(np.uint8) * 255,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+                    iterations=1,
+                ).astype(np.float32) / 255.0
+                if shoulder_hair_forbid_for_post is None:
+                    shoulder_hair_forbid_for_post = shoulder_anchor_forbid.astype(np.float32)
+                else:
+                    shoulder_hair_forbid_for_post = np.maximum(
+                        shoulder_hair_forbid_for_post.astype(np.float32),
+                        shoulder_anchor_forbid.astype(np.float32),
+                    ).astype(np.float32)
             _store_mask("pipeline_shoulder_hair_forbid_mask", shoulder_hair_forbid_for_post)
 
             # v4 쪽이 더 안정적이었던 핵심:
@@ -1530,12 +1566,34 @@ class MirrAISDPipeline:
                         source_garment_prepass_px,
                         source_garment_seed,
                     )
+                    if source_shoulder_contour_anchor_px >= 80:
+                        img_rgb_cleaned = self._restore_cloth_overlap_from_source(
+                            source_rgb=img_rgb,
+                            current_rgb=img_rgb_cleaned,
+                            restore_mask=source_shoulder_contour_anchor_mask,
+                            final_hair_mask=None,
+                            tone_reference_rgb=img_rgb,
+                            tone_reference_mask=cloth_mask_dilated,
+                        )
+                        img_rgb_cleaned = self._cv2_refine_cloth_region(
+                            img_rgb_cleaned,
+                            source_shoulder_contour_anchor_mask,
+                            reference_rgb=img_rgb,
+                            reference_mask=cloth_mask_dilated,
+                        )
+                        logger.info(
+                            "[SDPipeline] source shoulder contour restore applied: pixels=%d",
+                            source_shoulder_contour_anchor_px,
+                        )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] source garment prepass 실패(무시): {e}")
                 if debug_data_common is not None:
                     debug_data_common.setdefault("source_cloth_preclean", {})
                     debug_data_common["source_cloth_preclean"]["garment_prepass_applied"] = bool(
                         source_garment_prepass_applied
+                    )
+                    debug_data_common["source_cloth_preclean"]["shoulder_contour_restore_applied"] = bool(
+                        source_shoulder_contour_anchor_px >= 80 and source_garment_prepass_applied
                     )
 
             if hair_length == "short":
@@ -3658,6 +3716,141 @@ class MirrAISDPipeline:
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
         )
         return garment_u8.astype(np.float32) / 255.0
+
+    def _build_source_shoulder_contour_anchor_mask(
+        self,
+        *,
+        source_torso_hair_mask: Optional[np.ndarray],
+        source_cloth_overlap_mask: Optional[np.ndarray],
+        cloth_mask: Optional[np.ndarray],
+        shoulder_bridge_mask: Optional[np.ndarray],
+        protect_mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+    ) -> np.ndarray:
+        base_shape = None
+        for mask in (
+            cloth_mask,
+            source_torso_hair_mask,
+            source_cloth_overlap_mask,
+            shoulder_bridge_mask,
+            protect_mask,
+        ):
+            if isinstance(mask, np.ndarray):
+                base_shape = mask.shape[:2]
+                break
+        if base_shape is None:
+            return np.zeros((1, 1), dtype=np.float32)
+
+        H, W = base_shape
+        if cloth_mask is not None and cloth_mask.shape != (H, W):
+            cloth_mask = None
+        if source_torso_hair_mask is not None and source_torso_hair_mask.shape != (H, W):
+            source_torso_hair_mask = None
+        if source_cloth_overlap_mask is not None and source_cloth_overlap_mask.shape != (H, W):
+            source_cloth_overlap_mask = None
+        if shoulder_bridge_mask is not None and shoulder_bridge_mask.shape != (H, W):
+            shoulder_bridge_mask = None
+        if protect_mask is not None and protect_mask.shape != (H, W):
+            protect_mask = None
+
+        x1, y1, x2, y2 = [int(v) for v in face_bbox]
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+
+        shoulder_band_u8 = np.zeros((H, W), dtype=np.uint8)
+        top = max(0, int(y2 + face_h * 0.00))
+        bottom = min(H, int(y2 + face_h * 0.68))
+        left = max(0, int(x1 - face_w * 1.34))
+        right = min(W, int(x2 + face_w * 1.34))
+        if top >= bottom or left >= right:
+            return np.zeros((H, W), dtype=np.float32)
+        shoulder_band_u8[top:bottom, left:right] = 255
+
+        anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+        if cloth_mask is not None:
+            cloth_u8 = (
+                np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04
+            ).astype(np.uint8) * 255
+            cloth_outer_u8 = cv2.dilate(
+                cloth_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19)),
+                iterations=1,
+            )
+            cloth_inner_u8 = cv2.erode(
+                cloth_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+                iterations=1,
+            )
+            cloth_edge_u8 = cv2.subtract(cloth_outer_u8, cloth_inner_u8)
+            anchor_u8 = cv2.bitwise_and(cloth_edge_u8, shoulder_band_u8)
+
+        support_u8 = np.zeros((H, W), dtype=np.uint8)
+        if source_torso_hair_mask is not None:
+            torso_u8 = (
+                np.clip(source_torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            torso_u8 = cv2.dilate(
+                torso_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 23)),
+                iterations=1,
+            )
+            support_u8 = cv2.bitwise_or(support_u8, torso_u8)
+        if source_cloth_overlap_mask is not None:
+            overlap_u8 = (
+                np.clip(source_cloth_overlap_mask.astype(np.float32), 0.0, 1.0) > 0.04
+            ).astype(np.uint8) * 255
+            overlap_u8 = cv2.dilate(
+                overlap_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
+                iterations=1,
+            )
+            support_u8 = cv2.bitwise_or(support_u8, overlap_u8)
+        if shoulder_bridge_mask is not None:
+            bridge_u8 = (
+                np.clip(shoulder_bridge_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            bridge_u8 = cv2.bitwise_and(bridge_u8, shoulder_band_u8)
+            bridge_u8 = cv2.dilate(
+                bridge_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+                iterations=1,
+            )
+            support_u8 = cv2.bitwise_or(support_u8, bridge_u8)
+
+        if int((support_u8 > 0).sum()) >= 80:
+            focused_u8 = cv2.bitwise_and(anchor_u8, support_u8)
+            if int((focused_u8 > 0).sum()) >= 60:
+                anchor_u8 = focused_u8
+
+        anchor_u8 = cv2.morphologyEx(
+            anchor_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+        )
+        anchor_u8 = cv2.dilate(
+            anchor_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
+            iterations=1,
+        )
+
+        if protect_mask is not None:
+            protect_u8 = (
+                np.clip(protect_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            protect_u8 = cv2.dilate(
+                protect_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+                iterations=1,
+            )
+            anchor_u8 = cv2.bitwise_and(anchor_u8, cv2.bitwise_not(protect_u8))
+
+        anchor_u8 = cv2.bitwise_and(anchor_u8, shoulder_band_u8)
+        anchor_u8 = cv2.morphologyEx(
+            anchor_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+        return anchor_u8.astype(np.float32) / 255.0
 
     def _estimate_head_generation_box(
         self,
