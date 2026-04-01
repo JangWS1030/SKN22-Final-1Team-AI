@@ -1008,6 +1008,7 @@ class MirrAISDPipeline:
                 face_w = max(int(x2f - x1f), 1)
                 face_h = max(int(y2f - y1f), 1)
                 face_cx = int(0.5 * (x1f + x2f))
+                male_short_volume_boost = subject_gender_mode == "male"
                 seed_top = max(0, int(head_y1))
                 seed_bottom = min(H, int(min(cutoff_y + face_h * 0.06, y2f + face_h * 0.26)))
                 seed_left = max(0, int(x1f - face_w * 0.72))
@@ -1018,9 +1019,20 @@ class MirrAISDPipeline:
                     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
                     corridor_u8[seed_top:seed_bottom, seed_left:seed_right] = 255
 
-                    crown_center_y = int(max(seed_top + 1, min(seed_bottom - 1, y1f + face_h * 0.12)))
-                    crown_axes_y = max(26, int((seed_bottom - seed_top) * 0.44))
-                    crown_axes_x = max(24, int(face_w * 0.72))
+                    crown_center_y = int(
+                        max(
+                            seed_top + 1,
+                            min(
+                                seed_bottom - 1,
+                                y1f + face_h * (0.08 if male_short_volume_boost else 0.12),
+                            ),
+                        )
+                    )
+                    crown_axes_y = max(
+                        26,
+                        int((seed_bottom - seed_top) * (0.52 if male_short_volume_boost else 0.44)),
+                    )
+                    crown_axes_x = max(24, int(face_w * (0.78 if male_short_volume_boost else 0.72)))
                     cv2.ellipse(
                         short_seed_u8,
                         (face_cx, crown_center_y),
@@ -1032,10 +1044,10 @@ class MirrAISDPipeline:
                         thickness=-1,
                     )
 
-                    side_top = max(seed_top, int(y1f + face_h * 0.06))
+                    side_top = max(seed_top, int(y1f + face_h * (0.02 if male_short_volume_boost else 0.06)))
                     side_bottom = min(seed_bottom, int(y2f + face_h * 0.10))
                     side_inner_gap = max(16, int(face_w * 0.18))
-                    side_outer_span = max(22, int(face_w * 0.56))
+                    side_outer_span = max(22, int(face_w * (0.60 if male_short_volume_boost else 0.56)))
                     left_outer = max(0, int(face_cx - side_outer_span))
                     left_inner = max(left_outer + 1, int(face_cx - side_inner_gap))
                     right_inner = min(W - 1, int(face_cx + side_inner_gap))
@@ -1049,7 +1061,7 @@ class MirrAISDPipeline:
                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
                         iterations=1,
                     )
-                    prior_cap_y = min(seed_bottom, int(y1f + face_h * 0.32))
+                    prior_cap_y = min(seed_bottom, int(y1f + face_h * (0.38 if male_short_volume_boost else 0.32)))
                     if prior_cap_y < H:
                         upper_prior_u8[prior_cap_y:, :] = 0
                     short_seed_u8 = cv2.bitwise_or(short_seed_u8, upper_prior_u8)
@@ -1138,9 +1150,14 @@ class MirrAISDPipeline:
                     iterations=1,
                 )
                 short_volume_cap_u8 = np.zeros((H, W), dtype=np.uint8)
-                cap_center_y = int(max(seed_top + 1, min(H - 1, y1f + face_h * 0.18)))
-                cap_axes_x = max(24, int(face_w * 0.58))
-                cap_axes_y = max(30, int(face_h * 0.72))
+                cap_center_y = int(
+                    max(
+                        seed_top + 1,
+                        min(H - 1, y1f + face_h * (0.14 if male_short_volume_boost else 0.18)),
+                    )
+                )
+                cap_axes_x = max(24, int(face_w * (0.64 if male_short_volume_boost else 0.58)))
+                cap_axes_y = max(30, int(face_h * (0.84 if male_short_volume_boost else 0.72)))
                 cv2.ellipse(
                     short_volume_cap_u8,
                     (face_cx, cap_center_y),
@@ -1151,10 +1168,10 @@ class MirrAISDPipeline:
                     255,
                     thickness=-1,
                 )
-                cap_side_top = max(seed_top, int(y1f + face_h * 0.12))
-                cap_side_bottom = min(H, int(y2f + face_h * 0.18))
+                cap_side_top = max(seed_top, int(y1f + face_h * (0.08 if male_short_volume_boost else 0.12)))
+                cap_side_bottom = min(H, int(y2f + face_h * (0.22 if male_short_volume_boost else 0.18)))
                 cap_inner_gap = max(10, int(face_w * 0.18))
-                cap_outer_span = max(18, int(face_w * 0.52))
+                cap_outer_span = max(18, int(face_w * (0.58 if male_short_volume_boost else 0.52)))
                 cap_left_outer = max(0, int(face_cx - cap_outer_span))
                 cap_left_inner = max(cap_left_outer + 1, int(face_cx - cap_inner_gap))
                 cap_right_inner = min(W - 1, int(face_cx + cap_inner_gap))
@@ -1169,7 +1186,7 @@ class MirrAISDPipeline:
                     sigmaY=3.4,
                 ).astype(np.float32)
                 gen_mask = np.clip(
-                    gen_mask * np.clip(short_volume_cap * 1.24, 0.0, 1.0),
+                    gen_mask * np.clip(short_volume_cap * (1.34 if male_short_volume_boost else 1.24), 0.0, 1.0),
                     0.0,
                     1.0,
                 )

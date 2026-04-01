@@ -120,9 +120,9 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
         token in lowered
         for token in ("swept-back", "swept back", "side part", "side-part", "dandy", "two block", "two-block", "comma", "regent")
     ):
-        base_style = "clean masculine layered haircut with shorter back and sides"
+        base_style = "clean masculine layered haircut with natural crown lift and shorter back and sides"
         hints.extend([
-            "controlled top volume",
+            "soft lifted top volume",
             "soft front movement",
             "balanced side silhouette",
         ])
@@ -136,7 +136,7 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
         base_style = "clean masculine short layered haircut"
         hints.extend([
             "balanced side shape",
-            "controlled top texture",
+            "natural top texture with light lift",
         ])
 
     if "bang" in lowered or "fringe" in lowered:

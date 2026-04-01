@@ -45,13 +45,33 @@
 - `requirements-train.txt`: 학습/평가용 추가 의존성
 - `requirements-dev.txt`: 로컬 개발용 추가 의존성
 - `requirements-trends.txt`: 트렌드 크롤링/RAG 전용 의존성
+- `environment.yml`: 로컬 Conda 환경(`final_ai`) 재현용 설정
 
 `pipeline_sd_components/` 분리는 코드 구조 변경만 포함하고, 런타임/학습용 서드파티 패키지 추가는 없습니다.
 
-런타임 설치:
+권장 로컬 환경 생성:
+
+```bash
+conda env create -f environment.yml
+conda activate final_ai
+```
+
+기존 `final_ai` 환경 의존성 업데이트:
+
+```bash
+conda env update -n final_ai -f environment.yml --prune
+```
+
+런타임만 설치:
 
 ```bash
 python -m pip install -r requirements.txt
+```
+
+로컬 개발 환경 설치:
+
+```bash
+python -m pip install -r requirements-dev.txt
 ```
 
 학습/평가 환경 설치:
@@ -519,6 +539,7 @@ push 시 현재 기준으로 아래 워크플로가 동작합니다.
 현재 정리 이후 기본 확인 명령은 아래 두 개입니다.
 
 ```bash
+conda activate final_ai
 python -m py_compile handler_sd.py pipeline_sd_inpainting.py pipeline_sd_components/loading.py pipeline_sd_components/prompt.py pipeline_sd_components/postprocess.py runtime_download.py scripts/runpod_release.py
 python test_runpod.py --health-check
 ```
