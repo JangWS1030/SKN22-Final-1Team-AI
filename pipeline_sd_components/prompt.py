@@ -168,6 +168,9 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
     if is_afro_style:
         hints.append("coil definition from root to tip")
         hints.append("no loose straight flyaway strands")
+        hints.append("no center part")
+        hints.append("no straight side wings")
+        hints.append("no parted curtain fringe")
     elif any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
         hints.append("light natural texture")
     elif any(token in lowered for token in ("straight", "sleek")):
@@ -230,6 +233,9 @@ def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
     if is_afro_style:
         hints.append("tight coil definition")
         hints.append("no straight dangling strands")
+        hints.append("no center part")
+        hints.append("no straight side wings")
+        hints.append("no parted curtain fringe")
     elif any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
         hints.append("light natural texture")
     elif any(token in lowered for token in ("straight", "sleek")):
