@@ -2967,6 +2967,7 @@ class MirrAISDPipeline:
                         torso_mask=short_below_bob_torso_mask,
                         torso_anchor_mask=subject_torso_anchor_mask,
                         shoulder_bridge_mask=subject_shoulder_bridge_mask,
+                        sam2_hair_mask=hair_mask_for_removal,
                         face_mask=face_region_mask,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,

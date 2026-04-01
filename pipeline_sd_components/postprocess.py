@@ -1333,6 +1333,7 @@ def _build_short_torso_garment_repaint_mask(
     torso_mask: Optional[np.ndarray],
     torso_anchor_mask: Optional[np.ndarray],
     shoulder_bridge_mask: Optional[np.ndarray],
+    sam2_hair_mask: Optional[np.ndarray],
     face_mask: Optional[np.ndarray],
     face_bbox: Tuple[int, int, int, int],
     cutoff_y: int,
@@ -1342,14 +1343,14 @@ def _build_short_torso_garment_repaint_mask(
 ) -> np.ndarray:
     if hair_length != "short":
         base_shape = None
-        for mask in (cloth_mask, torso_mask, torso_anchor_mask, shoulder_bridge_mask, face_mask):
+        for mask in (cloth_mask, torso_mask, torso_anchor_mask, shoulder_bridge_mask, sam2_hair_mask, face_mask):
             if isinstance(mask, np.ndarray):
                 base_shape = mask.shape[:2]
                 break
         return np.zeros(base_shape or (1, 1), dtype=np.float32)
 
     base_shape = None
-    for mask in (cloth_mask, torso_mask, torso_anchor_mask, shoulder_bridge_mask, face_mask):
+    for mask in (cloth_mask, torso_mask, torso_anchor_mask, shoulder_bridge_mask, sam2_hair_mask, face_mask):
         if isinstance(mask, np.ndarray):
             base_shape = mask.shape[:2]
             break
@@ -1365,6 +1366,8 @@ def _build_short_torso_garment_repaint_mask(
         torso_anchor_mask = None
     if shoulder_bridge_mask is not None and shoulder_bridge_mask.shape != (H, W):
         shoulder_bridge_mask = None
+    if sam2_hair_mask is not None and sam2_hair_mask.shape != (H, W):
+        sam2_hair_mask = None
     if face_mask is not None and face_mask.shape != (H, W):
         face_mask = None
     if final_hair_mask is not None and final_hair_mask.shape != (H, W):
@@ -1386,10 +1389,11 @@ def _build_short_torso_garment_repaint_mask(
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
 
-    candidate_u8 = np.zeros((H, W), dtype=np.uint8)
+    support_u8 = np.zeros((H, W), dtype=np.uint8)
     cloth_u8 = np.zeros((H, W), dtype=np.uint8)
     torso_anchor_u8 = np.zeros((H, W), dtype=np.uint8)
     bridge_u8 = np.zeros((H, W), dtype=np.uint8)
+    sam2_torso_u8 = np.zeros((H, W), dtype=np.uint8)
 
     if cloth_mask is not None:
         cloth_u8 = cv2.dilate(
@@ -1398,8 +1402,8 @@ def _build_short_torso_garment_repaint_mask(
             iterations=1,
         )
     if torso_mask is not None:
-        candidate_u8 = cv2.bitwise_or(
-            candidate_u8,
+        support_u8 = cv2.bitwise_or(
+            support_u8,
             cv2.dilate(
                 (np.clip(torso_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 25)),
@@ -1412,17 +1416,17 @@ def _build_short_torso_garment_repaint_mask(
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 21)),
             iterations=1,
         )
-        candidate_u8 = cv2.bitwise_or(candidate_u8, torso_anchor_u8)
+        support_u8 = cv2.bitwise_or(support_u8, torso_anchor_u8)
     if shoulder_bridge_mask is not None:
         bridge_u8 = cv2.dilate(
             (np.clip(shoulder_bridge_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 15)),
             iterations=1,
         )
-        candidate_u8 = cv2.bitwise_or(candidate_u8, bridge_u8)
+        support_u8 = cv2.bitwise_or(support_u8, bridge_u8)
 
-    candidate_u8 = cv2.bitwise_and(candidate_u8, corridor_u8)
-    if int((candidate_u8 > 0).sum()) < 100:
+    support_u8 = cv2.bitwise_and(support_u8, corridor_u8)
+    if int((support_u8 > 0).sum()) < 100:
         return np.zeros((H, W), dtype=np.float32)
 
     if int((cloth_u8 > 0).sum()) > 0 or int((torso_anchor_u8 > 0).sum()) > 0:
@@ -1435,7 +1439,27 @@ def _build_short_torso_garment_repaint_mask(
             torso_anchor_u8,
         )
         support_u8 = cv2.bitwise_or(support_u8, bridge_u8)
-        candidate_u8 = cv2.bitwise_and(candidate_u8, support_u8)
+    support_u8 = cv2.bitwise_and(support_u8, corridor_u8)
+    if int((support_u8 > 0).sum()) < 100:
+        return np.zeros((H, W), dtype=np.float32)
+
+    if sam2_hair_mask is not None:
+        sam2_torso_u8 = cv2.dilate(
+            (np.clip(sam2_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+            iterations=1,
+        )
+        sam2_torso_u8 = cv2.bitwise_and(sam2_torso_u8, corridor_u8)
+        candidate_u8 = cv2.bitwise_and(
+            sam2_torso_u8,
+            cv2.dilate(
+                support_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 21)),
+                iterations=1,
+            ),
+        )
+    else:
+        candidate_u8 = support_u8.copy()
     if int((candidate_u8 > 0).sum()) < 100:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -1503,7 +1527,7 @@ def _build_short_torso_garment_repaint_mask(
     )
     candidate_u8 = cv2.dilate(
         candidate_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
         iterations=1,
     )
     candidate_u8 = cv2.bitwise_and(candidate_u8, corridor_u8)
