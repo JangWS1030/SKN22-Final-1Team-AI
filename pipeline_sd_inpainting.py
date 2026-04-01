@@ -486,6 +486,7 @@ class MirrAISDPipeline:
         _store_mask("segface_face_region_mask", face_region_mask)
         _store_mask("segface_cloth_mask", cloth_mask)
         segface_debug = self._last_segface_mask_debug or {}
+        raw_cloth_mask = segface_debug.get("raw_cloth_mask")
         custom_hair_mask = segface_debug.get("custom_hair_mask")
         base_hair_mask = segface_debug.get("base_hair_mask")
         base_hair_support_mask = segface_debug.get("base_hair_support_mask")
@@ -502,6 +503,8 @@ class MirrAISDPipeline:
             _store_mask("segface_base_hair_mask", base_hair_mask)
         if isinstance(base_hair_support_mask, np.ndarray):
             _store_mask("segface_base_hair_support_mask", base_hair_support_mask)
+        if isinstance(raw_cloth_mask, np.ndarray):
+            _store_mask("segface_raw_cloth_mask", raw_cloth_mask)
         if isinstance(glasses_mask, np.ndarray):
             _store_mask("segface_glasses_mask", glasses_mask)
         if isinstance(earring_mask, np.ndarray):
@@ -517,9 +520,12 @@ class MirrAISDPipeline:
         if isinstance(subject_shoulder_bridge_mask, np.ndarray):
             _store_mask("segface_subject_shoulder_bridge_mask", subject_shoulder_bridge_mask)
         subject_torso_anchor_mask = segface_debug.get("subject_torso_anchor_mask")
+        subject_torso_candidate_mask = segface_debug.get("subject_torso_candidate_mask")
         subject_torso_filtered_mask = segface_debug.get("subject_torso_filtered_mask")
         if isinstance(subject_torso_anchor_mask, np.ndarray):
             _store_mask("segface_subject_torso_anchor_mask", subject_torso_anchor_mask)
+        if isinstance(subject_torso_candidate_mask, np.ndarray):
+            _store_mask("segface_subject_torso_candidate_mask", subject_torso_candidate_mask)
         if isinstance(subject_torso_filtered_mask, np.ndarray):
             _store_mask("segface_subject_torso_filtered_mask", subject_torso_filtered_mask)
         if debug_data_common is not None and segface_debug.get("meta"):
@@ -2979,6 +2985,15 @@ class MirrAISDPipeline:
                         (garment_repaint_mask > 0.08).astype(np.uint8) * 255
                     )
                     garment_repaint_px = int((garment_repaint_u8 > 0).sum())
+                    if debug_images_common is not None and rank == 0:
+                        debug_images_common["pipeline_short_below_bob_torso_mask"] = cv2.cvtColor(
+                            ((np.clip(short_below_bob_torso_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255),
+                            cv2.COLOR_GRAY2BGR,
+                        )
+                        debug_images_common["pipeline_controlnet_garment_repaint_mask"] = cv2.cvtColor(
+                            garment_repaint_u8,
+                            cv2.COLOR_GRAY2BGR,
+                        )
                     if garment_repaint_px >= 120:
                         final_rgb = self._sd_refine_removed_region(
                             base_rgb=final_rgb,
@@ -2992,15 +3007,6 @@ class MirrAISDPipeline:
                             refine_mode="garment",
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
-                    if debug_images_common is not None and rank == 0:
-                        debug_images_common["pipeline_short_below_bob_torso_mask"] = cv2.cvtColor(
-                            ((np.clip(short_below_bob_torso_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255),
-                            cv2.COLOR_GRAY2BGR,
-                        )
-                        debug_images_common["pipeline_controlnet_garment_repaint_mask"] = cv2.cvtColor(
-                            garment_repaint_u8,
-                            cv2.COLOR_GRAY2BGR,
-                        )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] controlnet garment repaint failed (ignored): {e}")
             try:
@@ -3690,6 +3696,7 @@ class MirrAISDPipeline:
         base_hair_support_orig[crop_y1:crop_y2, crop_x1:crop_x2] = base_hair_support
 
         self._last_segface_mask_debug = {
+            "raw_cloth_mask": (cloth_orig > 0.5).astype(np.float32),
             "custom_hair_mask": (custom_hair_orig > 0.5).astype(np.float32),
             "base_hair_mask": (base_hair_orig > 0.5).astype(np.float32),
             "base_hair_support_mask": (base_hair_support_orig > 0.5).astype(np.float32),
@@ -3983,6 +3990,9 @@ class MirrAISDPipeline:
             ).astype(np.float32)
             self._last_segface_mask_debug["subject_torso_anchor_mask"] = (
                 subject_torso_anchor_u8 > 0
+            ).astype(np.float32)
+            self._last_segface_mask_debug["subject_torso_candidate_mask"] = (
+                torso_cloth_u8 > 0
             ).astype(np.float32)
             self._last_segface_mask_debug["subject_cloth_filtered_mask"] = (
                 cloth_u8 > 0
