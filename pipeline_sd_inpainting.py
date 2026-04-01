@@ -958,11 +958,11 @@ class MirrAISDPipeline:
                         iterations=1,
                     )
                     center_cloth_restore_gate_u8 = np.zeros((H, W), dtype=np.uint8)
-                    center_gate_half_w = max(22, int(face_w * 0.31))
+                    center_gate_half_w = max(24, int(face_w * 0.35))
                     center_gate_left = max(0, int(0.5 * (face_x1 + face_x2)) - center_gate_half_w)
                     center_gate_right = min(W, int(0.5 * (face_x1 + face_x2)) + center_gate_half_w)
-                    center_gate_top = max(0, int(cutoff_y + face_h * 0.04))
-                    center_gate_bottom = min(H, int(cutoff_y + face_h * 1.22))
+                    center_gate_top = max(0, int(cutoff_y + face_h * 0.02))
+                    center_gate_bottom = min(H, int(cutoff_y + face_h * 1.28))
                     if center_gate_top < center_gate_bottom and center_gate_left < center_gate_right:
                         center_cloth_restore_gate_u8[
                             center_gate_top:center_gate_bottom,
@@ -1730,6 +1730,13 @@ class MirrAISDPipeline:
                             preclean_side_restore_mask,
                             np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
                         ).astype(np.float32)
+                    if hair_length == "short" and float(center_cloth_restore_exclusion_mask.sum()) > 0.0:
+                        preclean_side_restore_mask = np.clip(
+                            preclean_side_restore_mask.astype(np.float32)
+                            * (1.0 - np.clip(center_cloth_restore_exclusion_mask * 1.16, 0.0, 1.0)),
+                            0.0,
+                            1.0,
+                        )
                     preclean_side_restore_u8 = (
                         (np.clip(preclean_side_restore_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
                     )
@@ -2742,6 +2749,13 @@ class MirrAISDPipeline:
                             side_column_restore_mask,
                             np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
                         ).astype(np.float32)
+                    if hair_length == "short" and float(center_cloth_restore_exclusion_mask.sum()) > 0.0:
+                        side_column_restore_mask = np.clip(
+                            side_column_restore_mask.astype(np.float32)
+                            * (1.0 - np.clip(center_cloth_restore_exclusion_mask * 1.18, 0.0, 1.0)),
+                            0.0,
+                            1.0,
+                        )
                     side_column_restore_u8 = (
                         (np.clip(side_column_restore_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
                     )
