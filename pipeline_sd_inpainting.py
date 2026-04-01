@@ -116,6 +116,8 @@ _SHORT_HAIR_KEYWORDS = frozenset([
     "short", "bob", "pixie", "buzz", "hush", "crop", "cropped",
     "undercut", "crew cut", "crew", "fade", "taper", "bowl", "chin length", "chin-length",
     "above ear", "above shoulder", "ear length", "single",
+    "comma hair", "comma", "dandy cut", "dandy",
+    "regent cut", "regent", "side part", "side-part", "swept-back", "swept back",
     "단발", "숏컷", "픽시",
 ])
 _MEDIUM_HAIR_KEYWORDS = frozenset([
@@ -124,6 +126,7 @@ _MEDIUM_HAIR_KEYWORDS = frozenset([
     "wolf cut", "soft mullet", "mullet", "baby mullet", "mini mullet",
     "two block", "two-block", "comma hair", "comma", "dandy cut", "dandy",
     "regent cut", "regent", "side part", "side-part", "swept-back", "swept back",
+    "afro", "rounded afro", "curly afro", "coily", "coils", "tight curl", "tight curls",
     "shorter back and sides", "back and sides",
 ])
 
@@ -140,6 +143,7 @@ _MALE_STYLE_HINTS = frozenset([
     "crop", "cropped", "buzz", "crew", "fade", "taper", "undercut",
     "two block", "two-block", "comma", "dandy", "regent",
     "barber", "side part", "side-part", "swept-back", "swept back",
+    "afro", "coily", "coils", "tight curl", "tight curls",
     "shorter back and sides", "back and sides",
 ])
 _FEMALE_STYLE_HINTS = frozenset([
@@ -944,17 +948,20 @@ class MirrAISDPipeline:
                     and cloth_restore_mask_for_post is not None
                     and cloth_restore_mask_for_post.shape == (H, W)
                 ):
+                    face_x1, face_y1, face_x2, face_y2 = [int(v) for v in face_bbox]
+                    face_w = max(face_x2 - face_x1, 1)
+                    face_h = max(face_y2 - face_y1, 1)
                     center_cloth_restore_exclusion_u8 = cv2.dilate(
                         (center_chest_strand_removal_mask > 0.08).astype(np.uint8) * 255,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 39)),
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 45)),
                         iterations=1,
                     )
                     center_cloth_restore_gate_u8 = np.zeros((H, W), dtype=np.uint8)
-                    center_gate_half_w = max(24, int((x2 - x1) * 0.34))
-                    center_gate_left = max(0, int(0.5 * (x1 + x2)) - center_gate_half_w)
-                    center_gate_right = min(W, int(0.5 * (x1 + x2)) + center_gate_half_w)
-                    center_gate_top = max(0, int(cutoff_y + max(y2 - y1, 1) * 0.08))
-                    center_gate_bottom = min(H, int(cutoff_y + max(y2 - y1, 1) * 1.16))
+                    center_gate_half_w = max(22, int(face_w * 0.31))
+                    center_gate_left = max(0, int(0.5 * (face_x1 + face_x2)) - center_gate_half_w)
+                    center_gate_right = min(W, int(0.5 * (face_x1 + face_x2)) + center_gate_half_w)
+                    center_gate_top = max(0, int(cutoff_y + face_h * 0.04))
+                    center_gate_bottom = min(H, int(cutoff_y + face_h * 1.22))
                     if center_gate_top < center_gate_bottom and center_gate_left < center_gate_right:
                         center_cloth_restore_gate_u8[
                             center_gate_top:center_gate_bottom,
@@ -968,8 +975,8 @@ class MirrAISDPipeline:
                         center_cloth_restore_exclusion = cv2.GaussianBlur(
                             center_cloth_restore_exclusion_u8.astype(np.float32) / 255.0,
                             (0, 0),
-                            sigmaX=3.4,
-                            sigmaY=6.2,
+                            sigmaX=3.8,
+                            sigmaY=7.0,
                         ).astype(np.float32)
                         cloth_restore_mask_for_post = np.clip(
                             cloth_restore_mask_for_post.astype(np.float32) * (1.0 - center_cloth_restore_exclusion),

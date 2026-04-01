@@ -108,8 +108,20 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
     raw = " ".join(str(hairstyle_text or "").strip().split())
     lowered = raw.lower()
     hints: List[str] = []
+    is_afro_style = any(
+        token in lowered
+        for token in ("afro", "coily", "coils", "kinky", "tight curl", "tight curls")
+    )
 
-    if any(token in lowered for token in ("mullet", "wolf cut", "soft mullet")):
+    if is_afro_style:
+        base_style = "clean masculine short afro haircut with compact rounded silhouette"
+        hints.extend([
+            "defined tight coils",
+            "dense coily top texture",
+            "controlled rounded side shape",
+            "clean low taper around the ears",
+        ])
+    elif any(token in lowered for token in ("mullet", "wolf cut", "soft mullet", "baby mullet", "mini mullet")):
         base_style = "modern masculine layered wolf cut with controlled soft mullet balance"
         hints.extend([
             "textured crown and top layers",
@@ -118,13 +130,21 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
         ])
     elif any(
         token in lowered
-        for token in ("swept-back", "swept back", "side part", "side-part", "dandy", "two block", "two-block", "comma", "regent")
+        for token in ("side part", "side-part", "dandy", "two block", "two-block", "comma", "comma hair")
     ):
-        base_style = "clean masculine layered haircut with natural crown lift and shorter back and sides"
+        base_style = "clean masculine dandy haircut with neat side-part balance and compact side silhouette"
         hints.extend([
-            "soft lifted top volume",
-            "balanced left-right crown volume",
-            "soft front movement",
+            "controlled crown volume close to the head",
+            "smooth top flow without fluffy lift",
+            "tidy temple shape",
+            "balanced forehead framing",
+        ])
+    elif any(token in lowered for token in ("swept-back", "swept back", "regent")):
+        base_style = "clean masculine regent haircut with restrained swept-back top and tapered sides"
+        hints.extend([
+            "controlled top lift",
+            "compact sides close to the head",
+            "neat back sweep without airy volume",
             "balanced side silhouette",
         ])
     elif any(token in lowered for token in ("buzz", "crew", "fade", "taper", "undercut", "crop", "cropped", "short")):
@@ -145,7 +165,10 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
     else:
         hints.append("natural masculine hairline with balanced forehead coverage")
 
-    if any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
+    if is_afro_style:
+        hints.append("coil definition from root to tip")
+        hints.append("no loose straight flyaway strands")
+    elif any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
         hints.append("light natural texture")
     elif any(token in lowered for token in ("straight", "sleek")):
         hints.append("soft natural finish")
@@ -153,6 +176,8 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
     hints.append("clean ear contour")
     hints.append("no feminine bob silhouette")
     hints.append("no dangling side locks")
+    if any(token in lowered for token in ("side part", "side-part", "dandy", "comma", "comma hair")):
+        hints.append("no oversized fluffy crown")
 
     parts = [base_style]
     for hint in hints:
@@ -164,8 +189,20 @@ def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
     raw = " ".join(str(hairstyle_text or "").strip().split())
     lowered = raw.lower()
     hints: List[str] = []
+    is_afro_style = any(
+        token in lowered
+        for token in ("afro", "coily", "coils", "kinky", "tight curl", "tight curls")
+    )
 
-    if any(token in lowered for token in ("mullet", "wolf cut", "soft mullet", "baby mullet", "mini mullet")):
+    if is_afro_style:
+        base_style = "masculine rounded afro hairstyle with controlled width and defined coils"
+        hints.extend([
+            "dense coily volume",
+            "rounded silhouette around the crown",
+            "controlled temple taper",
+            "compact outline around the face",
+        ])
+    elif any(token in lowered for token in ("mullet", "wolf cut", "soft mullet", "baby mullet", "mini mullet")):
         base_style = "masculine medium layered wolf cut with restrained volume"
         hints.extend([
             "moderate crown height",
@@ -190,7 +227,10 @@ def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
             "controlled side silhouette",
         ])
 
-    if any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
+    if is_afro_style:
+        hints.append("tight coil definition")
+        hints.append("no straight dangling strands")
+    elif any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
         hints.append("light natural texture")
     elif any(token in lowered for token in ("straight", "sleek")):
         hints.append("soft natural finish")
