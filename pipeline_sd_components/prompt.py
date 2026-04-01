@@ -193,6 +193,21 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
             parts.append(hint)
     return ", ".join(parts)
 
+def _is_compact_male_short_style(hairstyle_text: str) -> bool:
+    lowered = " ".join(str(hairstyle_text or "").strip().split()).lower()
+    return any(
+        token in lowered
+        for token in (
+            "side part",
+            "side-part",
+            "dandy",
+            "comma",
+            "comma hair",
+            "two block",
+            "two-block",
+        )
+    )
+
 def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
     raw = " ".join(str(hairstyle_text or "").strip().split())
     lowered = raw.lower()
@@ -590,6 +605,97 @@ def _estimate_male_medium_fit_penalty(
         + 0.01 * absolute_mass_bias_penalty
     )
 
+def _estimate_male_short_fit_penalty(
+    self,
+    img_rgb: np.ndarray,
+    face_bbox: Tuple[int, int, int, int],
+    source_profile: Optional[Dict[str, float]],
+    hairstyle_text: str,
+) -> Optional[float]:
+    if source_profile is None:
+        return None
+
+    candidate_profile = self._estimate_hair_shape_profile(
+        self._segface_hair_mask(img_rgb, face_bbox)[0],
+        face_bbox,
+        hair_length="short",
+    )
+    if candidate_profile is None:
+        return None
+
+    compact_style = self._is_compact_male_short_style(hairstyle_text)
+
+    def _oversize(metric: str, allowance: float, scale: float) -> float:
+        base = float(source_profile.get(metric, 0.0))
+        current = float(candidate_profile.get(metric, 0.0))
+        excess = max(0.0, current - base - allowance)
+        return float(np.clip(excess / max(scale, 1e-6), 0.0, 1.0))
+
+    if compact_style:
+        width_penalty = _oversize("width_ratio", allowance=0.04, scale=0.18)
+        top_penalty = _oversize("top_lift", allowance=0.02, scale=0.10)
+        left_penalty = _oversize("left_overhang", allowance=0.04, scale=0.14)
+        right_penalty = _oversize("right_overhang", allowance=0.04, scale=0.14)
+        area_penalty = _oversize("area_ratio", allowance=0.10, scale=0.26)
+        upper_penalty = _oversize("upper_density", allowance=0.04, scale=0.16)
+        crown_penalty = _oversize("crown_density", allowance=0.04, scale=0.16)
+        side_balance_penalty = _oversize("side_balance", allowance=0.05, scale=0.12)
+        absolute_top_penalty = float(
+            np.clip((float(candidate_profile.get("top_lift", 0.0)) - 0.28) / 0.12, 0.0, 1.0)
+        )
+        absolute_upper_penalty = float(
+            np.clip((float(candidate_profile.get("upper_density", 0.0)) - 0.44) / 0.18, 0.0, 1.0)
+        )
+        absolute_crown_penalty = float(
+            np.clip((float(candidate_profile.get("crown_density", 0.0)) - 0.42) / 0.18, 0.0, 1.0)
+        )
+    else:
+        width_penalty = _oversize("width_ratio", allowance=0.06, scale=0.22)
+        top_penalty = _oversize("top_lift", allowance=0.04, scale=0.14)
+        left_penalty = _oversize("left_overhang", allowance=0.05, scale=0.16)
+        right_penalty = _oversize("right_overhang", allowance=0.05, scale=0.16)
+        area_penalty = _oversize("area_ratio", allowance=0.14, scale=0.32)
+        upper_penalty = _oversize("upper_density", allowance=0.06, scale=0.20)
+        crown_penalty = _oversize("crown_density", allowance=0.06, scale=0.20)
+        side_balance_penalty = _oversize("side_balance", allowance=0.06, scale=0.16)
+        absolute_top_penalty = float(
+            np.clip((float(candidate_profile.get("top_lift", 0.0)) - 0.34) / 0.14, 0.0, 1.0)
+        )
+        absolute_upper_penalty = float(
+            np.clip((float(candidate_profile.get("upper_density", 0.0)) - 0.50) / 0.20, 0.0, 1.0)
+        )
+        absolute_crown_penalty = float(
+            np.clip((float(candidate_profile.get("crown_density", 0.0)) - 0.48) / 0.20, 0.0, 1.0)
+        )
+
+    base_center_bias = abs(float(source_profile.get("center_offset", 0.0)))
+    current_center_bias = abs(float(candidate_profile.get("center_offset", 0.0)))
+    center_offset_penalty = float(
+        np.clip((current_center_bias - base_center_bias - 0.03) / 0.12, 0.0, 1.0)
+    )
+
+    base_mass_bias = abs(float(source_profile.get("mass_center_offset", 0.0)))
+    current_mass_bias = abs(float(candidate_profile.get("mass_center_offset", 0.0)))
+    mass_center_penalty = float(
+        np.clip((current_mass_bias - base_mass_bias - 0.03) / 0.10, 0.0, 1.0)
+    )
+
+    return float(
+        0.12 * width_penalty
+        + 0.22 * top_penalty
+        + 0.07 * left_penalty
+        + 0.07 * right_penalty
+        + 0.10 * area_penalty
+        + 0.09 * upper_penalty
+        + 0.12 * crown_penalty
+        + 0.08 * center_offset_penalty
+        + 0.05 * side_balance_penalty
+        + 0.04 * mass_center_penalty
+        + 0.02 * absolute_top_penalty
+        + 0.01 * absolute_upper_penalty
+        + 0.01 * absolute_crown_penalty
+    )
+
 def _estimate_mask_mass_center_offset(
     mask: Optional[np.ndarray],
     face_bbox: Tuple[int, int, int, int],
@@ -917,6 +1023,7 @@ def bind_prompt_methods_to_pipeline(cls) -> None:
     cls._normalize_subject_gender = staticmethod(_normalize_subject_gender)
     cls._infer_subject_gender = staticmethod(_infer_subject_gender)
     cls._normalize_male_short_hairstyle_prompt_text = staticmethod(_normalize_male_short_hairstyle_prompt_text)
+    cls._is_compact_male_short_style = staticmethod(_is_compact_male_short_style)
     cls._normalize_male_medium_hairstyle_prompt_text = staticmethod(_normalize_male_medium_hairstyle_prompt_text)
     cls._normalize_hairstyle_prompt_text = staticmethod(_normalize_hairstyle_prompt_text)
     cls._resolve_target_hair_lab = staticmethod(_resolve_target_hair_lab)
@@ -924,6 +1031,7 @@ def bind_prompt_methods_to_pipeline(cls) -> None:
     cls._estimate_short_tail_penalty = _estimate_short_tail_penalty
     cls._estimate_accessory_penalty = _estimate_accessory_penalty
     cls._estimate_hair_shape_profile = _estimate_hair_shape_profile
+    cls._estimate_male_short_fit_penalty = _estimate_male_short_fit_penalty
     cls._estimate_male_medium_fit_penalty = _estimate_male_medium_fit_penalty
     cls._estimate_mask_mass_center_offset = staticmethod(_estimate_mask_mass_center_offset)
     cls._preserve_original_hair_tone = _preserve_original_hair_tone

@@ -1082,12 +1082,16 @@ class MirrAISDPipeline:
                 face_w = max(int(x2f - x1f), 1)
                 face_h = max(int(y2f - y1f), 1)
                 face_cx = int(0.5 * (x1f + x2f))
-                male_short_volume_boost = subject_gender_mode == "male"
+                male_short_compact_style = (
+                    subject_gender_mode == "male"
+                    and self._is_compact_male_short_style(effective_hairstyle_text)
+                )
+                male_short_volume_boost = subject_gender_mode == "male" and not male_short_compact_style
                 male_short_dominant_side: Optional[str] = None
                 seed_top = max(0, int(head_y1))
                 seed_bottom = min(H, int(min(cutoff_y + face_h * 0.06, y2f + face_h * 0.26)))
-                seed_left = max(0, int(x1f - face_w * 0.72))
-                seed_right = min(W, int(x2f + face_w * 0.72))
+                seed_left = max(0, int(x1f - face_w * (0.56 if male_short_compact_style else 0.72)))
+                seed_right = min(W, int(x2f + face_w * (0.56 if male_short_compact_style else 0.72)))
                 short_seed_u8 = np.zeros((H, W), dtype=np.uint8)
 
                 if seed_top < seed_bottom and seed_left < seed_right:
@@ -1099,15 +1103,23 @@ class MirrAISDPipeline:
                             seed_top + 1,
                             min(
                                 seed_bottom - 1,
-                                y1f + face_h * (0.08 if male_short_volume_boost else 0.12),
+                                y1f + face_h * (
+                                    0.17 if male_short_compact_style else (0.08 if male_short_volume_boost else 0.12)
+                                ),
                             ),
                         )
                     )
                     crown_axes_y = max(
                         26,
-                        int((seed_bottom - seed_top) * (0.52 if male_short_volume_boost else 0.44)),
+                        int(
+                            (seed_bottom - seed_top)
+                            * (0.34 if male_short_compact_style else (0.52 if male_short_volume_boost else 0.44))
+                        ),
                     )
-                    crown_axes_x = max(24, int(face_w * (0.78 if male_short_volume_boost else 0.72)))
+                    crown_axes_x = max(
+                        24,
+                        int(face_w * (0.62 if male_short_compact_style else (0.78 if male_short_volume_boost else 0.72))),
+                    )
                     cv2.ellipse(
                         short_seed_u8,
                         (face_cx, crown_center_y),
@@ -1119,10 +1131,20 @@ class MirrAISDPipeline:
                         thickness=-1,
                     )
 
-                    side_top = max(seed_top, int(y1f + face_h * (0.02 if male_short_volume_boost else 0.06)))
+                    side_top = max(
+                        seed_top,
+                        int(
+                            y1f
+                            + face_h
+                            * (0.08 if male_short_compact_style else (0.02 if male_short_volume_boost else 0.06))
+                        ),
+                    )
                     side_bottom = min(seed_bottom, int(y2f + face_h * 0.10))
-                    side_inner_gap = max(16, int(face_w * 0.18))
-                    side_outer_span = max(22, int(face_w * (0.60 if male_short_volume_boost else 0.56)))
+                    side_inner_gap = max(16, int(face_w * (0.20 if male_short_compact_style else 0.18)))
+                    side_outer_span = max(
+                        22,
+                        int(face_w * (0.48 if male_short_compact_style else (0.60 if male_short_volume_boost else 0.56))),
+                    )
                     left_outer = max(0, int(face_cx - side_outer_span))
                     left_inner = max(left_outer + 1, int(face_cx - side_inner_gap))
                     right_inner = min(W - 1, int(face_cx + side_inner_gap))
@@ -1136,7 +1158,14 @@ class MirrAISDPipeline:
                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
                         iterations=1,
                     )
-                    prior_cap_y = min(seed_bottom, int(y1f + face_h * (0.38 if male_short_volume_boost else 0.32)))
+                    prior_cap_y = min(
+                        seed_bottom,
+                        int(
+                            y1f
+                            + face_h
+                            * (0.28 if male_short_compact_style else (0.38 if male_short_volume_boost else 0.32))
+                        ),
+                    )
                     if prior_cap_y < H:
                         upper_prior_u8[prior_cap_y:, :] = 0
                     if male_short_volume_boost:
@@ -1158,11 +1187,17 @@ class MirrAISDPipeline:
                     short_seed_u8 = cv2.morphologyEx(
                         short_seed_u8,
                         cv2.MORPH_CLOSE,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+                        cv2.getStructuringElement(
+                            cv2.MORPH_ELLIPSE,
+                            (7, 11) if male_short_compact_style else (9, 13),
+                        ),
                     )
                     short_seed_u8 = cv2.erode(
                         short_seed_u8,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
+                        cv2.getStructuringElement(
+                            cv2.MORPH_ELLIPSE,
+                            (7, 9) if male_short_compact_style else (5, 7),
+                        ),
                         iterations=1,
                     )
                     short_seed_u8 = cv2.dilate(
@@ -1259,11 +1294,22 @@ class MirrAISDPipeline:
                 cap_center_y = int(
                     max(
                         seed_top + 1,
-                        min(H - 1, y1f + face_h * (0.14 if male_short_volume_boost else 0.18)),
+                        min(
+                            H - 1,
+                            y1f
+                            + face_h
+                            * (0.20 if male_short_compact_style else (0.14 if male_short_volume_boost else 0.18)),
+                        ),
                     )
                 )
-                cap_axes_x = max(24, int(face_w * (0.64 if male_short_volume_boost else 0.58)))
-                cap_axes_y = max(30, int(face_h * (0.84 if male_short_volume_boost else 0.72)))
+                cap_axes_x = max(
+                    24,
+                    int(face_w * (0.52 if male_short_compact_style else (0.64 if male_short_volume_boost else 0.58))),
+                )
+                cap_axes_y = max(
+                    30,
+                    int(face_h * (0.60 if male_short_compact_style else (0.84 if male_short_volume_boost else 0.72))),
+                )
                 cv2.ellipse(
                     short_volume_cap_u8,
                     (cap_center_x, cap_center_y),
@@ -1274,10 +1320,23 @@ class MirrAISDPipeline:
                     255,
                     thickness=-1,
                 )
-                cap_side_top = max(seed_top, int(y1f + face_h * (0.08 if male_short_volume_boost else 0.12)))
-                cap_side_bottom = min(H, int(y2f + face_h * (0.22 if male_short_volume_boost else 0.18)))
-                cap_inner_gap = max(10, int(face_w * 0.18))
-                cap_outer_span = max(18, int(face_w * (0.58 if male_short_volume_boost else 0.52)))
+                cap_side_top = max(
+                    seed_top,
+                    int(
+                        y1f
+                        + face_h
+                        * (0.14 if male_short_compact_style else (0.08 if male_short_volume_boost else 0.12))
+                    ),
+                )
+                cap_side_bottom = min(
+                    H,
+                    int(y2f + face_h * (0.14 if male_short_compact_style else (0.22 if male_short_volume_boost else 0.18))),
+                )
+                cap_inner_gap = max(10, int(face_w * (0.21 if male_short_compact_style else 0.18)))
+                cap_outer_span = max(
+                    18,
+                    int(face_w * (0.44 if male_short_compact_style else (0.58 if male_short_volume_boost else 0.52))),
+                )
                 cap_left_outer = max(0, int(face_cx - cap_outer_span))
                 cap_left_inner = max(cap_left_outer + 1, int(face_cx - cap_inner_gap))
                 cap_right_inner = min(W - 1, int(face_cx + cap_inner_gap))
@@ -1296,7 +1355,17 @@ class MirrAISDPipeline:
                     sigmaY=3.4,
                 ).astype(np.float32)
                 gen_mask = np.clip(
-                    gen_mask * np.clip(short_volume_cap * (1.34 if male_short_volume_boost else 1.24), 0.0, 1.0),
+                    gen_mask
+                    * np.clip(
+                        short_volume_cap
+                        * (
+                            1.14
+                            if male_short_compact_style
+                            else (1.34 if male_short_volume_boost else 1.24)
+                        ),
+                        0.0,
+                        1.0,
+                    ),
                     0.0,
                     1.0,
                 )
@@ -2077,11 +2146,18 @@ class MirrAISDPipeline:
         composite_base_rgb = img_rgb_cleaned
         composite_base_bgr = cv2.cvtColor(composite_base_rgb, cv2.COLOR_RGB2BGR)
         male_medium_source_profile: Optional[Dict[str, float]] = None
+        male_short_source_profile: Optional[Dict[str, float]] = None
         if hair_length == "medium" and subject_gender_mode == "male":
             male_medium_source_profile = self._estimate_hair_shape_profile(
                 hair_mask_base,
                 face_bbox,
                 hair_length="medium",
+            )
+        if hair_length == "short" and subject_gender_mode == "male":
+            male_short_source_profile = self._estimate_hair_shape_profile(
+                hair_mask_base,
+                face_bbox,
+                hair_length="short",
             )
 
         candidates: List[Dict[str, Any]] = []
@@ -2212,6 +2288,19 @@ class MirrAISDPipeline:
                 except Exception as e:
                     logger.warning(f"[SDPipeline] male medium fit penalty 怨꾩궛 ?ㅽ뙣(臾댁떆): {e}")
 
+            male_short_fit_penalty: Optional[float] = None
+            if hair_length == "short" and subject_gender_mode == "male":
+                try:
+                    post_rgb = cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB)
+                    male_short_fit_penalty = self._estimate_male_short_fit_penalty(
+                        img_rgb=post_rgb,
+                        face_bbox=face_bbox,
+                        source_profile=male_short_source_profile,
+                        hairstyle_text=effective_hairstyle_text,
+                    )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] male short fit penalty calculation failed (ignored): {e}")
+
             candidates.append({
                 "seed": seed,
                 "image_bgr": composited_bgr,
@@ -2221,6 +2310,7 @@ class MirrAISDPipeline:
                 "tail_penalty": tail_penalty,
                 "accessory_penalty": accessory_penalty,
                 "male_medium_fit_penalty": male_medium_fit_penalty,
+                "male_short_fit_penalty": male_short_fit_penalty,
                 "gen_idx": gen_idx,
             })
 
@@ -2233,6 +2323,8 @@ class MirrAISDPipeline:
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
                         c["male_medium_fit_penalty"] is None,
                         c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
+                        c["male_short_fit_penalty"] is None,
+                        c["male_short_fit_penalty"] if c["male_short_fit_penalty"] is not None else 1e9,
                         c["color_distance"] is None,
                         c["color_distance"] if c["color_distance"] is not None else 1e9,
                         c["gen_idx"],
@@ -2244,28 +2336,36 @@ class MirrAISDPipeline:
         elif len(candidates) > 1:
             accessory_sortable = sum(c["accessory_penalty"] is not None for c in candidates)
             fit_sortable = sum(c["male_medium_fit_penalty"] is not None for c in candidates)
-            if accessory_sortable >= 2 or fit_sortable >= 2:
+            short_fit_sortable = sum(c["male_short_fit_penalty"] is not None for c in candidates)
+            if accessory_sortable >= 2 or fit_sortable >= 2 or short_fit_sortable >= 2:
                 candidates.sort(
                     key=lambda c: (
                         c["accessory_penalty"] is None,
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
                         c["male_medium_fit_penalty"] is None,
                         c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
+                        c["male_short_fit_penalty"] is None,
+                        c["male_short_fit_penalty"] if c["male_short_fit_penalty"] is not None else 1e9,
                         c["gen_idx"],
                     )
                 )
                 if fit_sortable >= 2:
                     logger.info("[SDPipeline] male medium fit ranking applied")
+                elif short_fit_sortable >= 2:
+                    logger.info("[SDPipeline] male short fit ranking applied")
                 else:
                     logger.info("[SDPipeline] accessory penalty ranking applied")
 
         if hair_length == "short" and len(candidates) > 1:
             tail_sortable = sum(c["tail_penalty"] is not None for c in candidates)
-            if tail_sortable >= 2:
+            short_fit_sortable = sum(c["male_short_fit_penalty"] is not None for c in candidates)
+            if tail_sortable >= 2 or short_fit_sortable >= 2:
                 candidates.sort(
                     key=lambda c: (
                         c["accessory_penalty"] is None,
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                        c["male_short_fit_penalty"] is None,
+                        c["male_short_fit_penalty"] if c["male_short_fit_penalty"] is not None else 1e9,
                         c["tail_penalty"] is None,
                         c["tail_penalty"] if c["tail_penalty"] is not None else 1e9,
                         c["color_distance"] is None,
@@ -2273,7 +2373,10 @@ class MirrAISDPipeline:
                         c["gen_idx"],
                     )
                 )
-                logger.info("[SDPipeline] short tail penalty ranking applied")
+                if short_fit_sortable >= 2:
+                    logger.info("[SDPipeline] male short fit + short tail ranking applied")
+                else:
+                    logger.info("[SDPipeline] short tail penalty ranking applied")
 
         results: List[SDInpaintResult] = []
         for rank, cand in enumerate(candidates[:requested_top_k]):
