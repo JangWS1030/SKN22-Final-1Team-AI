@@ -1696,6 +1696,7 @@ class MirrAISDPipeline:
                         cutoff_y=cutoff_y,
                         hair_length=hair_length,
                         final_hair_mask=None,
+                        subject_gender_mode=subject_gender_mode,
                     )
                     direct_preclean_side_restore_mask = self._build_direct_short_column_restore_mask(
                         removal_mask=removal_mask_for_post,
@@ -1703,6 +1704,7 @@ class MirrAISDPipeline:
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y,
                         hair_length=hair_length,
+                        subject_gender_mode=subject_gender_mode,
                     )
                     if hair_length == "short" and float(center_cloth_restore_exclusion_mask.sum()) > 0.0:
                         preclean_side_restore_mask = np.clip(
@@ -2715,6 +2717,7 @@ class MirrAISDPipeline:
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
                         final_hair_mask=final_hair_mask,
+                        subject_gender_mode=subject_gender_mode,
                     )
                     direct_side_column_restore_mask = self._build_direct_short_column_restore_mask(
                         removal_mask=removal_mask_for_post,
@@ -2722,6 +2725,7 @@ class MirrAISDPipeline:
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
+                        subject_gender_mode=subject_gender_mode,
                     )
                     if hair_length == "short" and float(center_cloth_restore_exclusion_mask.sum()) > 0.0:
                         side_column_restore_mask = np.clip(

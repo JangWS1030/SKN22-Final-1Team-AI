@@ -135,7 +135,10 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
         base_style = "clean masculine dandy haircut with neat side-part balance and compact side silhouette"
         hints.extend([
             "controlled crown volume close to the head",
+            "neat top line with low volume",
             "smooth top flow without fluffy lift",
+            "flat side-part transition without winged lift",
+            "compact side panels close to the head",
             "tidy temple shape",
             "balanced forehead framing",
         ])
@@ -181,6 +184,8 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
     hints.append("no dangling side locks")
     if any(token in lowered for token in ("side part", "side-part", "dandy", "comma", "comma hair")):
         hints.append("no oversized fluffy crown")
+        hints.append("no airy side flare")
+        hints.append("no winged side-part lift")
 
     parts = [base_style]
     for hint in hints:
