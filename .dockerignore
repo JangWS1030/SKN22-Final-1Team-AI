@@ -53,3 +53,6 @@ tmp/
 *.egg-info/
 dist/
 build/
+data/rag/raw/
+data/rag/sources/
+data/rag/benchmarks/

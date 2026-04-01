@@ -1236,6 +1236,7 @@ class MirrAISDPipeline:
                     face_bbox=face_bbox,
                     cutoff_y=cutoff_y,
                     hair_length=hair_length,
+                    subject_gender_mode=subject_gender_mode,
                     support_mask=lower_tail_support_for_post,
                     anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
                 )
@@ -2420,6 +2421,7 @@ class MirrAISDPipeline:
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
+                        subject_gender_mode=subject_gender_mode,
                         protect_mask=protect_mask_for_sd,
                         final_hair_mask=final_hair_mask,
                         artifact_cleanup_mask=artifact_cleanup_mask_for_post,
@@ -3297,6 +3299,7 @@ class MirrAISDPipeline:
                         center_support_mask=center_chest_strand_removal_mask,
                         anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
                         exclusion_mask=center_residual_mask_for_post,
+                        subject_gender_mode=subject_gender_mode,
                     )
                     center_residual_rescue_exclusion_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                     if hair_length == "short" and float(center_residual_mask_for_post.sum()) > 0.0:

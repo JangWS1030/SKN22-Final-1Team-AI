@@ -311,6 +311,25 @@ def _handle_refresh_trends(inp: Dict[str, Any]) -> Dict[str, Any]:
         if chromadb_payload:
             result = _receive_chromadb_archive(chromadb_payload)
         else:
+            required_paths = (
+                PROJECT_ROOT / "data" / "rag" / "raw" / "trends",
+                PROJECT_ROOT / "data" / "rag" / "sources" / "ncs",
+            )
+            missing_paths = [
+                str(path.relative_to(PROJECT_ROOT)).replace("\\", "/")
+                for path in required_paths
+                if not path.exists()
+            ]
+            if missing_paths:
+                return {
+                    "error": "Runtime trend refresh assets are missing in this app image.",
+                    "missing_paths": missing_paths,
+                    "hint": (
+                        "RunPod app images exclude data/rag/raw and data/rag/sources to keep Docker builds lean. "
+                        "Use refresh_trends with chromadb_tar_base64, or run the full refresh pipeline in a repo "
+                        "environment that has the raw/source trend assets."
+                    ),
+                }
             from rag_pipeline.pipeline import refresh_trends
             steps = inp.get("steps")
             if isinstance(steps, str):

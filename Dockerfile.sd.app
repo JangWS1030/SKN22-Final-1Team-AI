@@ -25,15 +25,17 @@ COPY utils/                    utils/
 COPY rag_pipeline/             rag_pipeline/
 COPY models/__init__.py        models/__init__.py
 COPY models/segface/           models/segface/
-COPY data/                     data/
+COPY data/llm_refined_trends.json ./data/llm_refined_trends.json
+COPY data/rag/processed/      data/rag/processed/
 
 # Normalize Windows CRLF line endings so the Linux entrypoint can execute.
 RUN sed -i 's/\r$//' entrypoint.sh
 
 # `pretrained_models/` contains local-only assets in some environments.
 # Runtime LoRA is loaded from Hugging Face by default, so the app image keeps
-# only code and lightweight config.
-RUN mkdir -p pretrained_models
+# only code and lightweight config. Large raw/source RAG assets stay out of the
+# app image; only processed runtime data ships here.
+RUN mkdir -p pretrained_models data/rag/stores
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \

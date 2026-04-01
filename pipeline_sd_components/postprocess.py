@@ -726,6 +726,7 @@ def _build_post_cloth_refine_mask(
     face_bbox: Tuple[int, int, int, int],
     cutoff_y: int,
     hair_length: str,
+    subject_gender_mode: str = "",
     protect_mask: Optional[np.ndarray] = None,
     final_hair_mask: Optional[np.ndarray] = None,
     artifact_cleanup_mask: Optional[np.ndarray] = None,
@@ -827,20 +828,38 @@ def _build_post_cloth_refine_mask(
         mask_u8 = cv2.bitwise_and(mask_u8, cv2.bitwise_not(final_hair_u8))
         artifact_bonus_u8 = cv2.bitwise_and(artifact_bonus_u8, cv2.bitwise_not(final_hair_u8))
 
+    gender_mode = str(subject_gender_mode or "").strip().lower()
+    lateral_only_short_restore = hair_length == "short" and gender_mode != "male"
     if hair_length == "short":
         short_gate_u8 = np.zeros((H, W), dtype=np.uint8)
-        gate_half_w = max(32, int(face_w * 0.72))
-        gate_left = max(0, cx - gate_half_w)
-        gate_right = min(W, cx + gate_half_w)
         gate_top = max(top, int(cutoff_y + face_h * 0.02))
-        gate_bottom = min(H, int(cutoff_y + face_h * 1.04))
-        if gate_top < gate_bottom and gate_left < gate_right:
-            short_gate_u8[gate_top:gate_bottom, gate_left:gate_right] = 255
+        gate_bottom = min(H, int(cutoff_y + face_h * (1.20 if lateral_only_short_restore else 1.04)))
+        if lateral_only_short_restore:
+            left_lane_left = max(0, int(x1 - face_w * 0.88))
+            left_lane_right = min(W, int(x1 + face_w * 0.14))
+            right_lane_left = max(0, int(x2 - face_w * 0.14))
+            right_lane_right = min(W, int(x2 + face_w * 0.88))
+            if gate_top < gate_bottom and left_lane_left < left_lane_right:
+                short_gate_u8[gate_top:gate_bottom, left_lane_left:left_lane_right] = 255
+            if gate_top < gate_bottom and right_lane_left < right_lane_right:
+                short_gate_u8[gate_top:gate_bottom, right_lane_left:right_lane_right] = 255
+            shoulder_band_top = max(gate_top, int(cutoff_y + face_h * 0.24))
+            shoulder_band_bottom = min(gate_bottom, int(cutoff_y + face_h * 0.60))
+            shoulder_left = max(0, int(x1 - face_w * 1.02))
+            shoulder_right = min(W, int(x2 + face_w * 1.02))
+            if shoulder_band_top < shoulder_band_bottom and shoulder_left < shoulder_right:
+                short_gate_u8[shoulder_band_top:shoulder_band_bottom, shoulder_left:shoulder_right] = 255
+        else:
+            gate_half_w = max(32, int(face_w * 0.72))
+            gate_left = max(0, cx - gate_half_w)
+            gate_right = min(W, cx + gate_half_w)
+            if gate_top < gate_bottom and gate_left < gate_right:
+                short_gate_u8[gate_top:gate_bottom, gate_left:gate_right] = 255
         if int((short_gate_u8 > 0).sum()) > 0:
             mask_u8 = cv2.bitwise_and(mask_u8, short_gate_u8)
             artifact_bonus_u8 = cv2.bitwise_and(artifact_bonus_u8, short_gate_u8)
 
-        max_bottom = min(H, int(cutoff_y + face_h * 1.02))
+        max_bottom = min(H, int(cutoff_y + face_h * (1.20 if lateral_only_short_restore else 1.02)))
         if max_bottom < H:
             mask_u8[max_bottom:, :] = 0
             artifact_bonus_u8[max_bottom:, :] = 0
@@ -2274,6 +2293,7 @@ def _build_final_source_cloth_rescue_mask(
     center_support_mask: Optional[np.ndarray] = None,
     anchor_mask: Optional[np.ndarray] = None,
     exclusion_mask: Optional[np.ndarray] = None,
+    subject_gender_mode: str = "",
 ) -> np.ndarray:
     if hair_length not in ("short", "medium"):
         return np.zeros(current_rgb.shape[:2], dtype=np.float32)
@@ -2288,6 +2308,8 @@ def _build_final_source_cloth_rescue_mask(
     face_w = max(int(x2 - x1), 1)
     face_h = max(int(y2 - y1), 1)
     cx = int(0.5 * (x1 + x2))
+    gender_mode = str(subject_gender_mode or "").strip().lower()
+    lateral_only_short_restore = hair_length == "short" and gender_mode != "male"
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
     top = max(0, int(cutoff_y - face_h * 0.04))
@@ -2536,6 +2558,22 @@ def _build_final_source_cloth_rescue_mask(
             final_hair_u8[min(H, int(cutoff_y + face_h * 0.40)):, :] = 0
         keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(final_hair_u8))
 
+    short_lateral_lane_u8 = np.zeros((H, W), dtype=np.uint8)
+    if lateral_only_short_restore:
+        lane_top = max(top, int(cutoff_y + face_h * 0.06))
+        lane_bottom = min(bottom, int(cutoff_y + face_h * 1.54))
+        left_lane_left = max(0, int(x1 - face_w * 1.18))
+        left_lane_right = min(W, int(x1 + face_w * 0.20))
+        right_lane_left = max(0, int(x2 - face_w * 0.20))
+        right_lane_right = min(W, int(x2 + face_w * 1.18))
+        if lane_top < lane_bottom and left_lane_left < left_lane_right:
+            short_lateral_lane_u8[lane_top:lane_bottom, left_lane_left:left_lane_right] = 255
+        if lane_top < lane_bottom and right_lane_left < right_lane_right:
+            short_lateral_lane_u8[lane_top:lane_bottom, right_lane_left:right_lane_right] = 255
+        if int((short_lateral_lane_u8 > 0).sum()) > 0:
+            keep_u8 = cv2.bitwise_and(keep_u8, short_lateral_lane_u8)
+            pre_tone_keep_u8 = cv2.bitwise_and(pre_tone_keep_u8, short_lateral_lane_u8)
+
     if int((keep_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -2545,12 +2583,20 @@ def _build_final_source_cloth_rescue_mask(
     max_area = (
         max(28000, int(face_w * face_h * 1.60))
         if use_anchor_fallback
-        else max(3600, int(face_w * face_h * 0.44))
+        else (
+            max(18000, int(face_w * face_h * 0.92))
+            if lateral_only_short_restore
+            else max(3600, int(face_w * face_h * 0.44))
+        )
     )
     max_width = (
         max(320, int(face_w * 2.10))
         if use_anchor_fallback
-        else max(120, int(face_w * 1.26))
+        else (
+            max(260, int(face_w * 1.72))
+            if lateral_only_short_restore
+            else max(120, int(face_w * 1.26))
+        )
     )
     min_height = max(24, int(face_h * 0.10))
     for idx in range(1, num_labels):
@@ -2579,6 +2625,8 @@ def _build_final_source_cloth_rescue_mask(
         iterations=1,
     )
     filtered_u8 = cv2.bitwise_and(filtered_u8, candidate_cloth_u8)
+    if lateral_only_short_restore and int((short_lateral_lane_u8 > 0).sum()) > 0:
+        filtered_u8 = cv2.bitwise_and(filtered_u8, short_lateral_lane_u8)
     if int((exclusion_u8 > 0).sum()) > 0:
         filtered_u8 = cv2.bitwise_and(filtered_u8, cv2.bitwise_not(exclusion_u8))
     if hair_length == "short":
@@ -3016,9 +3064,10 @@ def _build_side_column_cloth_restore_mask(
     lateral_only_short_restore = hair_length == "short" and gender_mode != "male"
     short_lateral_lane_u8 = np.zeros((H, W), dtype=np.uint8)
     if lateral_only_short_restore:
+        smooth_u8 = cv2.bitwise_or(bright_smooth_u8, dark_smooth_u8)
         left_lane_left = max(left, int(x1 - face_w * 0.74))
-        left_lane_right = min(right, int(x1 + face_w * 0.10))
-        right_lane_left = max(left, int(x2 - face_w * 0.10))
+        left_lane_right = min(right, int(x1 + face_w * 0.18))
+        right_lane_left = max(left, int(x2 - face_w * 0.18))
         right_lane_right = min(right, int(x2 + face_w * 0.74))
         if left_lane_left < left_lane_right:
             short_lateral_lane_u8[top:bottom, left_lane_left:left_lane_right] = 255
@@ -3029,16 +3078,43 @@ def _build_side_column_cloth_restore_mask(
             return np.zeros((H, W), dtype=np.float32)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(zone_u8, 8)
     min_area = max(120, int(face_w * face_h * 0.014))
-    max_area = max(4200, int(face_w * face_h * (0.22 if hair_length == "short" else 0.34)))
+    max_area = max(
+        7600 if lateral_only_short_restore and hair_length == "short" else 4200,
+        int(
+            face_w
+            * face_h
+            * (
+                0.34
+                if lateral_only_short_restore and hair_length == "short"
+                else (0.22 if hair_length == "short" else 0.34)
+            )
+        ),
+    )
     min_height = max(36, int(face_h * 0.12))
-    max_width = max(120, int(face_w * (0.78 if hair_length == "short" else 0.54)))
+    max_width = max(
+        176 if lateral_only_short_restore and hair_length == "short" else 120,
+        int(
+            face_w
+            * (
+                1.02
+                if lateral_only_short_restore and hair_length == "short"
+                else (0.78 if hair_length == "short" else 0.54)
+            )
+        ),
+    )
     max_offset = max(120, int(face_w * (0.98 if hair_length == "short" else 0.60)))
     short_center_offset = max(24, int(face_w * 0.30))
     short_lateral_center_offset = max(34, int(face_w * 0.38))
     short_center_width = max(76, int(face_w * 0.34))
     short_center_area = max(1800, int(face_w * face_h * 0.09))
-    short_side_width = max(96, int(face_w * 0.56))
-    short_side_area = max(3600, int(face_w * face_h * 0.18))
+    short_side_width = max(
+        148 if lateral_only_short_restore and hair_length == "short" else 96,
+        int(face_w * (0.92 if lateral_only_short_restore and hair_length == "short" else 0.56)),
+    )
+    short_side_area = max(
+        7200 if lateral_only_short_restore and hair_length == "short" else 3600,
+        int(face_w * face_h * (0.30 if lateral_only_short_restore and hair_length == "short" else 0.18)),
+    )
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
         y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -3264,6 +3340,7 @@ def _build_short_below_bob_cloth_restore_mask(
     face_bbox: Tuple[int, int, int, int],
     cutoff_y: int,
     hair_length: str,
+    subject_gender_mode: str = "",
     support_mask: Optional[np.ndarray] = None,
     anchor_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
@@ -3337,16 +3414,19 @@ def _build_short_below_bob_cloth_restore_mask(
     right_lane_left = min(right - 1, int(cx + side_inner_gap))
     lane_u8[bob_floor:bottom, left:left_lane_right] = 255
     lane_u8[bob_floor:bottom, right_lane_left:right] = 255
-    center_lane_top = min(bottom, int(cutoff_y + face_h * 0.34))
-    center_half = max(18, int(face_w * 0.20))
-    center_x1 = max(left, int(cx - center_half))
-    center_x2 = min(right, int(cx + center_half))
-    if center_lane_top < bottom and center_x1 < center_x2:
-        lane_u8[center_lane_top:bottom, center_x1:center_x2] = 255
+    if not lateral_only_short_restore:
+        center_lane_top = min(bottom, int(cutoff_y + face_h * 0.34))
+        center_half = max(18, int(face_w * 0.20))
+        center_x1 = max(left, int(cx - center_half))
+        center_x2 = min(right, int(cx + center_half))
+        if center_lane_top < bottom and center_x1 < center_x2:
+            lane_u8[center_lane_top:bottom, center_x1:center_x2] = 255
 
     pre_lane_zone_u8 = zone_u8.copy()
     zone_u8 = cv2.bitwise_and(zone_u8, lane_u8)
     if int((zone_u8 > 0).sum()) < 60:
+        if lateral_only_short_restore:
+            return np.zeros((H, W), dtype=np.float32)
         if int((pre_lane_zone_u8 > 0).sum()) < 120:
             return np.zeros((H, W), dtype=np.float32)
         zone_u8 = pre_lane_zone_u8

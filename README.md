@@ -543,3 +543,12 @@ conda activate final_ai
 python -m py_compile handler_sd.py pipeline_sd_inpainting.py pipeline_sd_components/loading.py pipeline_sd_components/prompt.py pipeline_sd_components/postprocess.py runtime_download.py scripts/runpod_release.py
 python test_runpod.py --health-check
 ```
+
+## Docker 이미지 데이터 범위
+
+RunPod 앱 이미지는 빌드 시간을 줄이기 위해 런타임에 직접 쓰는 데이터만 포함합니다.
+
+- 포함: `data/llm_refined_trends.json`, `data/rag/processed/**`
+- 제외: `data/rag/raw/**`, `data/rag/sources/**`, `data/rag/benchmarks/**`
+
+`refresh_trends`를 RunPod 내부에서 전체 파이프라인으로 돌리려면 원본 크롤링 데이터와 NCS PDF가 있는 전체 저장소 환경이 필요합니다. 일반적인 운영에서는 `chromadb_tar_base64` 아카이브 전달 방식으로 컬렉션만 갱신하는 경로를 권장합니다.

@@ -22,7 +22,9 @@ on:
       - "models/__init__.py"
       - "models/face_parsing/**"
       - "models/segface/**"
-      - "data/**"
+      - "data/llm_refined_trends.json"
+      - "data/rag/processed/**"
+      - "data/rag/stores/**"
       - ".dockerignore"
       - ".github/workflows/build-sd-app.yml"
 
