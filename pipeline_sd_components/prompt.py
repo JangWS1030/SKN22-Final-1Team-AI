@@ -53,15 +53,84 @@ from pipeline_sd_inpainting import (
 
 # Extracted from pipeline_sd_inpainting.py to keep MirrAISDPipeline smaller.
 
+_EXPLICIT_LONG_HAIR_KEYWORDS = (
+    "very long hair",
+    "long hair",
+    "long layered",
+    "long layers",
+    "long layered wave",
+    "long waves",
+    "long wave",
+    "long hush cut",
+    "flowing long hair",
+    "hair below shoulders",
+    "below shoulders",
+    "below shoulder",
+    "waist-length",
+    "waist length",
+    "chest-length",
+    "chest length",
+    "side long locks",
+    "touching shoulders",
+    "covering collar",
+)
+
+_EXPLICIT_MEDIUM_HAIR_KEYWORDS = (
+    "lob",
+    "long bob",
+    "medium hair",
+    "medium length",
+    "medium-length",
+    "mid length",
+    "mid-length",
+    "shoulder length",
+    "shoulder-length",
+    "shoulder grazing",
+    "shoulder-grazing",
+    "collarbone",
+    "clavicle",
+)
+
+_EXPLICIT_SHORT_HAIR_KEYWORDS = (
+    "very short hair",
+    "short hair",
+    "short cut",
+    "short bob",
+    "chin length",
+    "chin-length",
+    "jaw length",
+    "jaw-length",
+    "above shoulder",
+    "above ear",
+    "ear length",
+    "pixie",
+    "buzz",
+    "crew cut",
+    "fade",
+    "crop",
+    "cropped",
+    "bowl",
+)
+
 def _classify_hair_length(hairstyle_text: str) -> str:
     """헤어스타일 텍스트 → 'short' | 'medium' | 'long'"""
-    text = hairstyle_text.lower()
-    for kw in _SHORT_HAIR_KEYWORDS:
-        if kw in text:
-            return "short"
+    text = " ".join(str(hairstyle_text or "").strip().lower().split())
+    if not text:
+        return "long"
+
+    if any(kw in text for kw in _EXPLICIT_MEDIUM_HAIR_KEYWORDS):
+        return "medium"
+    if any(kw in text for kw in _EXPLICIT_LONG_HAIR_KEYWORDS):
+        return "long"
+    if any(kw in text for kw in _EXPLICIT_SHORT_HAIR_KEYWORDS):
+        return "short"
+
     for kw in _MEDIUM_HAIR_KEYWORDS:
         if kw in text:
             return "medium"
+    for kw in _SHORT_HAIR_KEYWORDS:
+        if kw in text:
+            return "short"
     return "long"
 
 def _normalize_color_text(color_text: str) -> str:

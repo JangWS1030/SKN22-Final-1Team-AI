@@ -573,6 +573,8 @@ class MirrAISDPipeline:
 
         # ── Step 3-b: 헤어 길이 분류 ─────────────────────────────────────────
         hair_length = self._classify_hair_length(effective_hairstyle_text)
+        if debug_data_common is not None:
+            debug_data_common["hair_length"] = hair_length
         logger.info(
             f"[SDPipeline] 헤어 길이 분류: {hair_length}, subject_gender={subject_gender_mode}"
         )
