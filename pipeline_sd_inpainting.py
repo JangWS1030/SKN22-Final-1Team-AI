@@ -559,6 +559,42 @@ class MirrAISDPipeline:
         logger.info(
             f"[SDPipeline] 헤어 길이 분류: {hair_length}, subject_gender={subject_gender_mode}"
         )
+        source_cloth_preclean_analysis = self._analyze_source_cloth_preclean_need(
+            source_hair_mask=hair_mask_base,
+            cloth_mask=cloth_mask,
+            face_bbox=face_bbox,
+            subject_gender=subject_gender_mode,
+        )
+        skip_source_cloth_preclean = bool(source_cloth_preclean_analysis.get("skip_preclean"))
+        source_hair_length_estimate = str(
+            source_cloth_preclean_analysis.get("source_hair_length", "unknown")
+        )
+        logger.info(
+            "[SDPipeline] source cloth preclean: source_length=%s skip=%s reason=%s "
+            "bottom_ratio=%.4f torso_ratio=%.4f cloth_overlap_ratio=%.4f",
+            source_hair_length_estimate,
+            skip_source_cloth_preclean,
+            source_cloth_preclean_analysis.get("skip_reason", ""),
+            float(source_cloth_preclean_analysis.get("hair_bottom_ratio", 0.0)),
+            float(source_cloth_preclean_analysis.get("torso_hair_ratio", 0.0)),
+            float(source_cloth_preclean_analysis.get("cloth_overlap_ratio", 0.0)),
+        )
+        source_torso_hair_mask = source_cloth_preclean_analysis.get("torso_hair_mask")
+        if isinstance(source_torso_hair_mask, np.ndarray):
+            _store_mask("pipeline_source_torso_hair_mask", source_torso_hair_mask)
+        source_cloth_overlap_mask = source_cloth_preclean_analysis.get("cloth_overlap_mask")
+        if isinstance(source_cloth_overlap_mask, np.ndarray):
+            _store_mask("pipeline_source_cloth_overlap_mask", source_cloth_overlap_mask)
+        if debug_data_common is not None:
+            debug_data_common["source_cloth_preclean"] = {
+                "source_hair_length": source_hair_length_estimate,
+                "needs_preclean": bool(source_cloth_preclean_analysis.get("needs_preclean")),
+                "skip_preclean": skip_source_cloth_preclean,
+                "skip_reason": str(source_cloth_preclean_analysis.get("skip_reason", "")),
+                "hair_bottom_ratio": float(source_cloth_preclean_analysis.get("hair_bottom_ratio", 0.0)),
+                "torso_hair_ratio": float(source_cloth_preclean_analysis.get("torso_hair_ratio", 0.0)),
+                "cloth_overlap_ratio": float(source_cloth_preclean_analysis.get("cloth_overlap_ratio", 0.0)),
+            }
         if hair_length == "short" and len(seeds) < 5:
             extra = 5 - len(seeds)
             seeds.extend(random.randint(0, 2**31 - 1) for _ in range(extra))
@@ -1220,7 +1256,7 @@ class MirrAISDPipeline:
                 cloth_overlap = cv2.bitwise_and(removal_u8, cloth_u8)
                 protect_u8 = ((protect_mask_for_sd > 0.2).astype(np.uint8) * 255)
                 cloth_overlap = cv2.bitwise_and(cloth_overlap, cv2.bitwise_not(protect_u8))
-                if int((cloth_overlap > 0).sum()) >= 80:
+                if not skip_source_cloth_preclean and int((cloth_overlap > 0).sum()) >= 80:
                     cloth_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
                     cloth_overlap = cv2.dilate(cloth_overlap, cloth_k, iterations=1)
                     cloth_ns = cv2.inpaint(img_rgb, cloth_overlap, inpaintRadius=4, flags=cv2.INPAINT_NS)
@@ -1442,177 +1478,178 @@ class MirrAISDPipeline:
                 img_rgb_cleaned = img_rgb
 
             if hair_length == "short":
-                try:
-                    preclean_cloth_hair_cleanup_mask = self._build_preclean_cloth_hair_cleanup_mask(
-                        img_rgb=img_rgb_cleaned,
-                        removal_mask=removal_mask_for_post,
-                        cloth_mask=cloth_mask_dilated,
-                        face_bbox=face_bbox,
-                        cutoff_y=cutoff_y,
-                        hair_length=hair_length,
-                    )
-                    preclean_cloth_hair_cleanup_u8 = (
-                        (np.clip(preclean_cloth_hair_cleanup_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
-                    )
-                    if int((preclean_cloth_hair_cleanup_u8 > 0).sum()) >= 120:
-                        img_rgb_cleaned = self._lama_inpaint(
-                            img_rgb_cleaned,
-                            preclean_cloth_hair_cleanup_u8,
+                if not skip_source_cloth_preclean:
+                    try:
+                        preclean_cloth_hair_cleanup_mask = self._build_preclean_cloth_hair_cleanup_mask(
+                            img_rgb=img_rgb_cleaned,
+                            removal_mask=removal_mask_for_post,
+                            cloth_mask=cloth_mask_dilated,
+                            face_bbox=face_bbox,
+                            cutoff_y=cutoff_y,
+                            hair_length=hair_length,
                         )
-                        img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(
-                            img_rgb_cleaned,
-                            preclean_cloth_hair_cleanup_u8,
+                        preclean_cloth_hair_cleanup_u8 = (
+                            (np.clip(preclean_cloth_hair_cleanup_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
                         )
-                        if cloth_mask_dilated is not None and cloth_mask_dilated.shape == (H, W):
-                            img_rgb_cleaned = self._blend_neighbor_cloth_tone(
+                        if int((preclean_cloth_hair_cleanup_u8 > 0).sum()) >= 120:
+                            img_rgb_cleaned = self._lama_inpaint(
+                                img_rgb_cleaned,
+                                preclean_cloth_hair_cleanup_u8,
+                            )
+                            img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(
+                                img_rgb_cleaned,
+                                preclean_cloth_hair_cleanup_u8,
+                            )
+                            if cloth_mask_dilated is not None and cloth_mask_dilated.shape == (H, W):
+                                img_rgb_cleaned = self._blend_neighbor_cloth_tone(
+                                    img_rgb_cleaned,
+                                    preclean_cloth_hair_cleanup_mask,
+                                    cloth_mask=cloth_mask_dilated,
+                                )
+                            if hair_length != "short":
+                                img_rgb_cleaned = self._restore_cloth_overlap_from_source(
+                                    source_rgb=img_rgb,
+                                    current_rgb=img_rgb_cleaned,
+                                    restore_mask=preclean_cloth_hair_cleanup_mask,
+                                    final_hair_mask=None,
+                                )
+                            img_rgb_cleaned = self._cv2_refine_cloth_region(
                                 img_rgb_cleaned,
                                 preclean_cloth_hair_cleanup_mask,
-                                cloth_mask=cloth_mask_dilated,
                             )
-                        if hair_length != "short":
-                            img_rgb_cleaned = self._restore_cloth_overlap_from_source(
-                                source_rgb=img_rgb,
-                                current_rgb=img_rgb_cleaned,
-                                restore_mask=preclean_cloth_hair_cleanup_mask,
-                                final_hair_mask=None,
-                            )
-                        img_rgb_cleaned = self._cv2_refine_cloth_region(
-                            img_rgb_cleaned,
-                            preclean_cloth_hair_cleanup_mask,
-                        )
-                    _store_mask("pipeline_preclean_cloth_hair_cleanup_mask", preclean_cloth_hair_cleanup_mask)
-                except Exception as e:
-                    logger.warning(f"[SDPipeline] preclean cloth hair cleanup failed (ignored): {e}")
+                        _store_mask("pipeline_preclean_cloth_hair_cleanup_mask", preclean_cloth_hair_cleanup_mask)
+                    except Exception as e:
+                        logger.warning(f"[SDPipeline] preclean cloth hair cleanup failed (ignored): {e}")
 
-                try:
-                    preclean_side_candidate_mask = np.clip(
-                        removal_mask_for_post.astype(np.float32),
-                        0.0,
-                        1.0,
-                    )
-                    if (
-                        artifact_cleanup_mask_for_post is not None
-                        and artifact_cleanup_mask_for_post.shape == (H, W)
-                    ):
-                        preclean_side_candidate_mask = np.maximum(
-                            preclean_side_candidate_mask,
-                            np.clip(artifact_cleanup_mask_for_post.astype(np.float32), 0.0, 1.0),
-                        ).astype(np.float32)
-                    if (
-                        shoulder_cloth_release_for_post is not None
-                        and shoulder_cloth_release_for_post.shape == (H, W)
-                    ):
-                        preclean_side_candidate_mask = np.maximum(
-                            preclean_side_candidate_mask,
-                            np.clip(shoulder_cloth_release_for_post.astype(np.float32), 0.0, 1.0) * 0.88,
-                        ).astype(np.float32)
-                    if (
-                        below_bob_cloth_restore_for_post is not None
-                        and below_bob_cloth_restore_for_post.shape == (H, W)
-                    ):
-                        preclean_side_candidate_mask = np.maximum(
-                            preclean_side_candidate_mask,
-                            np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
-                        ).astype(np.float32)
-                    preclean_side_restore_mask = self._build_side_column_cloth_restore_mask(
-                        img_rgb=img_rgb_cleaned,
-                        cloth_mask=cloth_mask_dilated,
-                        candidate_mask=preclean_side_candidate_mask,
-                        face_bbox=face_bbox,
-                        cutoff_y=cutoff_y,
-                        hair_length=hair_length,
-                        final_hair_mask=None,
-                    )
-                    direct_preclean_side_restore_mask = self._build_direct_short_column_restore_mask(
-                        removal_mask=removal_mask_for_post,
-                        cloth_mask=cloth_mask_dilated,
-                        face_bbox=face_bbox,
-                        cutoff_y=cutoff_y,
-                        hair_length=hair_length,
-                    )
-                    if float(direct_preclean_side_restore_mask.sum()) > 0.0:
-                        preclean_side_restore_mask = np.maximum(
-                            preclean_side_restore_mask,
-                            direct_preclean_side_restore_mask,
-                        ).astype(np.float32)
-                    if (
-                        below_bob_cloth_restore_for_post is not None
-                        and below_bob_cloth_restore_for_post.shape == (H, W)
-                    ):
-                        preclean_side_restore_mask = np.maximum(
-                            preclean_side_restore_mask,
-                            np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
-                        ).astype(np.float32)
-                    preclean_side_restore_u8 = (
-                        (np.clip(preclean_side_restore_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
-                    )
-                    preclean_side_cleanup_mask = self._build_preclean_side_column_cleanup_mask(
-                        img_rgb=img_rgb_cleaned,
-                        cloth_mask=cloth_mask_dilated,
-                        base_mask=preclean_side_restore_mask,
-                        face_bbox=face_bbox,
-                        cutoff_y=cutoff_y,
-                        hair_length=hair_length,
-                    )
-                    preclean_side_cleanup_u8 = (
-                        (np.clip(preclean_side_cleanup_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
-                    )
-                    if int((preclean_side_cleanup_u8 > 0).sum()) >= 48:
-                        img_rgb_cleaned = self._cleanup_region_with_cloth_restore(
-                            source_rgb=img_rgb,
-                            current_rgb=img_rgb_cleaned,
-                            cleanup_mask=preclean_side_cleanup_mask,
-                            cloth_mask=cloth_mask_dilated,
-                            ignore_final_hair_for_cloth_restore=True,
-                            cleanup_dark_tail=True,
+                    try:
+                        preclean_side_candidate_mask = np.clip(
+                            removal_mask_for_post.astype(np.float32),
+                            0.0,
+                            1.0,
                         )
-                    if int((preclean_side_restore_u8 > 0).sum()) >= 140:
-                        if hair_length == "short":
+                        if (
+                            artifact_cleanup_mask_for_post is not None
+                            and artifact_cleanup_mask_for_post.shape == (H, W)
+                        ):
+                            preclean_side_candidate_mask = np.maximum(
+                                preclean_side_candidate_mask,
+                                np.clip(artifact_cleanup_mask_for_post.astype(np.float32), 0.0, 1.0),
+                            ).astype(np.float32)
+                        if (
+                            shoulder_cloth_release_for_post is not None
+                            and shoulder_cloth_release_for_post.shape == (H, W)
+                        ):
+                            preclean_side_candidate_mask = np.maximum(
+                                preclean_side_candidate_mask,
+                                np.clip(shoulder_cloth_release_for_post.astype(np.float32), 0.0, 1.0) * 0.88,
+                            ).astype(np.float32)
+                        if (
+                            below_bob_cloth_restore_for_post is not None
+                            and below_bob_cloth_restore_for_post.shape == (H, W)
+                        ):
+                            preclean_side_candidate_mask = np.maximum(
+                                preclean_side_candidate_mask,
+                                np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
+                            ).astype(np.float32)
+                        preclean_side_restore_mask = self._build_side_column_cloth_restore_mask(
+                            img_rgb=img_rgb_cleaned,
+                            cloth_mask=cloth_mask_dilated,
+                            candidate_mask=preclean_side_candidate_mask,
+                            face_bbox=face_bbox,
+                            cutoff_y=cutoff_y,
+                            hair_length=hair_length,
+                            final_hair_mask=None,
+                        )
+                        direct_preclean_side_restore_mask = self._build_direct_short_column_restore_mask(
+                            removal_mask=removal_mask_for_post,
+                            cloth_mask=cloth_mask_dilated,
+                            face_bbox=face_bbox,
+                            cutoff_y=cutoff_y,
+                            hair_length=hair_length,
+                        )
+                        if float(direct_preclean_side_restore_mask.sum()) > 0.0:
+                            preclean_side_restore_mask = np.maximum(
+                                preclean_side_restore_mask,
+                                direct_preclean_side_restore_mask,
+                            ).astype(np.float32)
+                        if (
+                            below_bob_cloth_restore_for_post is not None
+                            and below_bob_cloth_restore_for_post.shape == (H, W)
+                        ):
+                            preclean_side_restore_mask = np.maximum(
+                                preclean_side_restore_mask,
+                                np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
+                            ).astype(np.float32)
+                        preclean_side_restore_u8 = (
+                            (np.clip(preclean_side_restore_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+                        )
+                        preclean_side_cleanup_mask = self._build_preclean_side_column_cleanup_mask(
+                            img_rgb=img_rgb_cleaned,
+                            cloth_mask=cloth_mask_dilated,
+                            base_mask=preclean_side_restore_mask,
+                            face_bbox=face_bbox,
+                            cutoff_y=cutoff_y,
+                            hair_length=hair_length,
+                        )
+                        preclean_side_cleanup_u8 = (
+                            (np.clip(preclean_side_cleanup_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+                        )
+                        if int((preclean_side_cleanup_u8 > 0).sum()) >= 48:
                             img_rgb_cleaned = self._cleanup_region_with_cloth_restore(
                                 source_rgb=img_rgb,
                                 current_rgb=img_rgb_cleaned,
-                                cleanup_mask=preclean_side_restore_mask,
+                                cleanup_mask=preclean_side_cleanup_mask,
                                 cloth_mask=cloth_mask_dilated,
                                 ignore_final_hair_for_cloth_restore=True,
                                 cleanup_dark_tail=True,
                             )
-                        else:
-                            img_rgb_cleaned = self._restore_cloth_overlap_from_source(
-                                source_rgb=img_rgb,
-                                current_rgb=img_rgb_cleaned,
-                                restore_mask=preclean_side_restore_mask,
-                                final_hair_mask=None,
-                            )
+                        if int((preclean_side_restore_u8 > 0).sum()) >= 140:
+                            if hair_length == "short":
+                                img_rgb_cleaned = self._cleanup_region_with_cloth_restore(
+                                    source_rgb=img_rgb,
+                                    current_rgb=img_rgb_cleaned,
+                                    cleanup_mask=preclean_side_restore_mask,
+                                    cloth_mask=cloth_mask_dilated,
+                                    ignore_final_hair_for_cloth_restore=True,
+                                    cleanup_dark_tail=True,
+                                )
+                            else:
+                                img_rgb_cleaned = self._restore_cloth_overlap_from_source(
+                                    source_rgb=img_rgb,
+                                    current_rgb=img_rgb_cleaned,
+                                    restore_mask=preclean_side_restore_mask,
+                                    final_hair_mask=None,
+                                )
+                                img_rgb_cleaned = self._cv2_refine_cloth_region(
+                                    img_rgb_cleaned,
+                                    preclean_side_restore_mask,
+                                )
+                        _store_mask("pipeline_preclean_side_column_cleanup_mask", preclean_side_cleanup_mask)
+                        _store_mask("pipeline_preclean_side_column_cloth_restore_mask", preclean_side_restore_mask)
+                        _store_mask("pipeline_preclean_direct_short_column_restore_mask", direct_preclean_side_restore_mask)
+                    except Exception as e:
+                        logger.warning(f"[SDPipeline] preclean side column cloth restore failed (ignored): {e}")
+                    try:
+                        preclean_dark_lane_mask = self._build_dark_lane_cleanup_mask(
+                            img_rgb=img_rgb_cleaned,
+                            cloth_mask=cloth_mask_dilated,
+                            removal_mask=removal_mask_for_post,
+                            face_bbox=face_bbox,
+                            cutoff_y=cutoff_y,
+                            hair_length=hair_length,
+                        )
+                        preclean_dark_lane_u8 = (
+                            (np.clip(preclean_dark_lane_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+                        )
+                        if int((preclean_dark_lane_u8 > 0).sum()) >= 40:
+                            img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, preclean_dark_lane_u8)
                             img_rgb_cleaned = self._cv2_refine_cloth_region(
                                 img_rgb_cleaned,
-                                preclean_side_restore_mask,
+                                preclean_dark_lane_mask,
                             )
-                    _store_mask("pipeline_preclean_side_column_cleanup_mask", preclean_side_cleanup_mask)
-                    _store_mask("pipeline_preclean_side_column_cloth_restore_mask", preclean_side_restore_mask)
-                    _store_mask("pipeline_preclean_direct_short_column_restore_mask", direct_preclean_side_restore_mask)
-                except Exception as e:
-                    logger.warning(f"[SDPipeline] preclean side column cloth restore failed (ignored): {e}")
-                try:
-                    preclean_dark_lane_mask = self._build_dark_lane_cleanup_mask(
-                        img_rgb=img_rgb_cleaned,
-                        cloth_mask=cloth_mask_dilated,
-                        removal_mask=removal_mask_for_post,
-                        face_bbox=face_bbox,
-                        cutoff_y=cutoff_y,
-                        hair_length=hair_length,
-                    )
-                    preclean_dark_lane_u8 = (
-                        (np.clip(preclean_dark_lane_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
-                    )
-                    if int((preclean_dark_lane_u8 > 0).sum()) >= 40:
-                        img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, preclean_dark_lane_u8)
-                        img_rgb_cleaned = self._cv2_refine_cloth_region(
-                            img_rgb_cleaned,
-                            preclean_dark_lane_mask,
-                        )
-                    _store_mask("pipeline_preclean_dark_lane_cleanup_mask", preclean_dark_lane_mask)
-                except Exception as e:
-                    logger.warning(f"[SDPipeline] preclean dark lane cleanup failed (ignored): {e}")
+                        _store_mask("pipeline_preclean_dark_lane_cleanup_mask", preclean_dark_lane_mask)
+                    except Exception as e:
+                        logger.warning(f"[SDPipeline] preclean dark lane cleanup failed (ignored): {e}")
                 regen_tail_mask = self._build_short_regen_tail_mask(
                     img_rgb=img_rgb_cleaned,
                     removal_mask=removal_mask,
@@ -3343,6 +3380,114 @@ class MirrAISDPipeline:
             int(xs.max()) + 1,
             int(ys.max()) + 1,
         )
+
+    def _analyze_source_cloth_preclean_need(
+        self,
+        *,
+        source_hair_mask: Optional[np.ndarray],
+        cloth_mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+        subject_gender: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "source_hair_length": "unknown",
+            "needs_preclean": True,
+            "skip_preclean": False,
+            "skip_reason": "insufficient_mask_data",
+            "hair_bottom_ratio": 0.0,
+            "torso_hair_ratio": 0.0,
+            "cloth_overlap_ratio": 0.0,
+            "torso_hair_mask": None,
+            "cloth_overlap_mask": None,
+        }
+
+        normalized_gender = self._normalize_subject_gender(subject_gender)
+        if normalized_gender == "male":
+            result["skip_preclean"] = True
+            result["skip_reason"] = "male_subject"
+
+        if source_hair_mask is None or cloth_mask is None:
+            return result
+        if source_hair_mask.ndim != 2 or cloth_mask.ndim != 2:
+            return result
+
+        H, W = source_hair_mask.shape[:2]
+        if cloth_mask.shape != (H, W):
+            return result
+
+        x1, y1, x2, y2 = [int(v) for v in face_bbox]
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+        face_area = max(face_w * face_h, 1)
+
+        hair_u8 = (np.clip(source_hair_mask.astype(np.float32), 0.0, 1.0) > 0.18).astype(np.uint8) * 255
+        cloth_u8 = cv2.dilate(
+            (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+            iterations=1,
+        )
+        if int((hair_u8 > 0).sum()) < 40:
+            if normalized_gender != "male":
+                result["needs_preclean"] = False
+                result["skip_preclean"] = True
+                result["skip_reason"] = "source_hair_too_small"
+            return result
+
+        corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+        top = max(0, int(y2 + face_h * 0.02))
+        bottom = min(H, int(y2 + face_h * 1.62))
+        left = max(0, int(x1 - face_w * 1.28))
+        right = min(W, int(x2 + face_w * 1.28))
+        if top >= bottom or left >= right:
+            return result
+        corridor_u8[top:bottom, left:right] = 255
+
+        torso_hair_u8 = cv2.bitwise_and(hair_u8, corridor_u8)
+        cloth_overlap_u8 = cv2.bitwise_and(torso_hair_u8, cloth_u8)
+
+        hair_bbox = self._mask_bbox(source_hair_mask, threshold=0.18)
+        hair_bottom = int(hair_bbox[3] - 1) if hair_bbox is not None else int(y2)
+        hair_bottom_ratio = max(0.0, float(hair_bottom - y2) / float(face_h))
+        torso_hair_px = int((torso_hair_u8 > 0).sum())
+        cloth_overlap_px = int((cloth_overlap_u8 > 0).sum())
+        torso_hair_ratio = float(torso_hair_px) / float(face_area)
+        cloth_overlap_ratio = float(cloth_overlap_px) / float(face_area)
+
+        if hair_bottom_ratio <= 0.36:
+            source_hair_length = "short"
+        elif hair_bottom_ratio <= 0.92:
+            source_hair_length = "medium"
+        else:
+            source_hair_length = "long"
+
+        needs_preclean = source_hair_length != "short" and bool(
+            cloth_overlap_px >= max(140, int(face_area * 0.012))
+            or torso_hair_px >= max(220, int(face_area * 0.16))
+            or hair_bottom_ratio >= 0.44
+        )
+
+        if normalized_gender == "male":
+            skip_preclean = True
+            skip_reason = "male_subject"
+        elif not needs_preclean:
+            skip_preclean = True
+            skip_reason = "low_source_garment_occlusion"
+        else:
+            skip_preclean = False
+            skip_reason = "source_garment_occlusion_detected"
+
+        result.update({
+            "source_hair_length": source_hair_length,
+            "needs_preclean": needs_preclean,
+            "skip_preclean": skip_preclean,
+            "skip_reason": skip_reason,
+            "hair_bottom_ratio": round(hair_bottom_ratio, 4),
+            "torso_hair_ratio": round(torso_hair_ratio, 4),
+            "cloth_overlap_ratio": round(cloth_overlap_ratio, 4),
+            "torso_hair_mask": torso_hair_u8.astype(np.float32) / 255.0,
+            "cloth_overlap_mask": cloth_overlap_u8.astype(np.float32) / 255.0,
+        })
+        return result
 
     def _estimate_head_generation_box(
         self,
