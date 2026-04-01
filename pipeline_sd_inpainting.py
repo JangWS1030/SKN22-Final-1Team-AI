@@ -938,6 +938,50 @@ class MirrAISDPipeline:
                     iterations=1,
                 ).astype(np.float32) / 255.0
                 removal_mask = np.maximum(removal_mask, center_chest_strand_removal_mask).astype(np.float32)
+                if (
+                    hair_length == "short"
+                    and subject_gender_mode != "male"
+                    and cloth_restore_mask_for_post is not None
+                    and cloth_restore_mask_for_post.shape == (H, W)
+                ):
+                    center_cloth_restore_exclusion_u8 = cv2.dilate(
+                        (center_chest_strand_removal_mask > 0.08).astype(np.uint8) * 255,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 39)),
+                        iterations=1,
+                    )
+                    center_cloth_restore_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+                    center_gate_half_w = max(24, int((x2 - x1) * 0.34))
+                    center_gate_left = max(0, int(0.5 * (x1 + x2)) - center_gate_half_w)
+                    center_gate_right = min(W, int(0.5 * (x1 + x2)) + center_gate_half_w)
+                    center_gate_top = max(0, int(cutoff_y + max(y2 - y1, 1) * 0.08))
+                    center_gate_bottom = min(H, int(cutoff_y + max(y2 - y1, 1) * 1.16))
+                    if center_gate_top < center_gate_bottom and center_gate_left < center_gate_right:
+                        center_cloth_restore_gate_u8[
+                            center_gate_top:center_gate_bottom,
+                            center_gate_left:center_gate_right,
+                        ] = 255
+                        center_cloth_restore_exclusion_u8 = cv2.bitwise_and(
+                            center_cloth_restore_exclusion_u8,
+                            center_cloth_restore_gate_u8,
+                        )
+                    if int((center_cloth_restore_exclusion_u8 > 0).sum()) >= 36:
+                        center_cloth_restore_exclusion = cv2.GaussianBlur(
+                            center_cloth_restore_exclusion_u8.astype(np.float32) / 255.0,
+                            (0, 0),
+                            sigmaX=3.4,
+                            sigmaY=6.2,
+                        ).astype(np.float32)
+                        cloth_restore_mask_for_post = np.clip(
+                            cloth_restore_mask_for_post.astype(np.float32) * (1.0 - center_cloth_restore_exclusion),
+                            0.0,
+                            1.0,
+                        )
+                        _store_mask(
+                            "pipeline_center_cloth_restore_exclusion_mask",
+                            center_cloth_restore_exclusion,
+                        )
+                        if hair_length == "short":
+                            _store_mask("pipeline_short_restore_cloth_mask", cloth_restore_mask_for_post)
             lower_tail_removal_extension = np.zeros((H, W), dtype=np.float32)
             if lower_tail_support_for_post is not None and lower_tail_support_for_post.shape == (H, W):
                 lower_tail_removal_extension = self._build_lower_tail_removal_extension_mask(
