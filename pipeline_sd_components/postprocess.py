@@ -1332,6 +1332,7 @@ def _build_short_torso_garment_repaint_mask(
     cloth_mask: Optional[np.ndarray],
     torso_mask: Optional[np.ndarray],
     torso_anchor_mask: Optional[np.ndarray],
+    torso_candidate_mask: Optional[np.ndarray],
     shoulder_bridge_mask: Optional[np.ndarray],
     sam2_hair_mask: Optional[np.ndarray],
     face_mask: Optional[np.ndarray],
@@ -1343,14 +1344,30 @@ def _build_short_torso_garment_repaint_mask(
 ) -> np.ndarray:
     if hair_length != "short":
         base_shape = None
-        for mask in (cloth_mask, torso_mask, torso_anchor_mask, shoulder_bridge_mask, sam2_hair_mask, face_mask):
+        for mask in (
+            cloth_mask,
+            torso_mask,
+            torso_anchor_mask,
+            torso_candidate_mask,
+            shoulder_bridge_mask,
+            sam2_hair_mask,
+            face_mask,
+        ):
             if isinstance(mask, np.ndarray):
                 base_shape = mask.shape[:2]
                 break
         return np.zeros(base_shape or (1, 1), dtype=np.float32)
 
     base_shape = None
-    for mask in (cloth_mask, torso_mask, torso_anchor_mask, shoulder_bridge_mask, sam2_hair_mask, face_mask):
+    for mask in (
+        cloth_mask,
+        torso_mask,
+        torso_anchor_mask,
+        torso_candidate_mask,
+        shoulder_bridge_mask,
+        sam2_hair_mask,
+        face_mask,
+    ):
         if isinstance(mask, np.ndarray):
             base_shape = mask.shape[:2]
             break
@@ -1364,6 +1381,8 @@ def _build_short_torso_garment_repaint_mask(
         torso_mask = None
     if torso_anchor_mask is not None and torso_anchor_mask.shape != (H, W):
         torso_anchor_mask = None
+    if torso_candidate_mask is not None and torso_candidate_mask.shape != (H, W):
+        torso_candidate_mask = None
     if shoulder_bridge_mask is not None and shoulder_bridge_mask.shape != (H, W):
         shoulder_bridge_mask = None
     if sam2_hair_mask is not None and sam2_hair_mask.shape != (H, W):
@@ -1392,6 +1411,7 @@ def _build_short_torso_garment_repaint_mask(
     support_u8 = np.zeros((H, W), dtype=np.uint8)
     cloth_u8 = np.zeros((H, W), dtype=np.uint8)
     torso_anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+    torso_candidate_u8 = np.zeros((H, W), dtype=np.uint8)
     bridge_u8 = np.zeros((H, W), dtype=np.uint8)
     sam2_torso_u8 = np.zeros((H, W), dtype=np.uint8)
 
@@ -1417,6 +1437,13 @@ def _build_short_torso_garment_repaint_mask(
             iterations=1,
         )
         support_u8 = cv2.bitwise_or(support_u8, torso_anchor_u8)
+    if torso_candidate_mask is not None:
+        torso_candidate_u8 = cv2.dilate(
+            (np.clip(torso_candidate_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 21)),
+            iterations=1,
+        )
+        support_u8 = cv2.bitwise_or(support_u8, torso_candidate_u8)
     if shoulder_bridge_mask is not None:
         bridge_u8 = cv2.dilate(
             (np.clip(shoulder_bridge_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
@@ -1438,6 +1465,7 @@ def _build_short_torso_garment_repaint_mask(
             ),
             torso_anchor_u8,
         )
+        support_u8 = cv2.bitwise_or(support_u8, torso_candidate_u8)
         support_u8 = cv2.bitwise_or(support_u8, bridge_u8)
     support_u8 = cv2.bitwise_and(support_u8, corridor_u8)
     if int((support_u8 > 0).sum()) < 100:
@@ -1458,6 +1486,16 @@ def _build_short_torso_garment_repaint_mask(
                 iterations=1,
             ),
         )
+        if int((torso_candidate_u8 > 0).sum()) > 0:
+            underhair_torso_u8 = cv2.bitwise_and(
+                torso_candidate_u8,
+                cv2.dilate(
+                    sam2_torso_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 41)),
+                    iterations=1,
+                ),
+            )
+            candidate_u8 = cv2.bitwise_or(candidate_u8, underhair_torso_u8)
     else:
         candidate_u8 = support_u8.copy()
     if int((candidate_u8 > 0).sum()) < 100:
