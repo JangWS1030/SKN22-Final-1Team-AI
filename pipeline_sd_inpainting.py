@@ -722,6 +722,8 @@ class MirrAISDPipeline:
                 np.clip(source_garment_prepass_mask.astype(np.float32), 0.0, 1.0) > 0.08
             ).sum()
         )
+        face_w = max(int(face_bbox[2] - face_bbox[0]), 1)
+        face_h = max(int(face_bbox[3] - face_bbox[1]), 1)
         source_garment_prepass_enabled = (
             not skip_source_cloth_preclean
             and source_garment_prepass_px >= max(180, int(face_w * face_h * 0.016))
