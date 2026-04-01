@@ -1246,9 +1246,19 @@ class MirrAISDPipeline:
                     and below_bob_cloth_restore_for_post.shape == (H, W)
                     and float(center_cloth_restore_exclusion_mask.sum()) > 0.0
                 ):
+                    below_bob_center_exclusion_weight = (
+                        0.34 if subject_gender_mode != "male" else 1.08
+                    )
                     below_bob_cloth_restore_for_post = np.clip(
                         below_bob_cloth_restore_for_post.astype(np.float32)
-                        * (1.0 - np.clip(center_cloth_restore_exclusion_mask * 1.08, 0.0, 1.0)),
+                        * (
+                            1.0
+                            - np.clip(
+                                center_cloth_restore_exclusion_mask * below_bob_center_exclusion_weight,
+                                0.0,
+                                1.0,
+                            )
+                        ),
                         0.0,
                         1.0,
                     )
@@ -1797,15 +1807,31 @@ class MirrAISDPipeline:
                         subject_gender_mode=subject_gender_mode,
                     )
                     if hair_length == "short" and float(center_cloth_restore_exclusion_mask.sum()) > 0.0:
+                        preclean_side_exclusion_weight = 0.28 if subject_gender_mode != "male" else 0.96
+                        direct_preclean_exclusion_weight = 0.14 if subject_gender_mode != "male" else 1.12
                         preclean_side_restore_mask = np.clip(
                             preclean_side_restore_mask.astype(np.float32)
-                            * (1.0 - np.clip(center_cloth_restore_exclusion_mask * 0.96, 0.0, 1.0)),
+                            * (
+                                1.0
+                                - np.clip(
+                                    center_cloth_restore_exclusion_mask * preclean_side_exclusion_weight,
+                                    0.0,
+                                    1.0,
+                                )
+                            ),
                             0.0,
                             1.0,
                         )
                         direct_preclean_side_restore_mask = np.clip(
                             direct_preclean_side_restore_mask.astype(np.float32)
-                            * (1.0 - np.clip(center_cloth_restore_exclusion_mask * 1.12, 0.0, 1.0)),
+                            * (
+                                1.0
+                                - np.clip(
+                                    center_cloth_restore_exclusion_mask * direct_preclean_exclusion_weight,
+                                    0.0,
+                                    1.0,
+                                )
+                            ),
                             0.0,
                             1.0,
                         )
@@ -1823,9 +1849,17 @@ class MirrAISDPipeline:
                             np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
                         ).astype(np.float32)
                     if hair_length == "short" and float(center_cloth_restore_exclusion_mask.sum()) > 0.0:
+                        merged_preclean_exclusion_weight = 0.36 if subject_gender_mode != "male" else 1.16
                         preclean_side_restore_mask = np.clip(
                             preclean_side_restore_mask.astype(np.float32)
-                            * (1.0 - np.clip(center_cloth_restore_exclusion_mask * 1.16, 0.0, 1.0)),
+                            * (
+                                1.0
+                                - np.clip(
+                                    center_cloth_restore_exclusion_mask * merged_preclean_exclusion_weight,
+                                    0.0,
+                                    1.0,
+                                )
+                            ),
                             0.0,
                             1.0,
                         )
@@ -2862,15 +2896,31 @@ class MirrAISDPipeline:
                         subject_gender_mode=subject_gender_mode,
                     )
                     if hair_length == "short" and float(center_cloth_restore_exclusion_mask.sum()) > 0.0:
+                        side_column_exclusion_weight = 0.30 if subject_gender_mode != "male" else 0.98
+                        direct_side_exclusion_weight = 0.16 if subject_gender_mode != "male" else 1.12
                         side_column_restore_mask = np.clip(
                             side_column_restore_mask.astype(np.float32)
-                            * (1.0 - np.clip(center_cloth_restore_exclusion_mask * 0.98, 0.0, 1.0)),
+                            * (
+                                1.0
+                                - np.clip(
+                                    center_cloth_restore_exclusion_mask * side_column_exclusion_weight,
+                                    0.0,
+                                    1.0,
+                                )
+                            ),
                             0.0,
                             1.0,
                         )
                         direct_side_column_restore_mask = np.clip(
                             direct_side_column_restore_mask.astype(np.float32)
-                            * (1.0 - np.clip(center_cloth_restore_exclusion_mask * 1.12, 0.0, 1.0)),
+                            * (
+                                1.0
+                                - np.clip(
+                                    center_cloth_restore_exclusion_mask * direct_side_exclusion_weight,
+                                    0.0,
+                                    1.0,
+                                )
+                            ),
                             0.0,
                             1.0,
                         )
@@ -2888,9 +2938,17 @@ class MirrAISDPipeline:
                             np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
                         ).astype(np.float32)
                     if hair_length == "short" and float(center_cloth_restore_exclusion_mask.sum()) > 0.0:
+                        merged_side_exclusion_weight = 0.40 if subject_gender_mode != "male" else 1.18
                         side_column_restore_mask = np.clip(
                             side_column_restore_mask.astype(np.float32)
-                            * (1.0 - np.clip(center_cloth_restore_exclusion_mask * 1.18, 0.0, 1.0)),
+                            * (
+                                1.0
+                                - np.clip(
+                                    center_cloth_restore_exclusion_mask * merged_side_exclusion_weight,
+                                    0.0,
+                                    1.0,
+                                )
+                            ),
                             0.0,
                             1.0,
                         )
