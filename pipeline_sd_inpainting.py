@@ -2056,27 +2056,36 @@ class MirrAISDPipeline:
                 long_soft_bangs_mask = self._build_soft_bangs_generation_mask(
                     bangs_restore_for_sd,
                     face_bbox=face_bbox,
+                    hair_length=hair_length,
                 )
                 if float(long_soft_bangs_mask.sum()) > 0.0:
                     long_soft_bangs_u8 = cv2.dilate(
                         (np.clip(long_soft_bangs_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
                         iterations=1,
                     )
                     long_soft_bangs_mask = cv2.GaussianBlur(
                         long_soft_bangs_u8.astype(np.float32) / 255.0,
                         (0, 0),
-                        sigmaX=2.6,
-                        sigmaY=3.0,
+                        sigmaX=1.9,
+                        sigmaY=2.2,
                     ).astype(np.float32)
-                    long_soft_bangs_mask = np.clip(long_soft_bangs_mask * 1.10, 0.0, 1.0)
+                    long_soft_bangs_mask = np.clip(
+                        long_soft_bangs_mask * (1.02 if has_color_request else 0.98),
+                        0.0,
+                        1.0,
+                    )
                     hair_mask_for_sd = np.maximum(
                         hair_mask_for_sd.astype(np.float32),
                         long_soft_bangs_mask,
                     ).astype(np.float32)
                     composite_bangs_release_mask = np.maximum(
                         composite_bangs_release_mask,
-                        np.clip(long_soft_bangs_mask * 1.28, 0.0, 1.0),
+                        np.clip(
+                            long_soft_bangs_mask * (1.12 if has_color_request else 1.04),
+                            0.0,
+                            1.0,
+                        ),
                     ).astype(np.float32)
                     _store_mask("pipeline_bangs_generation_soft_mask", long_soft_bangs_mask)
                     _store_mask("pipeline_bangs_composite_release_mask", composite_bangs_release_mask)
@@ -2219,7 +2228,7 @@ class MirrAISDPipeline:
                 except Exception as e:
                     logger.warning(f"[SDPipeline] 원본 컬러 유지 보정 실패(무시): {e}")
 
-            if has_color_request and hair_length == "short":
+            if has_color_request and hair_length in {"short", "long"}:
                 try:
                     post_rgb = cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB)
                     bangs_tone_mask = (
@@ -2235,7 +2244,7 @@ class MirrAISDPipeline:
                     )
                     composited_bgr = cv2.cvtColor(post_rgb, cv2.COLOR_RGB2BGR)
                 except Exception as e:
-                    logger.warning(f"[SDPipeline] short bangs tone harmonization failed (ignored): {e}")
+                    logger.warning(f"[SDPipeline] bangs tone harmonization failed (ignored): {e}")
 
             color_distance: Optional[float] = None
             color_score = 0.0
@@ -4686,7 +4695,6 @@ class MirrAISDPipeline:
         face_w = max(int(x2 - x1), 1)
         face_h = max(int(y2 - y1), 1)
         cx = int(0.5 * (x1 + x2))
-
         keypoints = landmark_debug_data.get("keypoints", {}) if isinstance(landmark_debug_data, dict) else {}
         forehead_top = keypoints.get("forehead_top", {}).get("px")
         forehead_y = int(forehead_top[1]) if isinstance(forehead_top, list) and len(forehead_top) >= 2 else int(y1)
@@ -4694,11 +4702,11 @@ class MirrAISDPipeline:
         band_top = max(0, int(min(y1, forehead_y) - face_h * 0.16))
         band_bottom = min(
             H,
-            int(forehead_y + face_h * (0.48 if hair_length == "short" else 0.42 if hair_length == "medium" else 0.44)),
+            int(forehead_y + face_h * (0.48 if hair_length == "short" else 0.42 if hair_length == "medium" else 0.40)),
         )
         center_half = max(
             18,
-            int(face_w * (0.50 if hair_length == "short" else 0.50 if hair_length == "medium" else 0.54)),
+            int(face_w * (0.50 if hair_length == "short" else 0.50 if hair_length == "medium" else 0.46)),
         )
         band_x1 = max(0, cx - center_half)
         band_x2 = min(W, cx + center_half)
@@ -4712,9 +4720,13 @@ class MirrAISDPipeline:
             return np.zeros((H, W), dtype=np.float32)
 
         support_top = max(0, int(band_top - face_h * 0.22))
-        support_bottom = min(H, int(forehead_y + face_h * (0.22 if hair_length == "short" else 0.16)))
-        support_x1 = max(0, cx - max(24, int(face_w * (0.52 if hair_length == "short" else 0.48))))
-        support_x2 = min(W, cx + max(24, int(face_w * (0.52 if hair_length == "short" else 0.48))))
+        support_bottom = min(
+            H,
+            int(forehead_y + face_h * (0.22 if hair_length == "short" else 0.16 if hair_length == "medium" else 0.14)),
+        )
+        support_half = max(24, int(face_w * (0.52 if hair_length == "short" else 0.48 if hair_length == "medium" else 0.42)))
+        support_x1 = max(0, cx - support_half)
+        support_x2 = min(W, cx + support_half)
         support_u8 = np.zeros((H, W), dtype=np.uint8)
         if support_top < support_bottom and support_x1 < support_x2:
             support_u8[support_top:support_bottom, support_x1:support_x2] = 255
@@ -4731,8 +4743,14 @@ class MirrAISDPipeline:
 
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(recover_u8, 8)
         keep_u8 = np.zeros((H, W), dtype=np.uint8)
-        max_component_area = max(160, int(face_w * face_h * (0.36 if hair_length == "short" else 0.30)))
-        max_component_width = max(34, int(face_w * (1.02 if hair_length == "short" else 0.92)))
+        max_component_area = max(
+            160,
+            int(face_w * face_h * (0.36 if hair_length == "short" else 0.30 if hair_length == "medium" else 0.24)),
+        )
+        max_component_width = max(
+            34,
+            int(face_w * (1.02 if hair_length == "short" else 0.92 if hair_length == "medium" else 0.80)),
+        )
         min_component_height = max(8, int(face_h * 0.08))
         for idx in range(1, num_labels):
             x = int(stats[idx, cv2.CC_STAT_LEFT])
@@ -4757,7 +4775,7 @@ class MirrAISDPipeline:
             keep_u8,
             cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE,
-                (7, 11) if hair_length == "short" else (7, 11),
+                (7, 11) if hair_length == "short" else (7, 11) if hair_length == "medium" else (5, 9),
             ),
             iterations=1,
         )
@@ -4768,6 +4786,7 @@ class MirrAISDPipeline:
         self,
         bangs_mask: np.ndarray,
         face_bbox: Tuple[int, int, int, int],
+        hair_length: str = "short",
     ) -> np.ndarray:
         H, W = bangs_mask.shape[:2]
         base = (np.clip(bangs_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255
@@ -4777,6 +4796,7 @@ class MirrAISDPipeline:
         x1, y1, x2, y2 = face_bbox
         face_w = max(int(x2 - x1), 1)
         face_h = max(int(y2 - y1), 1)
+        is_long = hair_length == "long"
         base = cv2.morphologyEx(
             base,
             cv2.MORPH_CLOSE,
@@ -4784,7 +4804,7 @@ class MirrAISDPipeline:
         )
         base = cv2.dilate(
             base,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 5) if is_long else (5, 7)),
             iterations=1,
         )
         ys = np.where(base > 0)[0]
@@ -4794,11 +4814,11 @@ class MirrAISDPipeline:
         top = int(ys.min())
         bottom = int(ys.max()) + 1
         cx = int(0.5 * (x1 + x2))
-        side_keep = max(18, int(face_w * 0.46))
+        side_keep = max(18, int(face_w * (0.38 if is_long else 0.46)))
         x_min = max(0, cx - side_keep)
         x_max = min(W, cx + side_keep)
-        band_top = max(0, int(top - face_h * 0.08))
-        band_bottom = min(H, int(bottom + face_h * 0.08))
+        band_top = max(0, int(top - face_h * (0.05 if is_long else 0.08)))
+        band_bottom = min(H, int(bottom + face_h * (0.05 if is_long else 0.08)))
         if band_top >= band_bottom or x_min >= x_max:
             return np.zeros((H, W), dtype=np.float32)
 
@@ -4811,11 +4831,11 @@ class MirrAISDPipeline:
         soft_u8 = cv2.morphologyEx(
             soft_u8,
             cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 5) if is_long else (5, 7)),
         )
         soft_u8 = cv2.dilate(
             soft_u8,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 7) if is_long else (5, 9)),
             iterations=1,
         )
         if int((soft_u8 > 0).sum()) < 8:
@@ -4824,8 +4844,8 @@ class MirrAISDPipeline:
         alpha = cv2.GaussianBlur(
             soft_u8.astype(np.float32) / 255.0,
             (0, 0),
-            sigmaX=2.2,
-            sigmaY=2.6,
+            sigmaX=1.8 if is_long else 2.2,
+            sigmaY=2.1 if is_long else 2.6,
         )
         alpha = np.clip((alpha - 0.02) / 0.94, 0.0, 1.0)
 
@@ -4855,7 +4875,7 @@ class MirrAISDPipeline:
                     band_bottom - inner_low,
                     dtype=np.float32,
                 )
-        tail_end = min(H, band_bottom + max(6, int(face_h * 0.06)))
+        tail_end = min(H, band_bottom + max(4 if is_long else 6, int(face_h * (0.04 if is_long else 0.06))))
         if tail_end > band_bottom:
             fade[band_bottom:tail_end] = np.linspace(
                 max(0.0, float(fade[band_bottom - 1])) if band_bottom > 0 else 0.44,
@@ -4868,9 +4888,13 @@ class MirrAISDPipeline:
         x_coords = np.arange(W, dtype=np.float32)
         side_scale = max(float(side_keep), 1.0)
         x_dist = np.abs(x_coords - float(cx)) / side_scale
-        x_fade = np.clip(1.0 - (x_dist ** 1.55) * 0.52, 0.44, 1.0).astype(np.float32)
+        x_fade = np.clip(
+            1.0 - (x_dist ** (1.72 if is_long else 1.55)) * (0.62 if is_long else 0.52),
+            0.36 if is_long else 0.44,
+            1.0,
+        ).astype(np.float32)
         alpha = alpha * x_fade[np.newaxis, :]
-        return np.clip(alpha, 0.0, 0.68).astype(np.float32)
+        return np.clip(alpha, 0.0, 0.54 if is_long else 0.68).astype(np.float32)
 
     def _build_eye_region_restore_mask(
         self,
