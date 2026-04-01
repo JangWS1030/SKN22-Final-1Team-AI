@@ -743,6 +743,7 @@ class MirrAISDPipeline:
             _store_mask("pipeline_lower_tail_support_post_mask", lower_tail_support_for_post)
             _store_mask("pipeline_center_chest_strand_mask", center_chest_strand_mask)
             if isinstance(subject_shoulder_bridge_mask, np.ndarray) and subject_shoulder_bridge_mask.shape == (H, W):
+                face_h = max(int(face_bbox[3] - face_bbox[1]), 1)
                 shoulder_hair_forbid_for_post = np.clip(
                     subject_shoulder_bridge_mask.astype(np.float32),
                     0.0,
