@@ -1581,6 +1581,12 @@ class MirrAISDPipeline:
                             reference_rgb=img_rgb,
                             reference_mask=cloth_mask_dilated,
                         )
+                        img_rgb_cleaned = self._restore_reference_region(
+                            img_rgb_cleaned,
+                            img_rgb,
+                            source_shoulder_contour_anchor_mask,
+                            strength=0.988,
+                        )
                         logger.info(
                             "[SDPipeline] source shoulder contour restore applied: pixels=%d",
                             source_shoulder_contour_anchor_px,
