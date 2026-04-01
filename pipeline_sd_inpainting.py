@@ -3854,54 +3854,70 @@ class MirrAISDPipeline:
         if int((candidate_u8 > 0).sum()) == 0:
             return np.zeros((H, W), dtype=np.float32)
 
-        envelope_u8 = candidate_u8.copy()
-        top_cap_u8 = np.zeros((H, W), dtype=np.uint8)
-        cap_y = int(np.clip(y2 + face_h * 0.20, top, bottom - 1))
-        cap_left = max(0, int(x1 - face_w * 0.98))
-        cap_right = min(W - 1, int(x2 + face_w * 0.98))
-        cv2.line(
-            top_cap_u8,
-            (cap_left, cap_y),
-            (cap_right, cap_y),
-            255,
-            thickness=max(18, int(face_h * 0.10)),
-        )
-        envelope_u8 = cv2.bitwise_or(envelope_u8, cv2.bitwise_and(top_cap_u8, corridor_u8))
+        closure_u8 = candidate_u8.copy()
+        upper_band_u8 = np.zeros((H, W), dtype=np.uint8)
+        upper_top = max(0, int(y2 + face_h * 0.02))
+        upper_bottom = min(H, int(y2 + face_h * 0.52))
+        if upper_top < upper_bottom:
+            upper_band_u8[upper_top:upper_bottom, :] = 255
 
+        upper_support_u8 = cv2.bitwise_and(candidate_u8, upper_band_u8)
         if shoulder_bridge_mask is not None:
             bridge_u8 = (
                 np.clip(shoulder_bridge_mask.astype(np.float32), 0.0, 1.0) > 0.08
             ).astype(np.uint8) * 255
-            bridge_u8 = cv2.bitwise_and(bridge_u8, corridor_u8)
-            bridge_u8 = cv2.dilate(
+            bridge_u8 = cv2.bitwise_and(bridge_u8, upper_band_u8)
+            bridge_u8 = cv2.erode(
                 bridge_u8,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
                 iterations=1,
             )
-            envelope_u8 = cv2.bitwise_or(envelope_u8, bridge_u8)
+            upper_support_u8 = cv2.bitwise_or(upper_support_u8, bridge_u8)
 
-        envelope_u8 = cv2.morphologyEx(
-            envelope_u8,
+        top_profile = np.full(W, -1, dtype=np.int32)
+        for x in range(max(0, left), min(W, right)):
+            ys = np.where(upper_support_u8[:, x] > 0)[0]
+            if ys.size > 0:
+                top_profile[x] = int(ys.min())
+
+        valid_x = np.where(top_profile >= 0)[0]
+        if valid_x.size >= 2:
+            span_x = np.arange(int(valid_x.min()), int(valid_x.max()) + 1, dtype=np.int32)
+            span_y = np.interp(span_x, valid_x.astype(np.float32), top_profile[valid_x].astype(np.float32))
+            sigma_x = max(3.0, face_w * 0.045)
+            span_y = cv2.GaussianBlur(
+                span_y.reshape(1, -1).astype(np.float32),
+                (0, 0),
+                sigmaX=sigma_x,
+            ).reshape(-1)
+            span_y = np.clip(
+                np.rint(span_y).astype(np.int32),
+                max(0, int(y2 + face_h * 0.10)),
+                min(H - 1, int(y2 + face_h * 0.46)),
+            )
+            pts = np.stack([span_x, span_y], axis=1).reshape(-1, 1, 2)
+            cv2.polylines(
+                closure_u8,
+                [pts],
+                isClosed=False,
+                color=255,
+                thickness=max(14, int(face_h * 0.08)),
+                lineType=cv2.LINE_AA,
+            )
+
+        closure_u8 = cv2.morphologyEx(
+            closure_u8,
             cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 23)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
         )
+        closure_u8 = cv2.bitwise_and(closure_u8, corridor_u8)
 
-        contours, _ = cv2.findContours(envelope_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return np.zeros((H, W), dtype=np.float32)
-
-        filled_u8 = np.zeros((H, W), dtype=np.uint8)
-        cv2.drawContours(filled_u8, contours, -1, 255, thickness=-1)
+        flood_u8 = closure_u8.copy()
+        flood_mask = np.zeros((H + 2, W + 2), dtype=np.uint8)
+        cv2.floodFill(flood_u8, flood_mask, (0, 0), 255)
+        holes_u8 = cv2.bitwise_not(flood_u8)
+        filled_u8 = cv2.bitwise_or(closure_u8, holes_u8)
         filled_u8 = cv2.bitwise_and(filled_u8, corridor_u8)
-
-        torso_window_u8 = np.zeros((H, W), dtype=np.uint8)
-        window_top = max(0, int(y2 + face_h * 0.06))
-        window_bottom = min(H, int(y2 + face_h * 1.72))
-        window_left = max(0, int(x1 - face_w * 1.10))
-        window_right = min(W, int(x2 + face_w * 1.10))
-        if window_top < window_bottom and window_left < window_right:
-            torso_window_u8[window_top:window_bottom, window_left:window_right] = 255
-        filled_u8 = cv2.bitwise_and(filled_u8, torso_window_u8)
 
         if protect_mask is not None:
             protect_u8 = (
