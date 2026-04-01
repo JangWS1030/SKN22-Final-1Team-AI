@@ -595,6 +595,9 @@ class MirrAISDPipeline:
                 "torso_hair_ratio": float(source_cloth_preclean_analysis.get("torso_hair_ratio", 0.0)),
                 "cloth_overlap_ratio": float(source_cloth_preclean_analysis.get("cloth_overlap_ratio", 0.0)),
             }
+        source_garment_prepass_mask: Optional[np.ndarray] = None
+        source_garment_prepass_enabled = False
+        source_garment_prepass_applied = False
         if hair_length == "short" and len(seeds) < 5:
             extra = 5 - len(seeds)
             seeds.extend(random.randint(0, 2**31 - 1) for _ in range(extra))
@@ -707,6 +710,29 @@ class MirrAISDPipeline:
         logger.info(
             f"[SDPipeline] 옷 픽셀 제거 완료, pixels={hair_mask.sum():.0f}"
         )
+        source_garment_prepass_mask = self._build_source_garment_prepass_mask(
+            source_torso_hair_mask=source_torso_hair_mask,
+            source_cloth_overlap_mask=source_cloth_overlap_mask,
+            cloth_mask=cloth_mask_dilated,
+            protect_mask=protect_mask_for_sd,
+            face_bbox=face_bbox,
+        )
+        source_garment_prepass_px = int(
+            (
+                np.clip(source_garment_prepass_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).sum()
+        )
+        source_garment_prepass_enabled = (
+            not skip_source_cloth_preclean
+            and source_garment_prepass_px >= max(180, int(face_w * face_h * 0.016))
+        )
+        _store_mask("pipeline_source_garment_prepass_mask", source_garment_prepass_mask)
+        if debug_data_common is not None:
+            debug_data_common.setdefault("source_cloth_preclean", {})
+            debug_data_common["source_cloth_preclean"]["garment_prepass_px"] = source_garment_prepass_px
+            debug_data_common["source_cloth_preclean"]["garment_prepass_enabled"] = bool(
+                source_garment_prepass_enabled
+            )
 
         # ── Step 3-e: 숏컷/중단발 — 전략 2 (Post-Inpainting) ────────────────
         # 단발/숏컷에서 기존 긴머리 prior가 강하면, 생성 후 잔여 long-hair만
@@ -1256,7 +1282,11 @@ class MirrAISDPipeline:
                 cloth_overlap = cv2.bitwise_and(removal_u8, cloth_u8)
                 protect_u8 = ((protect_mask_for_sd > 0.2).astype(np.uint8) * 255)
                 cloth_overlap = cv2.bitwise_and(cloth_overlap, cv2.bitwise_not(protect_u8))
-                if not skip_source_cloth_preclean and int((cloth_overlap > 0).sum()) >= 80:
+                if (
+                    not skip_source_cloth_preclean
+                    and not source_garment_prepass_enabled
+                    and int((cloth_overlap > 0).sum()) >= 80
+                ):
                     cloth_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
                     cloth_overlap = cv2.dilate(cloth_overlap, cloth_k, iterations=1)
                     cloth_ns = cv2.inpaint(img_rgb, cloth_overlap, inpaintRadius=4, flags=cv2.INPAINT_NS)
@@ -1477,8 +1507,37 @@ class MirrAISDPipeline:
             else:
                 img_rgb_cleaned = img_rgb
 
+            if source_garment_prepass_enabled:
+                try:
+                    face_crop_fill = self._crop_face(Image.fromarray(img_rgb), face_bbox)
+                    source_garment_seed = (int(seeds[0]) if seeds else random.randint(0, 2**31 - 1)) + 1703
+                    img_rgb_cleaned = self._sd_refine_removed_region(
+                        base_rgb=img_rgb_cleaned,
+                        removal_mask=source_garment_prepass_mask,
+                        face_bbox=face_bbox,
+                        face_crop_pil=face_crop_fill,
+                        protect_mask=protect_mask_for_sd,
+                        cloth_mask=cloth_mask_dilated,
+                        hair_length=hair_length,
+                        seed=source_garment_seed,
+                        refine_mode="garment",
+                    )
+                    source_garment_prepass_applied = True
+                    logger.info(
+                        "[SDPipeline] source garment prepass applied: pixels=%d seed=%d",
+                        source_garment_prepass_px,
+                        source_garment_seed,
+                    )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] source garment prepass 실패(무시): {e}")
+                if debug_data_common is not None:
+                    debug_data_common.setdefault("source_cloth_preclean", {})
+                    debug_data_common["source_cloth_preclean"]["garment_prepass_applied"] = bool(
+                        source_garment_prepass_applied
+                    )
+
             if hair_length == "short":
-                if not skip_source_cloth_preclean:
+                if not skip_source_cloth_preclean and not source_garment_prepass_enabled:
                     try:
                         preclean_cloth_hair_cleanup_mask = self._build_preclean_cloth_hair_cleanup_mask(
                             img_rgb=img_rgb_cleaned,
@@ -2775,6 +2834,7 @@ class MirrAISDPipeline:
                 hair_length == "short"
                 and removal_mask_for_post is not None
                 and cutoff_y_for_post is not None
+                and not source_garment_prepass_applied
             ):
                 try:
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
@@ -2994,6 +3054,7 @@ class MirrAISDPipeline:
                 hair_length == "short"
                 and cloth_mask_dilated is not None
                 and cutoff_y_for_post is not None
+                and not source_garment_prepass_applied
             ):
                 try:
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
@@ -3488,6 +3549,113 @@ class MirrAISDPipeline:
             "cloth_overlap_mask": cloth_overlap_u8.astype(np.float32) / 255.0,
         })
         return result
+
+    def _build_source_garment_prepass_mask(
+        self,
+        *,
+        source_torso_hair_mask: Optional[np.ndarray],
+        source_cloth_overlap_mask: Optional[np.ndarray],
+        cloth_mask: Optional[np.ndarray],
+        protect_mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+    ) -> np.ndarray:
+        base_shape = None
+        for mask in (
+            source_torso_hair_mask,
+            source_cloth_overlap_mask,
+            cloth_mask,
+            protect_mask,
+        ):
+            if isinstance(mask, np.ndarray):
+                base_shape = mask.shape[:2]
+                break
+        if base_shape is None:
+            return np.zeros((1, 1), dtype=np.float32)
+
+        H, W = base_shape
+        if source_torso_hair_mask is not None and source_torso_hair_mask.shape != (H, W):
+            source_torso_hair_mask = None
+        if source_cloth_overlap_mask is not None and source_cloth_overlap_mask.shape != (H, W):
+            source_cloth_overlap_mask = None
+        if cloth_mask is not None and cloth_mask.shape != (H, W):
+            cloth_mask = None
+        if protect_mask is not None and protect_mask.shape != (H, W):
+            protect_mask = None
+
+        x1, y1, x2, y2 = [int(v) for v in face_bbox]
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+
+        corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+        top = max(0, int(y2 + face_h * 0.02))
+        bottom = min(H, int(y2 + face_h * 1.80))
+        left = max(0, int(x1 - face_w * 1.36))
+        right = min(W, int(x2 + face_w * 1.36))
+        if top >= bottom or left >= right:
+            return np.zeros((H, W), dtype=np.float32)
+        corridor_u8[top:bottom, left:right] = 255
+
+        garment_u8 = np.zeros((H, W), dtype=np.uint8)
+        if source_torso_hair_mask is not None:
+            garment_u8 = (
+                np.clip(source_torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+        garment_u8 = cv2.bitwise_and(garment_u8, corridor_u8)
+
+        if source_cloth_overlap_mask is not None:
+            overlap_u8 = (
+                np.clip(source_cloth_overlap_mask.astype(np.float32), 0.0, 1.0) > 0.04
+            ).astype(np.uint8) * 255
+            if int((overlap_u8 > 0).sum()) > 0:
+                overlap_u8 = cv2.dilate(
+                    overlap_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+                    iterations=1,
+                )
+                garment_u8 = cv2.bitwise_or(garment_u8, overlap_u8)
+
+        if cloth_mask is not None:
+            cloth_u8 = (
+                np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04
+            ).astype(np.uint8) * 255
+            if int((cloth_u8 > 0).sum()) > 0:
+                cloth_support_u8 = cv2.dilate(
+                    cloth_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 31)),
+                    iterations=1,
+                )
+                garment_u8 = cv2.bitwise_and(garment_u8, cloth_support_u8)
+
+        garment_u8 = cv2.morphologyEx(
+            garment_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 29)),
+        )
+        garment_u8 = cv2.dilate(
+            garment_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 15)),
+            iterations=1,
+        )
+        garment_u8 = cv2.bitwise_and(garment_u8, corridor_u8)
+
+        if protect_mask is not None:
+            protect_u8 = (
+                np.clip(protect_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            if int((protect_u8 > 0).sum()) > 0:
+                protect_u8 = cv2.dilate(
+                    protect_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (23, 23)),
+                    iterations=1,
+                )
+                garment_u8 = cv2.bitwise_and(garment_u8, cv2.bitwise_not(protect_u8))
+
+        garment_u8 = cv2.morphologyEx(
+            garment_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        )
+        return garment_u8.astype(np.float32) / 255.0
 
     def _estimate_head_generation_box(
         self,
