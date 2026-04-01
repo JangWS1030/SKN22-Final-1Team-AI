@@ -365,6 +365,10 @@ class MirrAISDPipeline:
         img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         requested_hairstyle_text = " ".join(str(hairstyle_text or "").strip().split())
         requested_color_text = self._normalize_color_text(color_text)
+        requested_gender_mode = self._infer_subject_gender(
+            requested_hairstyle_text,
+            subject_gender=subject_gender,
+        )
         trend_request = None
         effective_hairstyle_text = requested_hairstyle_text
         effective_color_text = requested_color_text
@@ -379,7 +383,21 @@ class MirrAISDPipeline:
                     str(trend_request.resolved_hairstyle_text or "").strip().split()
                 )
                 resolved_color = self._normalize_color_text(trend_request.resolved_color_text)
-                if resolved_style:
+                resolved_gender_mode = self._infer_subject_gender(
+                    resolved_style,
+                    subject_gender=None,
+                ) if resolved_style else requested_gender_mode
+                use_resolved_style = bool(resolved_style)
+                if use_resolved_style and requested_gender_mode == "male" and resolved_gender_mode != "male":
+                    use_resolved_style = False
+                    logger.info(
+                        "[SDPipeline] trend resolved style ignored due to gender mismatch: "
+                        "requested_gender=%s resolved_gender=%s resolved_style='%s'",
+                        requested_gender_mode,
+                        resolved_gender_mode,
+                        resolved_style,
+                    )
+                if use_resolved_style:
                     effective_hairstyle_text = resolved_style
                 if resolved_color:
                     effective_color_text = resolved_color
