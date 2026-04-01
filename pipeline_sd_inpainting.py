@@ -2885,6 +2885,7 @@ class MirrAISDPipeline:
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short lower garment cleanup failed (ignored): {e}")
+            center_residual_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
             if (
                 hair_length in ("short", "medium")
                 and cloth_restore_mask_for_post is not None
@@ -2906,6 +2907,7 @@ class MirrAISDPipeline:
                         center_support_mask=center_chest_strand_removal_mask,
                         anchor_mask=subject_cloth_anchor_for_post,
                     )
+                    center_residual_mask_for_post = np.clip(center_residual_mask.astype(np.float32), 0.0, 1.0)
                     center_residual_u8 = (
                         (np.clip(center_residual_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
                     )
@@ -2988,6 +2990,35 @@ class MirrAISDPipeline:
                         center_support_mask=center_chest_strand_removal_mask,
                         anchor_mask=subject_cloth_anchor_for_post if use_short_dark_cloth_anchor_fallback else None,
                     )
+                    center_residual_rescue_exclusion_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                    if hair_length == "short" and float(center_residual_mask_for_post.sum()) > 0.0:
+                        center_residual_rescue_exclusion_u8 = cv2.dilate(
+                            (np.clip(center_residual_mask_for_post.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
+                            * 255,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 33)),
+                            iterations=1,
+                        )
+                        center_residual_rescue_exclusion_u8 = cv2.bitwise_and(
+                            center_residual_rescue_exclusion_u8,
+                            (
+                                (np.clip(final_source_cloth_rescue_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(
+                                    np.uint8
+                                )
+                                * 255
+                            ),
+                        )
+                        if int((center_residual_rescue_exclusion_u8 > 0).sum()) >= 40:
+                            exclusion_mask = cv2.GaussianBlur(
+                                center_residual_rescue_exclusion_u8.astype(np.float32) / 255.0,
+                                (0, 0),
+                                sigmaX=2.8,
+                                sigmaY=4.8,
+                            ).astype(np.float32)
+                            final_source_cloth_rescue_mask = np.clip(
+                                final_source_cloth_rescue_mask.astype(np.float32) * (1.0 - exclusion_mask),
+                                0.0,
+                                1.0,
+                            )
                     final_source_cloth_rescue_u8 = (
                         (np.clip(final_source_cloth_rescue_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
                         * 255
@@ -3007,6 +3038,10 @@ class MirrAISDPipeline:
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_final_source_cloth_rescue_mask"] = cv2.cvtColor(
                             final_source_cloth_rescue_u8,
+                            cv2.COLOR_GRAY2BGR,
+                        )
+                        debug_images_common["pipeline_center_residual_rescue_exclusion_mask"] = cv2.cvtColor(
+                            center_residual_rescue_exclusion_u8,
                             cv2.COLOR_GRAY2BGR,
                         )
                 except Exception as e:
