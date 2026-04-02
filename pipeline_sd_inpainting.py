@@ -3771,6 +3771,13 @@ class MirrAISDPipeline:
             extra_u8 = cv2.subtract(completed_u8, candidate_u8)
             extra_u8 = cv2.bitwise_and(extra_u8, corridor_u8)
 
+        cloth_u8 = np.zeros((H, W), dtype=np.uint8)
+        if cloth_mask is not None:
+            cloth_u8 = (
+                np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04
+            ).astype(np.uint8) * 255
+            cloth_u8 = cv2.bitwise_and(cloth_u8, corridor_u8)
+
         extra_filtered_u8 = np.zeros((H, W), dtype=np.uint8)
         if int((extra_u8 > 0).sum()) > 0:
             overlap_gate_u8 = np.zeros((H, W), dtype=np.uint8)
@@ -3785,12 +3792,16 @@ class MirrAISDPipeline:
                 )
             min_extra_area = max(12, int(face_w * face_h * 0.00015))
             max_extra_bottom = support_y1 + int(support_h * 0.45)
+            thin_extra_width = max(12, int(face_w * 0.10))
+            tall_extra_height = max(42, int(face_h * 0.34))
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
                 (extra_u8 > 0).astype(np.uint8),
                 8,
             )
             for label in range(1, num_labels):
                 y = int(stats[label, cv2.CC_STAT_TOP])
+                w = int(stats[label, cv2.CC_STAT_WIDTH])
+                h = int(stats[label, cv2.CC_STAT_HEIGHT])
                 area = int(stats[label, cv2.CC_STAT_AREA])
                 if area < min_extra_area:
                     continue
@@ -3807,43 +3818,112 @@ class MirrAISDPipeline:
                 )
                 if overlap_pixels <= 0 and hair_pixels < int(area * 0.40):
                     continue
+                if w <= thin_extra_width and h >= tall_extra_height:
+                    continue
                 extra_filtered_u8 = cv2.bitwise_or(extra_filtered_u8, component_u8)
 
         overlap_seed_u8 = np.zeros((H, W), dtype=np.uint8)
-        if int((overlap_u8 > 0).sum()) > 0:
+        torso_support_u8 = cv2.bitwise_or(candidate_u8, completed_u8)
+        if int((overlap_u8 > 0).sum()) > 0 and int((torso_support_u8 > 0).sum()) > 0:
+            inner_support_u8 = cv2.erode(
+                torso_support_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (_odd_size(face_w * 0.02, 5), _odd_size(face_h * 0.03, 5)),
+                ),
+                iterations=1,
+            )
             overlap_seed_u8 = cv2.dilate(
                 overlap_u8,
                 cv2.getStructuringElement(
                     cv2.MORPH_ELLIPSE,
-                    (_odd_size(face_w * 0.035, 9), _odd_size(face_h * 0.05, 9)),
+                    (_odd_size(face_w * 0.025, 7), _odd_size(face_h * 0.035, 7)),
                 ),
                 iterations=1,
             )
+            overlap_seed_u8 = cv2.bitwise_and(overlap_seed_u8, inner_support_u8)
+            upper_seed_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+            upper_seed_top = max(top, support_y1 - 2)
+            upper_seed_bottom = min(H, support_y1 + int(support_h * 0.55))
+            if upper_seed_top < upper_seed_bottom:
+                upper_seed_gate_u8[upper_seed_top:upper_seed_bottom, :] = 255
+                overlap_seed_u8 = cv2.bitwise_and(overlap_seed_u8, upper_seed_gate_u8)
+            if int((cloth_u8 > 0).sum()) > 0:
+                cloth_local_support_u8 = cv2.dilate(
+                    cloth_u8,
+                    cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE,
+                        (_odd_size(face_w * 0.12, 13), _odd_size(face_h * 0.10, 13)),
+                    ),
+                    iterations=1,
+                )
+                overlap_seed_u8 = cv2.bitwise_and(overlap_seed_u8, cloth_local_support_u8)
+
+            filtered_overlap_seed_u8 = np.zeros((H, W), dtype=np.uint8)
+            min_overlap_area = max(16, int(face_w * face_h * 0.00012))
+            max_overlap_bottom = support_y1 + int(support_h * 0.55)
+            thin_overlap_width = max(14, int(face_w * 0.09))
+            tall_overlap_height = max(52, int(face_h * 0.32))
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                (overlap_seed_u8 > 0).astype(np.uint8),
+                8,
+            )
+            for label in range(1, num_labels):
+                y = int(stats[label, cv2.CC_STAT_TOP])
+                w = int(stats[label, cv2.CC_STAT_WIDTH])
+                h = int(stats[label, cv2.CC_STAT_HEIGHT])
+                area = int(stats[label, cv2.CC_STAT_AREA])
+                if area < min_overlap_area:
+                    continue
+                if y > max_overlap_bottom:
+                    continue
+                if w <= thin_overlap_width and h >= tall_overlap_height:
+                    continue
+
+                component_u8 = np.zeros((H, W), dtype=np.uint8)
+                component_u8[labels == label] = 255
+                overlap_pixels = int(
+                    np.logical_and(component_u8 > 0, overlap_u8 > 0).sum()
+                )
+                support_pixels = int(
+                    np.logical_and(
+                        cv2.dilate(
+                            component_u8,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+                            iterations=1,
+                        ) > 0,
+                        inner_support_u8 > 0,
+                    ).sum()
+                )
+                if overlap_pixels <= 0:
+                    continue
+                if support_pixels < max(12, int(area * 0.10)):
+                    continue
+                filtered_overlap_seed_u8 = cv2.bitwise_or(
+                    filtered_overlap_seed_u8,
+                    component_u8,
+                )
+            overlap_seed_u8 = filtered_overlap_seed_u8
 
         garment_u8 = cv2.bitwise_or(extra_filtered_u8, overlap_seed_u8)
 
-        if int((garment_u8 > 0).sum()) > 0 and int((torso_hair_u8 > 0).sum()) > 0:
-            grow_support_u8 = cv2.dilate(
+        if int((garment_u8 > 0).sum()) > 0:
+            garment_u8 = cv2.morphologyEx(
                 garment_u8,
+                cv2.MORPH_CLOSE,
                 cv2.getStructuringElement(
                     cv2.MORPH_ELLIPSE,
-                    (_odd_size(face_w * 0.07, 15), _odd_size(face_h * 0.10, 15)),
+                    (_odd_size(face_w * 0.016, 5), _odd_size(face_h * 0.020, 5)),
                 ),
-                iterations=1,
             )
-            hair_local_u8 = cv2.bitwise_and(torso_hair_u8, grow_support_u8)
-            garment_u8 = cv2.bitwise_or(garment_u8, hair_local_u8)
 
         if cloth_mask is not None and int((garment_u8 > 0).sum()) > 0:
-            cloth_u8 = (
-                np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04
-            ).astype(np.uint8) * 255
             if int((cloth_u8 > 0).sum()) > 0:
                 cloth_support_u8 = cv2.dilate(
                     cloth_u8,
                     cv2.getStructuringElement(
                         cv2.MORPH_ELLIPSE,
-                        (_odd_size(face_w * 0.18, 17), _odd_size(face_h * 0.14, 17)),
+                        (_odd_size(face_w * 0.14, 15), _odd_size(face_h * 0.12, 15)),
                     ),
                     iterations=1,
                 )
@@ -3851,19 +3931,35 @@ class MirrAISDPipeline:
                 if int((supported_u8 > 0).sum()) > 0:
                     garment_u8 = supported_u8
 
-        garment_u8 = cv2.morphologyEx(
-            garment_u8,
-            cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE,
-                (_odd_size(face_w * 0.025, 7), _odd_size(face_h * 0.035, 7)),
-            ),
-        )
         garment_u8 = cv2.bitwise_and(garment_u8, corridor_u8)
-        garment_u8 = _filter_components_by_area(
-            garment_u8,
-            min_area=max(18, int(face_w * face_h * 0.0002)),
+        filtered_garment_u8 = np.zeros((H, W), dtype=np.uint8)
+        thin_final_width = max(14, int(face_w * 0.09))
+        tall_final_height = max(52, int(face_h * 0.32))
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+            (garment_u8 > 0).astype(np.uint8),
+            8,
         )
+        for label in range(1, num_labels):
+            w = int(stats[label, cv2.CC_STAT_WIDTH])
+            h = int(stats[label, cv2.CC_STAT_HEIGHT])
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            if area < max(18, int(face_w * face_h * 0.0002)):
+                continue
+            if w <= thin_final_width and h >= tall_final_height:
+                continue
+
+            component_u8 = np.zeros((H, W), dtype=np.uint8)
+            component_u8[labels == label] = 255
+            overlap_pixels = int(
+                np.logical_and(component_u8 > 0, overlap_u8 > 0).sum()
+            )
+            extra_pixels = int(
+                np.logical_and(component_u8 > 0, extra_filtered_u8 > 0).sum()
+            )
+            if overlap_pixels <= 0 and extra_pixels <= 0:
+                continue
+            filtered_garment_u8 = cv2.bitwise_or(filtered_garment_u8, component_u8)
+        garment_u8 = filtered_garment_u8
 
         if protect_mask is not None:
             protect_u8 = (
