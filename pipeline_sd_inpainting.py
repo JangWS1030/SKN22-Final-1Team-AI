@@ -1875,14 +1875,6 @@ class MirrAISDPipeline:
                                 preclean_side_restore_mask,
                                 direct_preclean_side_restore_mask,
                             ).astype(np.float32)
-                        if (
-                            below_bob_cloth_restore_for_post is not None
-                            and below_bob_cloth_restore_for_post.shape == (H, W)
-                        ):
-                            preclean_side_restore_mask = np.maximum(
-                                preclean_side_restore_mask,
-                                np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
-                            ).astype(np.float32)
                         preclean_side_restore_u8 = (
                             (np.clip(preclean_side_restore_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
                         )
@@ -2824,14 +2816,6 @@ class MirrAISDPipeline:
                             side_column_restore_mask,
                             direct_side_column_restore_mask,
                         ).astype(np.float32)
-                    if (
-                        below_bob_cloth_restore_for_post is not None
-                        and below_bob_cloth_restore_for_post.shape == (H, W)
-                    ):
-                        side_column_restore_mask = np.maximum(
-                            side_column_restore_mask,
-                            np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
-                        ).astype(np.float32)
                     side_column_restore_u8 = (
                         (np.clip(side_column_restore_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
                     )
@@ -2856,8 +2840,9 @@ class MirrAISDPipeline:
                                 cleanup_mask=side_column_restore_mask,
                                 cloth_mask=cloth_mask_dilated,
                                 final_hair_mask=final_hair_mask,
-                                ignore_final_hair_for_cloth_restore=True,
+                                ignore_final_hair_for_cloth_restore=False,
                                 cleanup_dark_tail=True,
+                                prefer_plain_cloth_fill=True,
                             )
                         else:
                             final_rgb = self._restore_cloth_overlap_from_source(
@@ -3105,8 +3090,10 @@ class MirrAISDPipeline:
                             current_rgb=final_rgb,
                             cleanup_mask=short_lower_garment_cleanup_mask,
                             cloth_mask=cloth_mask_dilated,
-                            ignore_final_hair_for_cloth_restore=True,
+                            final_hair_mask=final_hair_mask,
+                            ignore_final_hair_for_cloth_restore=False,
                             cleanup_dark_tail=True,
+                            prefer_plain_cloth_fill=True,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     if debug_images_common is not None and rank == 0:
@@ -3143,8 +3130,9 @@ class MirrAISDPipeline:
                             cleanup_mask=short_lower_cloth_hard_override_mask,
                             cloth_mask=cloth_mask_dilated,
                             final_hair_mask=final_hair_mask,
-                            ignore_final_hair_for_cloth_restore=True,
+                            ignore_final_hair_for_cloth_restore=False,
                             cleanup_dark_tail=True,
+                            prefer_plain_cloth_fill=True,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     if debug_images_common is not None and rank == 0:
