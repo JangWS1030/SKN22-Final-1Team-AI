@@ -255,6 +255,27 @@ def resolve_target_image(
     return f"{repository}:{image_tag}"
 
 
+def normalize_template_env(env_value: Any) -> dict[str, str]:
+    if isinstance(env_value, dict):
+        return {
+            str(key): str(value)
+            for key, value in env_value.items()
+            if key is not None and value is not None
+        }
+    if isinstance(env_value, list):
+        normalized: dict[str, str] = {}
+        for item in env_value:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key")
+            value = item.get("value")
+            if key is None or value is None:
+                continue
+            normalized[str(key)] = str(value)
+        return normalized
+    return {}
+
+
 def build_template_update_payload(template: dict[str, Any], target_image: str) -> dict[str, Any]:
     payload: dict[str, Any] = {"imageName": target_image}
     passthrough_keys = (
@@ -273,7 +294,12 @@ def build_template_update_payload(template: dict[str, Any], target_image: str) -
 
     for key in passthrough_keys:
         if key in template and template[key] is not None:
-            payload[key] = template[key]
+            if key == "env":
+                normalized_env = normalize_template_env(template[key])
+                normalized_env["MIRRAI_PRELOAD_ON_STARTUP"] = "0"
+                payload[key] = normalized_env
+            else:
+                payload[key] = template[key]
     return payload
 
 

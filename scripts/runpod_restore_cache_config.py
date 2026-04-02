@@ -90,8 +90,7 @@ def main() -> int:
     merged_env = _normalize_template_env(template.get("env"))
     merged_env["HF_HOME"] = args.hf_home
     merged_env["TORCH_HOME"] = args.torch_home
-    if args.preload_on_startup:
-        merged_env["MIRRAI_PRELOAD_ON_STARTUP"] = "1"
+    merged_env["MIRRAI_PRELOAD_ON_STARTUP"] = "1" if args.preload_on_startup else "0"
 
     template_payload = build_template_update_payload(template, current_image)
     template_payload["env"] = merged_env

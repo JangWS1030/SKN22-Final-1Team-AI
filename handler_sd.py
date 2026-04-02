@@ -777,6 +777,18 @@ if __name__ == "__main__":
 
     preload_flag = str(os.environ.get("MIRRAI_PRELOAD_ON_STARTUP", "")).strip().lower()
     should_preload = preload_flag in {"1", "true", "yes", "on"}
+    is_runpod_serverless = bool(os.environ.get("RUNPOD_ENDPOINT_ID"))
+    force_serverless_preload = str(os.environ.get("MIRRAI_FORCE_SERVERLESS_PRELOAD", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if should_preload and is_runpod_serverless and not force_serverless_preload:
+        logger.info(
+            "[handler_sd] serverless startup preload disabled; pipeline will load on first request"
+        )
+        should_preload = False
     if not should_preload:
         logger.info("[handler_sd] startup preload skipped; pipeline will load on first request")
         import runpod
