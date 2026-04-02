@@ -6177,7 +6177,28 @@ def _build_dark_tail_residual_mask(
         hair_length=hair_length,
     )
     if float(tail_hint.sum()) > 20.0:
-        zone = np.maximum(zone, tail_hint * 1.20)
+        tail_hint_u8 = (np.clip(tail_hint.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+        if hair_length == "short":
+            tail_hint_u8 = cv2.dilate(
+                tail_hint_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 33)),
+                iterations=1,
+            )
+        zone = np.maximum(zone, (tail_hint_u8.astype(np.float32) / 255.0) * (1.36 if hair_length == "short" else 1.20))
+    if hair_length == "short":
+        tail_core_hint = self._build_short_tail_core_mask(
+            removal_mask=removal_mask,
+            face_bbox=face_bbox,
+            cutoff_y=cutoff_y,
+            hair_length=hair_length,
+        )
+        if float(tail_core_hint.sum()) > 12.0:
+            tail_core_u8 = cv2.dilate(
+                (np.clip(tail_core_hint.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 31)),
+                iterations=1,
+            )
+            zone = np.maximum(zone, (tail_core_u8.astype(np.float32) / 255.0) * 1.42)
     front_hint = np.zeros((H, W), dtype=np.float32)
     front_half = max(12, int(face_w * (0.24 if hair_length == "short" else 0.20)))
     front_x1 = max(0, int(0.5 * (x1 + x2)) - front_half)
@@ -6190,7 +6211,7 @@ def _build_dark_tail_residual_mask(
         if float(front_hint.sum()) > 20.0:
             zone = np.maximum(zone, front_hint * 1.10)
 
-    zone_thresh = 0.20 if hair_length == "short" else 0.34
+    zone_thresh = 0.12 if hair_length == "short" else 0.34
     zone_u8 = (zone > zone_thresh).astype(np.uint8) * 255
     deep_start = min(H, int(cutoff_y + face_h * (0.00 if hair_length == "short" else 0.10)))
     x_min = max(0, int(x1 - face_w * (1.35 if hair_length == "short" else 1.20)))
@@ -6199,6 +6220,13 @@ def _build_dark_tail_residual_mask(
     if x_min < x_max and deep_start < H:
         corridor[deep_start:, x_min:x_max] = 255
     zone_u8 = cv2.bitwise_and(zone_u8, corridor)
+    if hair_length == "short" and int((zone_u8 > 0).sum()) > 0:
+        zone_u8 = cv2.dilate(
+            zone_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 27)),
+            iterations=1,
+        )
+        zone_u8 = cv2.bitwise_and(zone_u8, corridor)
     if int((zone_u8 > 0).sum()) < 40:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -6214,7 +6242,7 @@ def _build_dark_tail_residual_mask(
                 172.0 if hair_length == "short" else 164.0,
             )
         )
-    contrast_thresh = 4.0 if hair_length == "short" else 6.5
+    contrast_thresh = 3.0 if hair_length == "short" else 6.5
     dark_u8 = (
         (gray < dark_thresh)
         & ((blur - gray) > contrast_thresh)

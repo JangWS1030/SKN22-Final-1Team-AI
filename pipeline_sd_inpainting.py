@@ -1127,6 +1127,57 @@ class MirrAISDPipeline:
                             )
 
                     removal_u8 = cv2.bitwise_and(removal_u8, lane_gate_u8)
+                    tail_rescue_u8 = np.zeros((H, W), dtype=np.uint8)
+                    rescue_min_area = max(18, int(face_w * face_h * 0.00012))
+                    rescue_max_area = max(4200, int(face_w * face_h * 0.11))
+                    rescue_max_width = max(88, int(face_w * 0.36))
+                    rescue_min_height = max(34, int(face_h * 0.22))
+                    rescue_side_offset = max(18, int(face_w * 0.16))
+                    rescue_top_max = min(H, int(y2f + face_h * 0.48))
+                    rescue_bottom_min = min(H, int(y2f + face_h * 0.30))
+                    num_rescue_labels, rescue_labels, rescue_stats, rescue_centroids = cv2.connectedComponentsWithStats(
+                        (removal_u8 > 0).astype(np.uint8),
+                        8,
+                    )
+                    for label in range(1, num_rescue_labels):
+                        area = int(rescue_stats[label, cv2.CC_STAT_AREA])
+                        width = int(rescue_stats[label, cv2.CC_STAT_WIDTH])
+                        height = int(rescue_stats[label, cv2.CC_STAT_HEIGHT])
+                        top = int(rescue_stats[label, cv2.CC_STAT_TOP])
+                        bottom = top + height
+                        comp_cx = float(rescue_centroids[label][0])
+                        if area < rescue_min_area or area > rescue_max_area:
+                            continue
+                        if width > rescue_max_width or height < rescue_min_height:
+                            continue
+                        if top > rescue_top_max:
+                            continue
+                        if bottom < rescue_bottom_min:
+                            continue
+
+                        component_u8 = np.zeros((H, W), dtype=np.uint8)
+                        component_u8[rescue_labels == label] = 255
+                        lane_pixels = int(np.logical_and(component_u8 > 0, lane_gate_u8 > 0).sum())
+                        if lane_pixels < max(12, int(area * 0.24)):
+                            continue
+
+                        center_pixels = int(
+                            np.logical_and(component_u8 > 0, center_anchor_u8 > 0).sum()
+                        )
+                        is_side_component = abs(comp_cx - float(face_cx)) >= rescue_side_offset
+                        if is_side_component:
+                            if height < max(rescue_min_height, int(width * 0.78)):
+                                continue
+                        else:
+                            if center_pixels <= 0:
+                                continue
+                            if width > max(48, int(face_w * 0.18)):
+                                continue
+                        tail_rescue_u8 = cv2.bitwise_or(
+                            tail_rescue_u8,
+                            component_u8,
+                        )
+
                     if (
                         shoulder_hair_forbid_for_post is not None
                         and shoulder_hair_forbid_for_post.shape == (H, W)
@@ -1142,10 +1193,15 @@ class MirrAISDPipeline:
                             removal_u8,
                             cv2.bitwise_not(shoulder_forbid_u8),
                         )
+                    if int((tail_rescue_u8 > 0).sum()) > 0:
+                        removal_u8 = cv2.bitwise_or(
+                            removal_u8,
+                            cv2.bitwise_and(tail_rescue_u8, lane_gate_u8),
+                        )
 
                     filtered_removal_u8 = np.zeros((H, W), dtype=np.uint8)
                     min_lane_area = max(28, int(face_w * face_h * 0.00018))
-                    max_lane_width = max(120, int(face_w * 0.30))
+                    max_lane_width = max(136, int(face_w * 0.34))
                     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
                         (removal_u8 > 0).astype(np.uint8),
                         8,
@@ -1161,7 +1217,10 @@ class MirrAISDPipeline:
                         center_pixels = int(
                             np.logical_and(component_u8 > 0, center_anchor_u8 > 0).sum()
                         )
-                        if width > max_lane_width and center_pixels <= 0:
+                        rescue_pixels = int(
+                            np.logical_and(component_u8 > 0, tail_rescue_u8 > 0).sum()
+                        )
+                        if width > max_lane_width and center_pixels <= 0 and rescue_pixels < max(10, int(area * 0.10)):
                             continue
                         filtered_removal_u8 = cv2.bitwise_or(
                             filtered_removal_u8,
