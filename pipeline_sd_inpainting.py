@@ -3676,6 +3676,33 @@ class MirrAISDPipeline:
         face_w = max(int(x2 - x1), 1)
         face_h = max(int(y2 - y1), 1)
 
+        def _odd_size(value: float, minimum: int = 3) -> int:
+            size = max(int(minimum), int(round(float(value))))
+            return size if size % 2 == 1 else size + 1
+
+        def _filter_components_by_area(
+            mask_u8: np.ndarray,
+            *,
+            min_area: int,
+            max_area: Optional[int] = None,
+        ) -> np.ndarray:
+            if int((mask_u8 > 0).sum()) == 0:
+                return np.zeros((H, W), dtype=np.uint8)
+
+            filtered_u8 = np.zeros((H, W), dtype=np.uint8)
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                (mask_u8 > 0).astype(np.uint8),
+                8,
+            )
+            for label in range(1, num_labels):
+                area = int(stats[label, cv2.CC_STAT_AREA])
+                if area < int(min_area):
+                    continue
+                if max_area is not None and area > int(max_area):
+                    continue
+                filtered_u8[labels == label] = 255
+            return filtered_u8
+
         corridor_u8 = np.zeros((H, W), dtype=np.uint8)
         top = max(0, int(y2 + face_h * 0.02))
         bottom = min(H, int(y2 + face_h * 1.80))
@@ -3692,82 +3719,151 @@ class MirrAISDPipeline:
                 np.clip(torso_candidate_mask.astype(np.float32), 0.0, 1.0) > 0.08
             ).astype(np.uint8) * 255
             candidate_u8 = cv2.bitwise_and(candidate_u8, corridor_u8)
+            candidate_u8 = _filter_components_by_area(
+                candidate_u8,
+                min_area=max(24, int(face_w * face_h * 0.0012)),
+            )
 
+        bbox_source_u8 = candidate_u8.copy()
+        if int((bbox_source_u8 > 0).sum()) == 0 and completed_torso_fill_mask is not None:
+            bbox_source_u8 = (
+                np.clip(completed_torso_fill_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            bbox_source_u8 = cv2.bitwise_and(bbox_source_u8, corridor_u8)
+        if int((bbox_source_u8 > 0).sum()) == 0 and source_torso_hair_mask is not None:
+            bbox_source_u8 = (
+                np.clip(source_torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            bbox_source_u8 = cv2.bitwise_and(bbox_source_u8, corridor_u8)
+
+        bbox_ys, bbox_xs = np.where(bbox_source_u8 > 0)
+        if bbox_xs.size > 0 and bbox_ys.size > 0:
+            support_y1 = int(bbox_ys.min())
+            support_y2 = int(bbox_ys.max())
+        else:
+            support_y1 = top
+            support_y2 = bottom - 1
+        support_h = max(support_y2 - support_y1 + 1, 1)
+
+        completed_u8 = np.zeros((H, W), dtype=np.uint8)
         if completed_torso_fill_mask is not None:
             completed_u8 = (
                 np.clip(completed_torso_fill_mask.astype(np.float32), 0.0, 1.0) > 0.08
             ).astype(np.uint8) * 255
             completed_u8 = cv2.bitwise_and(completed_u8, corridor_u8)
-            if int((completed_u8 > 0).sum()) > 0:
-                garment_u8 = cv2.subtract(completed_u8, candidate_u8)
-                garment_u8 = cv2.morphologyEx(
-                    garment_u8,
-                    cv2.MORPH_CLOSE,
-                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 21)),
-                )
-                garment_u8 = cv2.dilate(
-                    garment_u8,
-                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 9)),
-                    iterations=1,
-                )
-                garment_u8 = cv2.bitwise_and(garment_u8, completed_u8)
 
+        overlap_u8 = np.zeros((H, W), dtype=np.uint8)
+        if source_cloth_overlap_mask is not None:
+            overlap_u8 = (
+                np.clip(source_cloth_overlap_mask.astype(np.float32), 0.0, 1.0) > 0.04
+            ).astype(np.uint8) * 255
+            overlap_u8 = cv2.bitwise_and(overlap_u8, corridor_u8)
+
+        torso_hair_u8 = np.zeros((H, W), dtype=np.uint8)
         if source_torso_hair_mask is not None:
             torso_hair_u8 = (
                 np.clip(source_torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08
             ).astype(np.uint8) * 255
             torso_hair_u8 = cv2.bitwise_and(torso_hair_u8, corridor_u8)
-            if int((garment_u8 > 0).sum()) > 0:
-                garment_u8 = cv2.bitwise_or(
-                    garment_u8,
-                    cv2.bitwise_and(
-                        cv2.dilate(
-                            torso_hair_u8,
-                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
-                            iterations=1,
-                        ),
-                        cv2.bitwise_not(candidate_u8),
-                    ),
-                )
-            else:
-                garment_u8 = torso_hair_u8
-        garment_u8 = cv2.bitwise_and(garment_u8, corridor_u8)
 
-        if source_cloth_overlap_mask is not None:
-            overlap_u8 = (
-                np.clip(source_cloth_overlap_mask.astype(np.float32), 0.0, 1.0) > 0.04
-            ).astype(np.uint8) * 255
+        extra_u8 = np.zeros((H, W), dtype=np.uint8)
+        if int((completed_u8 > 0).sum()) > 0:
+            extra_u8 = cv2.subtract(completed_u8, candidate_u8)
+            extra_u8 = cv2.bitwise_and(extra_u8, corridor_u8)
+
+        extra_filtered_u8 = np.zeros((H, W), dtype=np.uint8)
+        if int((extra_u8 > 0).sum()) > 0:
+            overlap_gate_u8 = np.zeros((H, W), dtype=np.uint8)
             if int((overlap_u8 > 0).sum()) > 0:
-                overlap_u8 = cv2.dilate(
+                overlap_gate_u8 = cv2.dilate(
                     overlap_u8,
-                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+                    cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE,
+                        (_odd_size(face_w * 0.10, 15), _odd_size(face_h * 0.12, 15)),
+                    ),
                     iterations=1,
                 )
-                garment_u8 = cv2.bitwise_or(garment_u8, overlap_u8)
+            min_extra_area = max(12, int(face_w * face_h * 0.00015))
+            max_extra_bottom = support_y1 + int(support_h * 0.45)
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                (extra_u8 > 0).astype(np.uint8),
+                8,
+            )
+            for label in range(1, num_labels):
+                y = int(stats[label, cv2.CC_STAT_TOP])
+                area = int(stats[label, cv2.CC_STAT_AREA])
+                if area < min_extra_area:
+                    continue
+                if y > max_extra_bottom:
+                    continue
 
-        if cloth_mask is not None and int((garment_u8 > 0).sum()) == 0:
+                component_u8 = np.zeros((H, W), dtype=np.uint8)
+                component_u8[labels == label] = 255
+                overlap_pixels = int(
+                    np.logical_and(component_u8 > 0, overlap_gate_u8 > 0).sum()
+                )
+                hair_pixels = int(
+                    np.logical_and(component_u8 > 0, torso_hair_u8 > 0).sum()
+                )
+                if overlap_pixels <= 0 and hair_pixels < int(area * 0.40):
+                    continue
+                extra_filtered_u8 = cv2.bitwise_or(extra_filtered_u8, component_u8)
+
+        overlap_seed_u8 = np.zeros((H, W), dtype=np.uint8)
+        if int((overlap_u8 > 0).sum()) > 0:
+            overlap_seed_u8 = cv2.dilate(
+                overlap_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (_odd_size(face_w * 0.035, 9), _odd_size(face_h * 0.05, 9)),
+                ),
+                iterations=1,
+            )
+
+        garment_u8 = cv2.bitwise_or(extra_filtered_u8, overlap_seed_u8)
+
+        if int((garment_u8 > 0).sum()) > 0 and int((torso_hair_u8 > 0).sum()) > 0:
+            grow_support_u8 = cv2.dilate(
+                garment_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (_odd_size(face_w * 0.07, 15), _odd_size(face_h * 0.10, 15)),
+                ),
+                iterations=1,
+            )
+            hair_local_u8 = cv2.bitwise_and(torso_hair_u8, grow_support_u8)
+            garment_u8 = cv2.bitwise_or(garment_u8, hair_local_u8)
+
+        if cloth_mask is not None and int((garment_u8 > 0).sum()) > 0:
             cloth_u8 = (
                 np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04
             ).astype(np.uint8) * 255
             if int((cloth_u8 > 0).sum()) > 0:
                 cloth_support_u8 = cv2.dilate(
                     cloth_u8,
-                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 31)),
+                    cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE,
+                        (_odd_size(face_w * 0.18, 17), _odd_size(face_h * 0.14, 17)),
+                    ),
                     iterations=1,
                 )
-                garment_u8 = cv2.bitwise_and(garment_u8, cloth_support_u8)
+                supported_u8 = cv2.bitwise_and(garment_u8, cloth_support_u8)
+                if int((supported_u8 > 0).sum()) > 0:
+                    garment_u8 = supported_u8
 
         garment_u8 = cv2.morphologyEx(
             garment_u8,
             cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 29)),
-        )
-        garment_u8 = cv2.dilate(
-            garment_u8,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 15)),
-            iterations=1,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (_odd_size(face_w * 0.025, 7), _odd_size(face_h * 0.035, 7)),
+            ),
         )
         garment_u8 = cv2.bitwise_and(garment_u8, corridor_u8)
+        garment_u8 = _filter_components_by_area(
+            garment_u8,
+            min_area=max(18, int(face_w * face_h * 0.0002)),
+        )
 
         if protect_mask is not None:
             protect_u8 = (
@@ -3784,7 +3880,7 @@ class MirrAISDPipeline:
         garment_u8 = cv2.morphologyEx(
             garment_u8,
             cv2.MORPH_OPEN,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
         )
         return garment_u8.astype(np.float32) / 255.0
 
