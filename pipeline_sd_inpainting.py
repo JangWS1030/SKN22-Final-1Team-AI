@@ -200,6 +200,9 @@ class SDInpaintConfig:
     hair_overlap_expand_px: int = 18
     controlnet_use_masked_edges: bool = True
     upper_clothes_overwrite_alpha: float = 0.92
+    short_upper_clothes_overwrite_alpha: float = 0.72
+    medium_upper_clothes_overwrite_alpha: float = 0.82
+    long_upper_clothes_overwrite_alpha: float = 0.92
 
     # 씨드 리스트 — None 이면 요청마다 랜덤 생성 (권장), 고정값 지정도 가능
     seeds: Optional[List[int]] = None
@@ -724,12 +727,32 @@ class MirrAISDPipeline:
         short_upper_body_repaint_px = 0
         upper_clothes_overwrite_mask = np.zeros((H, W), dtype=np.float32)
         upper_clothes_overwrite_core_mask = np.zeros((H, W), dtype=np.float32)
+        effective_upper_clothes_overwrite_mask = np.zeros((H, W), dtype=np.float32)
+        effective_upper_clothes_overwrite_core_mask = np.zeros((H, W), dtype=np.float32)
         upper_clothes_overwrite_anchor_mask = np.zeros((H, W), dtype=np.float32)
         upper_clothes_overwrite_px = 0
         use_upper_clothes_overwrite = bool(
             self.config.enable_upper_clothes_overwrite
             and hair_length in ("short", "medium")
         )
+        overwrite_alpha = float(np.clip(self.config.upper_clothes_overwrite_alpha, 0.0, 1.0))
+        if hair_length == "short":
+            overwrite_alpha = min(
+                overwrite_alpha,
+                float(np.clip(self.config.short_upper_clothes_overwrite_alpha, 0.0, 1.0)),
+            )
+        elif hair_length == "medium":
+            overwrite_alpha = min(
+                overwrite_alpha,
+                float(np.clip(self.config.medium_upper_clothes_overwrite_alpha, 0.0, 1.0)),
+            )
+        else:
+            overwrite_alpha = min(
+                overwrite_alpha,
+                float(np.clip(self.config.long_upper_clothes_overwrite_alpha, 0.0, 1.0)),
+            )
+        overwrite_core_alpha = float(np.clip(min(0.90, overwrite_alpha + 0.10), 0.0, 1.0))
+        overwrite_prepass_alpha = float(np.clip(min(0.88, overwrite_alpha + 0.08), 0.0, 1.0))
         completed_torso_fill_mask = self._build_completed_subject_torso_fill_mask(
             torso_candidate_mask=subject_torso_candidate_mask,
             source_torso_hair_mask=source_torso_hair_mask,
@@ -788,7 +811,7 @@ class MirrAISDPipeline:
                     cloth_generation_guard.astype(np.float32)
                     - np.clip(
                         upper_clothes_overwrite_mask.astype(np.float32)
-                        * float(np.clip(self.config.upper_clothes_overwrite_alpha, 0.0, 1.0)),
+                        * overwrite_alpha,
                         0.0,
                         1.0,
                     ),
@@ -797,12 +820,13 @@ class MirrAISDPipeline:
                 ).astype(np.float32)
                 source_garment_prepass_mask = np.maximum(
                     source_garment_prepass_mask.astype(np.float32),
-                    np.clip(upper_clothes_overwrite_mask.astype(np.float32) * 0.92, 0.0, 1.0),
+                    np.clip(upper_clothes_overwrite_mask.astype(np.float32) * overwrite_prepass_alpha, 0.0, 1.0),
                 ).astype(np.float32)
                 logger.info(
-                    "[SDPipeline] upper clothes overwrite opened: overwrite_px=%d guard_px=%.0f",
+                    "[SDPipeline] upper clothes overwrite opened: overwrite_px=%d guard_px=%.0f alpha=%.2f",
                     upper_clothes_overwrite_px,
                     float(cloth_generation_guard.sum()),
+                    overwrite_alpha,
                 )
         if hair_length == "short":
             try:
@@ -854,7 +878,7 @@ class MirrAISDPipeline:
                 if use_upper_clothes_overwrite and upper_clothes_overwrite_core_mask.shape == (H, W):
                     upper_clothes_overwrite_mask = np.maximum(
                         upper_clothes_overwrite_mask.astype(np.float32),
-                        np.clip(upper_clothes_overwrite_core_mask.astype(np.float32) * 0.98, 0.0, 1.0),
+                        np.clip(upper_clothes_overwrite_core_mask.astype(np.float32) * overwrite_core_alpha, 0.0, 1.0),
                     ).astype(np.float32)
                 if short_upper_body_repaint_px >= 120:
                     repaint_release_u8 = cv2.dilate(
@@ -875,15 +899,27 @@ class MirrAISDPipeline:
                     ).astype(np.float32)
                     source_garment_prepass_mask = np.maximum(
                         source_garment_prepass_mask.astype(np.float32),
-                        short_upper_body_repaint_mask.astype(np.float32) * 0.95,
+                        np.clip(short_upper_body_repaint_mask.astype(np.float32) * overwrite_prepass_alpha, 0.0, 1.0),
                     ).astype(np.float32)
                     logger.info(
-                        "[SDPipeline] short upper-body repaint opened: repaint_px=%d guard_px=%.0f",
+                        "[SDPipeline] short upper-body repaint opened: repaint_px=%d guard_px=%.0f alpha=%.2f",
                         short_upper_body_repaint_px,
                         float(cloth_generation_guard.sum()),
+                        overwrite_prepass_alpha,
                     )
             except Exception as e:
                 logger.warning(f"[SDPipeline] short upper-body repaint preparation failed (ignored): {e}")
+        if use_upper_clothes_overwrite:
+            effective_upper_clothes_overwrite_mask = np.clip(
+                upper_clothes_overwrite_mask.astype(np.float32) * overwrite_alpha,
+                0.0,
+                1.0,
+            ).astype(np.float32)
+            effective_upper_clothes_overwrite_core_mask = np.clip(
+                upper_clothes_overwrite_core_mask.astype(np.float32) * overwrite_core_alpha,
+                0.0,
+                1.0,
+            ).astype(np.float32)
         hair_mask = np.clip(hair_mask - cloth_generation_guard, 0.0, 1.0)
         _store_mask("segface_cloth_mask_dilated", cloth_mask_dilated)
         _store_mask("pipeline_cloth_generation_guard_mask", cloth_generation_guard)
@@ -891,6 +927,8 @@ class MirrAISDPipeline:
         _store_mask("pipeline_short_upper_body_repaint_mask", short_upper_body_repaint_mask)
         _store_mask("pipeline_upper_clothes_overwrite_mask", upper_clothes_overwrite_mask)
         _store_mask("pipeline_upper_clothes_overwrite_core_mask", upper_clothes_overwrite_core_mask)
+        _store_mask("pipeline_upper_clothes_overwrite_effective_mask", effective_upper_clothes_overwrite_mask)
+        _store_mask("pipeline_upper_clothes_overwrite_core_effective_mask", effective_upper_clothes_overwrite_core_mask)
         _store_mask("pipeline_hair_mask_cloth_protected", hair_mask)
         logger.info(
             f"[SDPipeline] 옷 픽셀 제거 완료, pixels={hair_mask.sum():.0f}"
@@ -1523,8 +1561,8 @@ class MirrAISDPipeline:
                 gen_mask[head_y1:head_y2, head_x1:head_x2] = 1.0
             gen_mask = np.clip(gen_mask - protect_mask_for_sd, 0.0, 1.0)
             gen_mask = np.clip(gen_mask - cloth_generation_guard, 0.0, 1.0)
-            if use_upper_clothes_overwrite and upper_clothes_overwrite_mask.shape == (H, W):
-                gen_mask = np.maximum(gen_mask, upper_clothes_overwrite_mask).astype(np.float32)
+            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == (H, W):
+                gen_mask = np.maximum(gen_mask, effective_upper_clothes_overwrite_mask).astype(np.float32)
             if hair_length == "short":
                 below_bob_generation_block_for_post = self._build_short_below_bob_generation_block_mask(
                     removal_mask=removal_mask_for_post,
@@ -1619,8 +1657,8 @@ class MirrAISDPipeline:
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
                     iterations=1,
                 )
-            if use_upper_clothes_overwrite and upper_clothes_overwrite_core_mask.shape == (H, W):
-                core_restore_mask = upper_clothes_overwrite_core_mask.astype(np.float32)
+            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == (H, W):
+                core_restore_mask = effective_upper_clothes_overwrite_core_mask.astype(np.float32)
                 if protect_mask_for_sd.shape == (H, W):
                     core_restore_mask = np.clip(
                         core_restore_mask - protect_mask_for_sd.astype(np.float32),
@@ -1645,8 +1683,8 @@ class MirrAISDPipeline:
                 )
                 _store_mask("pipeline_bangs_generation_soft_mask", soft_bangs_generation_mask)
                 _store_mask("pipeline_bangs_composite_release_mask", composite_bangs_release_mask)
-            if use_upper_clothes_overwrite and upper_clothes_overwrite_core_mask.shape == (H, W):
-                core_restore_mask = upper_clothes_overwrite_core_mask.astype(np.float32)
+            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == (H, W):
+                core_restore_mask = effective_upper_clothes_overwrite_core_mask.astype(np.float32)
                 if protect_mask_for_sd.shape == (H, W):
                     core_restore_mask = np.clip(
                         core_restore_mask - protect_mask_for_sd.astype(np.float32),
@@ -2325,15 +2363,15 @@ class MirrAISDPipeline:
             _store_mask("pipeline_short_generation_mask", gen_mask)
 
             hair_mask_for_sd = gen_mask.astype(np.float32)
-            if use_upper_clothes_overwrite and upper_clothes_overwrite_mask.shape == (H, W):
+            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == (H, W):
                 hair_mask_for_sd = np.maximum(
                     hair_mask_for_sd,
-                    upper_clothes_overwrite_mask.astype(np.float32),
+                    effective_upper_clothes_overwrite_mask.astype(np.float32),
                 ).astype(np.float32)
-            if use_upper_clothes_overwrite and upper_clothes_overwrite_core_mask.shape == (H, W):
+            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == (H, W):
                 hair_mask_for_sd = np.maximum(
                     hair_mask_for_sd,
-                    upper_clothes_overwrite_core_mask.astype(np.float32),
+                    effective_upper_clothes_overwrite_core_mask.astype(np.float32),
                 ).astype(np.float32)
             img_rgb_for_sd   = img_rgb_cleaned
         else:
@@ -2383,20 +2421,20 @@ class MirrAISDPipeline:
             if (
                 use_upper_clothes_overwrite
                 and self.config.controlnet_use_masked_edges
-                and upper_clothes_overwrite_mask.shape == canny_suppress.shape
+                and effective_upper_clothes_overwrite_mask.shape == canny_suppress.shape
             ):
                 canny_suppress = np.maximum(
                     canny_suppress,
-                    upper_clothes_overwrite_mask.astype(np.float32),
+                    effective_upper_clothes_overwrite_mask.astype(np.float32),
                 ).astype(np.float32)
             if (
                 use_upper_clothes_overwrite
                 and self.config.controlnet_use_masked_edges
-                and upper_clothes_overwrite_core_mask.shape == canny_suppress.shape
+                and effective_upper_clothes_overwrite_core_mask.shape == canny_suppress.shape
             ):
                 canny_suppress = np.maximum(
                     canny_suppress,
-                    upper_clothes_overwrite_core_mask.astype(np.float32),
+                    effective_upper_clothes_overwrite_core_mask.astype(np.float32),
                 ).astype(np.float32)
             if hair_length == "short":
                 canny_suppress = np.maximum(
@@ -2435,7 +2473,7 @@ class MirrAISDPipeline:
 
         source_garment_prompt_hints: Dict[str, Any] = {}
         source_garment_prompt_support_mask = np.zeros((H, W), dtype=np.float32)
-        if hair_length in ("short", "medium"):
+        if hair_length in ("short", "medium", "long"):
             try:
                 (
                     source_garment_prompt_hints,
@@ -2513,15 +2551,15 @@ class MirrAISDPipeline:
             )
             gen_preview_bgr = cv2.cvtColor(np.array(gen_pil), cv2.COLOR_RGB2BGR)
             composite_mask = hair_mask_for_sd
-            if use_upper_clothes_overwrite and upper_clothes_overwrite_mask.shape == hair_mask_for_sd.shape:
+            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == hair_mask_for_sd.shape:
                 composite_mask = np.maximum(
                     composite_mask.astype(np.float32),
-                    upper_clothes_overwrite_mask.astype(np.float32),
+                    effective_upper_clothes_overwrite_mask.astype(np.float32),
                 ).astype(np.float32)
-            if use_upper_clothes_overwrite and upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape:
+            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape:
                 composite_mask = np.maximum(
                     composite_mask.astype(np.float32),
-                    upper_clothes_overwrite_core_mask.astype(np.float32),
+                    effective_upper_clothes_overwrite_core_mask.astype(np.float32),
                 ).astype(np.float32)
             composited_bgr = self._composite(
                 composite_base_bgr, composite_base_rgb,

@@ -873,14 +873,15 @@ def _build_prompt(
         subject_gender=gender_mode,
     )
     preserve_source_garment = True
+    garment_priority_parts: List[str] = []
     garment_positive_parts: List[str] = []
     garment_negative_parts: List[str] = []
     if preserve_source_garment:
         garment_positive_parts.extend([
             "plain white crew-neck t-shirt",
             "smooth white cotton",
-            "connected shoulders",
-            "no hair on clothes",
+            "covered shoulders",
+            "plain shirt front",
         ])
         garment_negative_parts.extend([
             "patterned clothes",
@@ -899,6 +900,7 @@ def _build_prompt(
             "collar",
             "open neckline",
             "deep v-neck",
+            "plunging neckline",
             "exposed chest",
             "visible original clothing",
             "dark clothes",
@@ -906,9 +908,76 @@ def _build_prompt(
             "blue clothes",
             "beige clothes",
             "brown clothes",
+            "armor-like chest panel",
+            "bib-like front panel",
+            "structured breastplate top",
         ])
-    garment_positive_hint = ", ".join(garment_positive_parts)
-    garment_negative_hint = ", ".join(garment_negative_parts)
+
+    garment_hints = source_garment_hints if isinstance(source_garment_hints, dict) else {}
+    garment_conf = garment_hints.get("confidence") if isinstance(garment_hints.get("confidence"), dict) else {}
+    color_conf = float(garment_conf.get("color", 0.0) or 0.0)
+    pattern_conf = float(garment_conf.get("pattern", 0.0) or 0.0)
+    material_conf = float(garment_conf.get("material", 0.0) or 0.0)
+    neckline_conf = float(garment_conf.get("neckline", 0.0) or 0.0)
+    color_name = str(garment_hints.get("color_name") or "").strip().lower()
+    pattern_type = str(garment_hints.get("pattern_type") or "").strip().lower()
+    material_hint = str(garment_hints.get("material_hint") or "").strip().lower()
+    neckline_hint = str(garment_hints.get("neckline_hint") or "").strip().lower()
+
+    if color_conf >= 0.45:
+        if color_name == "white":
+            garment_priority_parts.append("clean white tone")
+        elif color_name in {"ivory", "cream", "beige"}:
+            garment_priority_parts.append("soft off-white tone")
+    if pattern_conf >= 0.68:
+        if pattern_type == "solid":
+            garment_priority_parts.append("plain unpatterned shirt")
+        elif pattern_type == "ribbed":
+            garment_priority_parts.append("subtle cotton texture")
+        elif pattern_type == "textured":
+            garment_priority_parts.append("light fabric texture")
+    if material_conf >= 0.72:
+        if material_hint == "smooth fabric":
+            garment_priority_parts.append("soft cotton fabric")
+        elif material_hint == "ribbed knit":
+            garment_priority_parts.append("fine rib texture")
+    if neckline_conf >= 0.56 and neckline_hint == "round":
+        garment_priority_parts.append("round crew neckline")
+    elif neckline_conf >= 0.72 and neckline_hint == "v-neck":
+        garment_negative_parts.extend([
+            "deep v-neck",
+            "plunging neckline",
+            "wide v-neck blouse",
+        ])
+
+    negative_color_hints = garment_hints.get("negative_color_hints")
+    if isinstance(negative_color_hints, list) and color_name in {"white", "ivory", "cream", "beige"}:
+        for item in negative_color_hints:
+            text = str(item).strip()
+            if text:
+                garment_negative_parts.append(text)
+
+    garment_positive_parts = garment_priority_parts + garment_positive_parts
+
+    deduped_positive_parts: List[str] = []
+    seen_positive: set[str] = set()
+    for part in garment_positive_parts:
+        key = str(part).strip().lower()
+        if not key or key in seen_positive:
+            continue
+        seen_positive.add(key)
+        deduped_positive_parts.append(str(part).strip())
+    deduped_negative_parts: List[str] = []
+    seen_negative: set[str] = set()
+    for part in garment_negative_parts:
+        key = str(part).strip().lower()
+        if not key or key in seen_negative:
+            continue
+        seen_negative.add(key)
+        deduped_negative_parts.append(str(part).strip())
+
+    garment_positive_hint = ", ".join(deduped_positive_parts[:5])
+    garment_negative_hint = ", ".join(deduped_negative_parts)
     if garment_negative_hint:
         garment_negative_hint += ", "
 
@@ -929,13 +998,15 @@ def _build_prompt(
             else:
                 color_pos_hint = "natural consistent hair color"
 
+        primary_positive = f"professional portrait photo of a person with {style_part}"
+        if garment_positive_hint:
+            primary_positive = f"{primary_positive}, {garment_positive_hint}"
         positive_parts = [
-            f"professional portrait photo of a person with {style_part}",
+            primary_positive,
         ]
         if color_pos_hint:
             positive_parts.append(color_pos_hint)
         positive_parts.extend([
-            garment_positive_hint,
             "clean neckline",
             "photorealistic, natural lighting, sharp focus",
         ])
@@ -1022,15 +1093,17 @@ def _build_prompt(
     elif normalized_color:
         color_pos_hint = "natural hair color"
 
+    primary_positive = f"professional portrait photo of a {subject_noun} with {style}{pos_suffix}"
+    if garment_positive_hint:
+        primary_positive = f"{primary_positive}, {garment_positive_hint}"
     positive_parts = [
-        f"professional portrait photo of a {subject_noun} with {style}{pos_suffix}",
+        primary_positive,
     ]
     if color_pos_hint:
         positive_parts.append(color_pos_hint)
     positive_parts.extend([
-        "balanced framing",
-        garment_positive_hint,
         "clean neckline",
+        "balanced framing",
         "photorealistic portrait",
     ])
     positive = _compact_prompt_parts(positive_parts)
