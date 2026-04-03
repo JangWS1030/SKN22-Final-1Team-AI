@@ -13,6 +13,7 @@
 ## 핵심 파일
 
 - `handler_sd.py`: RunPod serverless 엔트리포인트 (EP0~EP3 라우팅)
+- `internal_api_app.py`: `/internal/...` HTTP facade 엔트리포인트
 - `pipeline_sd_inpainting.py`: 실제 SD 추론 파이프라인
 - `pipeline_sd_components/`: `pipeline_sd_inpainting.py`에서 분리한 로딩 / 프롬프트 / 후처리 모듈
 - `style_recommender.py`: 얼굴형 + 취향벡터 → 스타일 추천 엔진 (ChromaDB 코사인 유사도)
@@ -84,6 +85,7 @@ python -m pip install -r requirements-trends.txt
 - `docs/rag_pipeline.md`: 통합된 크롤링/RAG 서브시스템 실행 가이드
 - `docs/rag_evaluation.md`: stylist-rag와 no-rag 비교 평가 결과
 - `docs/pipeline_runtime_config.md`: 현재 파이프라인이 실제로 읽는 runtime config 기준 문서
+- `docs/internal_ai_service_api.md`: backend 연동용 내부 AI 서비스 API 계약
 
 ## RunPod API 엔드포인트
 

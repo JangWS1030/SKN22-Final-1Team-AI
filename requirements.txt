@@ -16,6 +16,8 @@ requests==2.32.3
 runpod==1.8.1
 huggingface_hub[hf_xet]==0.30.2
 python-dotenv==1.0.1
+fastapi==0.116.1
+uvicorn==0.35.0
 
 simple-lama-inpainting==0.1.1
 onnx==1.16.2
