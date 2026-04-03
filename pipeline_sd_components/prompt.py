@@ -884,6 +884,26 @@ def _harmonize_short_bangs_tone(
             )
         ),
     )
+    crown_ref_u8 = np.zeros((H, W), dtype=np.uint8)
+    crown_top = max(0, int(y1 - face_h * 0.34))
+    crown_bottom = min(H, int(y1 + face_h * 0.08))
+    crown_left = max(0, int(cx - face_w * 0.58))
+    crown_right = min(W, int(cx + face_w * 0.58))
+    if crown_top < crown_bottom and crown_left < crown_right:
+        crown_ref_u8[crown_top:crown_bottom, crown_left:crown_right] = 255
+        crown_ref_u8 = cv2.bitwise_and(crown_ref_u8, hair_u8)
+        crown_ref_u8 = cv2.bitwise_and(
+            crown_ref_u8,
+            cv2.bitwise_not(
+                cv2.dilate(
+                    bangs_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
+                    iterations=1,
+                )
+            ),
+        )
+        if int((crown_ref_u8 > 0).sum()) >= 48:
+            ref_u8 = crown_ref_u8
     if int((ref_u8 > 0).sum()) < 80:
         return img_rgb
 
@@ -896,7 +916,7 @@ def _harmonize_short_bangs_tone(
     bangs_mean = bangs_vals.mean(axis=0)
     ref_mean = ref_vals.mean(axis=0)
     if target_lab is not None and np.asarray(target_lab).shape == (3,):
-        ref_mean = ref_mean * 0.84 + np.asarray(target_lab, dtype=np.float32) * 0.16
+        ref_mean = ref_mean * 0.90 + np.asarray(target_lab, dtype=np.float32) * 0.10
 
     center_focus_u8 = np.zeros((H, W), dtype=np.uint8)
     center_left = max(0, int(cx - face_w * 0.42))
