@@ -896,7 +896,7 @@ def _harmonize_short_bangs_tone(
     bangs_mean = bangs_vals.mean(axis=0)
     ref_mean = ref_vals.mean(axis=0)
     if target_lab is not None and np.asarray(target_lab).shape == (3,):
-        ref_mean = ref_mean * 0.72 + np.asarray(target_lab, dtype=np.float32) * 0.28
+        ref_mean = ref_mean * 0.84 + np.asarray(target_lab, dtype=np.float32) * 0.16
 
     center_focus_u8 = np.zeros((H, W), dtype=np.uint8)
     center_left = max(0, int(cx - face_w * 0.42))
@@ -908,6 +908,7 @@ def _harmonize_short_bangs_tone(
 
     band_hair_u8 = cv2.bitwise_and(hair_u8, band_u8)
     band_hair_u8 = cv2.bitwise_and(band_hair_u8, center_focus_u8)
+    center_outlier_u8 = np.zeros((H, W), dtype=np.uint8)
     if int((band_hair_u8 > 0).sum()) >= 32:
         center_l = lab[:, :, 0]
         center_a = lab[:, :, 1]
@@ -957,6 +958,15 @@ def _harmonize_short_bangs_tone(
     alpha = cv2.GaussianBlur(bangs_u8.astype(np.float32) / 255.0, (0, 0), sigmaX=2.4, sigmaY=2.8)
     alpha = np.clip(alpha * 0.86, 0.0, 1.0)[..., np.newaxis]
     out = tuned_rgb.astype(np.float32) * alpha + img_rgb.astype(np.float32) * (1.0 - alpha)
+    if int((center_outlier_u8 > 0).sum()) >= 16:
+        outlier_alpha = cv2.GaussianBlur(
+            center_outlier_u8.astype(np.float32) / 255.0,
+            (0, 0),
+            sigmaX=2.0,
+            sigmaY=2.4,
+        )[..., np.newaxis]
+        outlier_alpha = np.clip(outlier_alpha * 0.96, 0.0, 1.0)
+        out = tuned_rgb.astype(np.float32) * outlier_alpha + out.astype(np.float32) * (1.0 - outlier_alpha)
     return np.clip(out, 0, 255).astype(np.uint8)
 
 def _build_prompt(
