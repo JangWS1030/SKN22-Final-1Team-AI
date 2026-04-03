@@ -848,7 +848,7 @@ def _build_prompt(
             return str(text).strip()
         return " ".join(words[:max_words]).strip(", ")
 
-    def _compact_prompt_parts(parts: List[str], max_words: int = 34) -> str:
+    def _compact_prompt_parts(parts: List[str], max_words: int = 48) -> str:
         compact: List[str] = []
         total_words = 0
         for part in parts:
@@ -877,11 +877,10 @@ def _build_prompt(
     garment_negative_parts: List[str] = []
     if preserve_source_garment:
         garment_positive_parts.extend([
-            "plain white t-shirt",
-            "simple clean white crew-neck t-shirt",
-            "smooth plain cotton fabric",
-            "covered shoulders",
-            "no visible original clothing",
+            "plain white crew-neck t-shirt",
+            "smooth white cotton",
+            "connected shoulders",
+            "no hair on clothes",
         ])
         garment_negative_parts.extend([
             "patterned clothes",
@@ -936,8 +935,8 @@ def _build_prompt(
         if color_pos_hint:
             positive_parts.append(color_pos_hint)
         positive_parts.extend([
-            "clean neckline",
             garment_positive_hint,
+            "clean neckline",
             "photorealistic, natural lighting, sharp focus",
         ])
         positive = _compact_prompt_parts(positive_parts)
@@ -1030,9 +1029,8 @@ def _build_prompt(
         positive_parts.append(color_pos_hint)
     positive_parts.extend([
         "balanced framing",
-        "clean neckline",
         garment_positive_hint,
-        "white t-shirt in front, connected shoulders, no hair strands on clothes",
+        "clean neckline",
         "photorealistic portrait",
     ])
     positive = _compact_prompt_parts(positive_parts)
