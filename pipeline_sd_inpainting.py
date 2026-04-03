@@ -4195,15 +4195,81 @@ class MirrAISDPipeline:
                                             iterations=1,
                                         )
                                         if int((source_visible_cloth_u8 > 0).sum()) >= 180:
+                                            source_bridge_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                                            source_bridge_half_w = max(26, int(face_w * 0.28))
+                                            source_bridge_left = max(0, cx - source_bridge_half_w)
+                                            source_bridge_right = min(W, cx + source_bridge_half_w)
+                                            source_bridge_top = max(0, int(cutoff_y_for_post + face_h * 0.04))
+                                            source_bridge_bottom = min(H, int(cutoff_y_for_post + face_h * 1.28))
+                                            if (
+                                                source_bridge_top < source_bridge_bottom
+                                                and source_bridge_left < source_bridge_right
+                                            ):
+                                                source_bridge_gate_u8[
+                                                    source_bridge_top:source_bridge_bottom,
+                                                    source_bridge_left:source_bridge_right,
+                                                ] = 255
+
+                                            source_cloth_envelope_u8 = cv2.morphologyEx(
+                                                source_visible_cloth_u8,
+                                                cv2.MORPH_CLOSE,
+                                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 43)),
+                                            )
+                                            source_cloth_envelope_u8 = cv2.dilate(
+                                                source_cloth_envelope_u8,
+                                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 23)),
+                                                iterations=1,
+                                            )
+                                            source_cloth_envelope_u8 = cv2.bitwise_or(
+                                                source_cloth_envelope_u8,
+                                                cv2.bitwise_and(source_bridge_gate_u8, source_visible_gate_u8),
+                                            )
+                                            source_cloth_envelope_u8 = cv2.bitwise_and(
+                                                source_cloth_envelope_u8,
+                                                source_visible_gate_u8,
+                                            )
+                                            source_cloth_hole_u8 = cv2.bitwise_and(
+                                                source_cloth_envelope_u8,
+                                                cv2.bitwise_not(source_visible_cloth_u8),
+                                            )
                                             source_visible_cloth_mask = cv2.GaussianBlur(
                                                 source_visible_cloth_u8.astype(np.float32) / 255.0,
                                                 (0, 0),
                                                 sigmaX=4.2,
                                                 sigmaY=6.0,
                                             ).astype(np.float32)
+                                            source_cloth_reference_mask = cv2.GaussianBlur(
+                                                source_cloth_envelope_u8.astype(np.float32) / 255.0,
+                                                (0, 0),
+                                                sigmaX=4.4,
+                                                sigmaY=6.2,
+                                            ).astype(np.float32)
+                                            source_cloth_reference_rgb = img_rgb.copy()
+                                            visible_pixels = img_rgb[source_visible_cloth_u8 > 0]
+                                            if visible_pixels.size > 0 and int((source_cloth_hole_u8 > 0).sum()) >= 80:
+                                                source_fill_color = np.median(visible_pixels, axis=0).astype(np.uint8)
+                                                source_cloth_reference_rgb[source_cloth_hole_u8 > 0] = source_fill_color
+                                                source_cloth_hole_mask = cv2.GaussianBlur(
+                                                    source_cloth_hole_u8.astype(np.float32) / 255.0,
+                                                    (0, 0),
+                                                    sigmaX=3.8,
+                                                    sigmaY=5.6,
+                                                ).astype(np.float32)
+                                                source_cloth_reference_rgb = self._blend_neighbor_cloth_tone(
+                                                    source_cloth_reference_rgb,
+                                                    source_cloth_hole_mask,
+                                                    cloth_mask=source_visible_cloth_mask,
+                                                    reference_rgb=img_rgb,
+                                                )
+                                                source_cloth_reference_rgb = self._cv2_refine_cloth_region(
+                                                    source_cloth_reference_rgb,
+                                                    source_cloth_hole_mask,
+                                                    reference_rgb=img_rgb,
+                                                    reference_mask=source_visible_cloth_mask,
+                                                )
                                             female_short_cloth_reference_mask = np.maximum(
                                                 female_short_cloth_reference_mask,
-                                                np.clip(source_visible_cloth_mask * 0.98, 0.0, 1.0),
+                                                np.clip(source_cloth_reference_mask * 0.98, 0.0, 1.0),
                                             )
                                             source_visible_rescue_u8 = (
                                                 (
@@ -4217,7 +4283,7 @@ class MirrAISDPipeline:
                                             )
                                             source_visible_rescue_u8 = cv2.bitwise_and(
                                                 source_visible_rescue_u8,
-                                                source_visible_cloth_u8,
+                                                source_cloth_envelope_u8,
                                             )
                                             if (
                                                 removal_mask_for_post is not None
@@ -4244,21 +4310,21 @@ class MirrAISDPipeline:
                                                 ).astype(np.float32)
                                                 final_rgb = self._restore_reference_region(
                                                     final_rgb,
-                                                    img_rgb,
+                                                    source_cloth_reference_rgb,
                                                     source_visible_rescue_mask,
                                                     strength=0.98,
                                                 )
                                                 final_rgb = self._overlay_reference_cloth_fill(
                                                     final_rgb,
-                                                    img_rgb,
+                                                    source_cloth_reference_rgb,
                                                     source_visible_rescue_mask,
                                                     cloth_mask=female_short_cloth_reference_mask,
                                                 )
                                                 final_rgb = self._cv2_refine_cloth_region(
                                                     final_rgb,
                                                     source_visible_rescue_mask,
-                                                    reference_rgb=img_rgb,
-                                                    reference_mask=female_short_cloth_reference_mask,
+                                                    reference_rgb=source_cloth_reference_rgb,
+                                                    reference_mask=source_cloth_reference_mask,
                                                 )
 
                                         center_fill_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
