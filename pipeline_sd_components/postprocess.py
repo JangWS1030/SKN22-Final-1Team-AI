@@ -1430,6 +1430,21 @@ def _build_short_torso_garment_repaint_mask(
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
 
+    upper_body_window_u8 = np.zeros((H, W), dtype=np.uint8)
+    upper_top = max(top, int(y2 + face_h * 0.02))
+    upper_bottom = min(bottom, int(cutoff_y + face_h * 1.22))
+    upper_left = max(0, int(x1 - face_w * 1.06))
+    upper_right = min(W, int(x2 + face_w * 1.06))
+    if upper_top < upper_bottom and upper_left < upper_right:
+        upper_body_window_u8[upper_top:upper_bottom, upper_left:upper_right] = 255
+        chest_center = (cx, min(H - 1, int(y2 + face_h * 0.60)))
+        chest_axes = (
+            max(24, int(face_w * 0.62)),
+            max(28, int(face_h * 0.74)),
+        )
+        cv2.ellipse(upper_body_window_u8, chest_center, chest_axes, 0, 0, 360, 255, -1)
+    upper_body_window_u8 = cv2.bitwise_and(upper_body_window_u8, corridor_u8)
+
     support_u8 = np.zeros((H, W), dtype=np.uint8)
     cloth_u8 = np.zeros((H, W), dtype=np.uint8)
     torso_anchor_u8 = np.zeros((H, W), dtype=np.uint8)
@@ -1493,6 +1508,19 @@ def _build_short_torso_garment_repaint_mask(
     if int((support_u8 > 0).sum()) < 100:
         return np.zeros((H, W), dtype=np.float32)
 
+    upper_body_support_u8 = cv2.bitwise_and(support_u8, upper_body_window_u8)
+    if int((cloth_u8 > 0).sum()) > 0:
+        upper_body_support_u8 = cv2.bitwise_and(
+            upper_body_support_u8,
+            cv2.dilate(
+                cloth_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (27, 27)),
+                iterations=1,
+            ),
+        )
+    if int((upper_body_support_u8 > 0).sum()) < 100:
+        upper_body_support_u8 = support_u8.copy()
+
     if sam2_hair_mask is not None:
         sam2_torso_u8 = cv2.dilate(
             (np.clip(sam2_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
@@ -1518,8 +1546,9 @@ def _build_short_torso_garment_repaint_mask(
                 ),
             )
             candidate_u8 = cv2.bitwise_or(candidate_u8, underhair_torso_u8)
+        candidate_u8 = cv2.bitwise_or(candidate_u8, upper_body_support_u8)
     else:
-        candidate_u8 = support_u8.copy()
+        candidate_u8 = upper_body_support_u8.copy()
     if int((candidate_u8 > 0).sum()) < 100:
         return np.zeros((H, W), dtype=np.float32)
 

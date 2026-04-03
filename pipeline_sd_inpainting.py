@@ -713,12 +713,10 @@ class MirrAISDPipeline:
                 self._mask_ratio(cloth_mask_dilated),
             )
             cloth_mask_dilated = np.zeros_like(cloth_mask_dilated, dtype=np.float32)
-        hair_mask = np.clip(hair_mask - cloth_mask_dilated, 0.0, 1.0)
-        _store_mask("segface_cloth_mask_dilated", cloth_mask_dilated)
-        _store_mask("pipeline_hair_mask_cloth_protected", hair_mask)
-        logger.info(
-            f"[SDPipeline] 옷 픽셀 제거 완료, pixels={hair_mask.sum():.0f}"
-        )
+        cloth_generation_guard = cloth_mask_dilated.copy().astype(np.float32)
+        short_upper_body_repaint_seed_mask = np.zeros((H, W), dtype=np.float32)
+        short_upper_body_repaint_mask = np.zeros((H, W), dtype=np.float32)
+        short_upper_body_repaint_px = 0
         completed_torso_fill_mask = self._build_completed_subject_torso_fill_mask(
             torso_candidate_mask=subject_torso_candidate_mask,
             source_torso_hair_mask=source_torso_hair_mask,
@@ -742,6 +740,78 @@ class MirrAISDPipeline:
             shoulder_bridge_mask=subject_shoulder_bridge_mask,
             protect_mask=protect_mask_for_sd,
             face_bbox=face_bbox,
+        )
+        if hair_length == "short":
+            try:
+                _, _, _, _, short_repaint_cutoff_y = self._estimate_head_generation_box(
+                    image_shape=(H, W),
+                    face_bbox=face_bbox,
+                    landmark_face_mask=landmark_face_mask,
+                    landmark_debug_data=landmark_debug_data,
+                    hair_length=hair_length,
+                )
+                short_upper_body_repaint_seed_mask = self._build_short_below_bob_torso_mask(
+                    cloth_mask=cloth_mask_dilated,
+                    face_bbox=face_bbox,
+                    cutoff_y=short_repaint_cutoff_y,
+                    hair_length=hair_length,
+                    final_hair_mask=None,
+                )
+                short_upper_body_repaint_mask = self._build_short_torso_garment_repaint_mask(
+                    cloth_mask=cloth_mask_dilated,
+                    torso_mask=short_upper_body_repaint_seed_mask,
+                    torso_anchor_mask=subject_torso_anchor_mask,
+                    torso_candidate_mask=subject_torso_candidate_mask,
+                    shoulder_bridge_mask=subject_shoulder_bridge_mask,
+                    sam2_hair_mask=hair_mask_for_removal,
+                    face_mask=face_region_mask,
+                    face_bbox=face_bbox,
+                    cutoff_y=short_repaint_cutoff_y,
+                    hair_length=hair_length,
+                    final_hair_mask=None,
+                    protect_mask=protect_mask_for_sd,
+                )
+                short_upper_body_repaint_u8 = (
+                    (np.clip(short_upper_body_repaint_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
+                    * 255
+                )
+                short_upper_body_repaint_px = int((short_upper_body_repaint_u8 > 0).sum())
+                if short_upper_body_repaint_px >= 120:
+                    repaint_release_u8 = cv2.dilate(
+                        short_upper_body_repaint_u8,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 27)),
+                        iterations=1,
+                    )
+                    repaint_release_f = cv2.GaussianBlur(
+                        repaint_release_u8.astype(np.float32) / 255.0,
+                        (0, 0),
+                        sigmaX=4.0,
+                        sigmaY=6.0,
+                    )
+                    cloth_generation_guard = np.clip(
+                        cloth_mask_dilated.astype(np.float32) - repaint_release_f,
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
+                    source_garment_prepass_mask = np.maximum(
+                        source_garment_prepass_mask.astype(np.float32),
+                        short_upper_body_repaint_mask.astype(np.float32) * 0.95,
+                    ).astype(np.float32)
+                    logger.info(
+                        "[SDPipeline] short upper-body repaint opened: repaint_px=%d guard_px=%.0f",
+                        short_upper_body_repaint_px,
+                        float(cloth_generation_guard.sum()),
+                    )
+            except Exception as e:
+                logger.warning(f"[SDPipeline] short upper-body repaint preparation failed (ignored): {e}")
+        hair_mask = np.clip(hair_mask - cloth_generation_guard, 0.0, 1.0)
+        _store_mask("segface_cloth_mask_dilated", cloth_mask_dilated)
+        _store_mask("pipeline_cloth_generation_guard_mask", cloth_generation_guard)
+        _store_mask("pipeline_short_upper_body_repaint_seed_mask", short_upper_body_repaint_seed_mask)
+        _store_mask("pipeline_short_upper_body_repaint_mask", short_upper_body_repaint_mask)
+        _store_mask("pipeline_hair_mask_cloth_protected", hair_mask)
+        logger.info(
+            f"[SDPipeline] 옷 픽셀 제거 완료, pixels={hair_mask.sum():.0f}"
         )
         completed_torso_fill_px = int(
             (
@@ -776,6 +846,9 @@ class MirrAISDPipeline:
             )
             debug_data_common["source_cloth_preclean"]["shoulder_contour_anchor_px"] = (
                 source_shoulder_contour_anchor_px
+            )
+            debug_data_common["source_cloth_preclean"]["short_upper_body_repaint_px"] = (
+                short_upper_body_repaint_px
             )
 
         # ── Step 3-e: 숏컷/중단발 — 전략 2 (Post-Inpainting) ────────────────
@@ -1364,7 +1437,7 @@ class MirrAISDPipeline:
             else:
                 gen_mask[head_y1:head_y2, head_x1:head_x2] = 1.0
             gen_mask = np.clip(gen_mask - protect_mask_for_sd, 0.0, 1.0)
-            gen_mask = np.clip(gen_mask - cloth_mask_dilated, 0.0, 1.0)
+            gen_mask = np.clip(gen_mask - cloth_generation_guard, 0.0, 1.0)
             if hair_length == "short":
                 below_bob_generation_block_for_post = self._build_short_below_bob_generation_block_mask(
                     removal_mask=removal_mask_for_post,
