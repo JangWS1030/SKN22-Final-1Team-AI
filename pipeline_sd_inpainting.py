@@ -3568,6 +3568,15 @@ class MirrAISDPipeline:
                             1.0,
                         )
                         if (
+                            cloth_mask_dilated is not None
+                            and cloth_mask_dilated.shape == final_bgr.shape[:2]
+                            and float(cloth_mask_dilated.sum()) > 0.0
+                        ):
+                            female_short_cloth_reference_mask = np.maximum(
+                                female_short_cloth_reference_mask,
+                                np.clip(cloth_mask_dilated.astype(np.float32) * 0.88, 0.0, 1.0),
+                            )
+                        if (
                             torso_cloth_preserve_for_post is not None
                             and torso_cloth_preserve_for_post.shape == final_bgr.shape[:2]
                             and float(torso_cloth_preserve_for_post.sum()) > 0.0
@@ -3769,6 +3778,7 @@ class MirrAISDPipeline:
                             female_short_direct_cloth_restore_px = int(
                                 (female_short_direct_cloth_restore_u8 > 0).sum()
                             )
+                            female_short_plain_cloth_cleanup_mask = None
                             direct_side_restore_mask = None
                             if int((direct_female_short_restore_u8 > 0).sum()) >= 48:
                                 direct_side_restore_mask = cv2.GaussianBlur(
@@ -3777,6 +3787,89 @@ class MirrAISDPipeline:
                                     sigmaX=3.6,
                                     sigmaY=5.4,
                                 ).astype(np.float32)
+                            if (
+                                cloth_mask_dilated is not None
+                                and cloth_mask_dilated.shape == final_bgr.shape[:2]
+                                and int((female_short_direct_cloth_restore_u8 > 0).sum()) >= 80
+                            ):
+                                plain_cloth_u8 = cv2.dilate(
+                                    (
+                                        np.clip(cloth_mask_dilated.astype(np.float32), 0.0, 1.0) > 0.04
+                                    ).astype(np.uint8)
+                                    * 255,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19)),
+                                    iterations=1,
+                                )
+                                plain_cleanup_support_u8 = cv2.dilate(
+                                    female_short_direct_cloth_restore_u8,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (37, 55)),
+                                    iterations=1,
+                                )
+                                source_gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                                current_gray = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                                current_blur = cv2.GaussianBlur(current_gray, (0, 0), sigmaX=4.4, sigmaY=4.4)
+                                gray_delta = np.abs(current_gray - source_gray)
+                                current_sat = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+                                source_sat = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+                                diff_rgb = np.abs(
+                                    final_rgb.astype(np.float32) - img_rgb.astype(np.float32)
+                                ).mean(axis=2)
+                                female_short_plain_cloth_cleanup_u8 = (
+                                    (
+                                        (
+                                            (diff_rgb > 9.5)
+                                            | (gray_delta > 8.0)
+                                            | (current_gray + 8.0 < source_gray)
+                                            | (current_gray > source_gray + 11.0)
+                                            | (current_sat > source_sat + 10.0)
+                                        )
+                                        & (np.abs(current_gray - current_blur) < 13.0)
+                                        & (current_sat < 144.0)
+                                    ).astype(np.uint8)
+                                    * 255
+                                )
+                                female_short_plain_cloth_cleanup_u8 = cv2.bitwise_and(
+                                    female_short_plain_cloth_cleanup_u8,
+                                    plain_cloth_u8,
+                                )
+                                female_short_plain_cloth_cleanup_u8 = cv2.bitwise_and(
+                                    female_short_plain_cloth_cleanup_u8,
+                                    plain_cleanup_support_u8,
+                                )
+                                female_short_plain_cloth_cleanup_u8 = cv2.bitwise_and(
+                                    female_short_plain_cloth_cleanup_u8,
+                                    torso_gate_u8,
+                                )
+                                if final_hair_mask is not None and final_hair_mask.shape == final_bgr.shape[:2]:
+                                    final_hair_guard_u8 = cv2.dilate(
+                                        (
+                                            np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.16
+                                        ).astype(np.uint8)
+                                        * 255,
+                                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+                                        iterations=1,
+                                    )
+                                    female_short_plain_cloth_cleanup_u8 = cv2.bitwise_and(
+                                        female_short_plain_cloth_cleanup_u8,
+                                        cv2.bitwise_not(final_hair_guard_u8),
+                                    )
+                                female_short_plain_cloth_cleanup_u8 = cv2.morphologyEx(
+                                    female_short_plain_cloth_cleanup_u8,
+                                    cv2.MORPH_CLOSE,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 23)),
+                                )
+                                female_short_plain_cloth_cleanup_u8 = cv2.morphologyEx(
+                                    female_short_plain_cloth_cleanup_u8,
+                                    cv2.MORPH_OPEN,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+                                )
+                                if int((female_short_plain_cloth_cleanup_u8 > 0).sum()) >= 120:
+                                    female_short_plain_cloth_cleanup_mask = cv2.GaussianBlur(
+                                        female_short_plain_cloth_cleanup_u8.astype(np.float32) / 255.0,
+                                        (0, 0),
+                                        sigmaX=5.2,
+                                        sigmaY=7.6,
+                                    ).astype(np.float32)
                             if female_short_direct_cloth_restore_px >= 120:
                                 female_short_direct_cloth_restore_mask = cv2.GaussianBlur(
                                     female_short_direct_cloth_restore_u8.astype(np.float32) / 255.0,
@@ -3802,6 +3895,25 @@ class MirrAISDPipeline:
                                         img_rgb,
                                         direct_side_restore_mask,
                                         strength=0.96,
+                                    )
+                                if female_short_plain_cloth_cleanup_mask is not None:
+                                    final_rgb = self._overlay_reference_cloth_fill(
+                                        final_rgb,
+                                        img_rgb,
+                                        female_short_plain_cloth_cleanup_mask,
+                                        cloth_mask=female_short_cloth_reference_mask,
+                                    )
+                                    final_rgb = self._blend_neighbor_cloth_tone(
+                                        final_rgb,
+                                        female_short_plain_cloth_cleanup_mask,
+                                        cloth_mask=female_short_cloth_reference_mask,
+                                        reference_rgb=img_rgb,
+                                    )
+                                    final_rgb = self._cv2_refine_cloth_region(
+                                        final_rgb,
+                                        female_short_plain_cloth_cleanup_mask,
+                                        reference_rgb=img_rgb,
+                                        reference_mask=female_short_cloth_reference_mask,
                                     )
                                 final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                                 if debug_images_common is not None and rank == 0:
