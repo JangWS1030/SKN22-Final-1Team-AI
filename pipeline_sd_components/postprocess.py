@@ -4069,10 +4069,10 @@ def _build_residual_strand_cleanup_mask(
         return np.zeros((H, W), dtype=np.float32)
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    top = max(0, int(cutoff_y + face_h * (0.16 if hair_length == "short" else 0.12)))
-    bottom = min(H, int(cutoff_y + face_h * (1.18 if hair_length == "short" else 1.06)))
-    left = max(0, int(x1 - face_w * 1.18))
-    right = min(W, int(x2 + face_w * 1.18))
+    top = max(0, int(cutoff_y + face_h * (0.10 if hair_length == "short" else 0.08)))
+    bottom = min(H, int(cutoff_y + face_h * (1.38 if hair_length == "short" else 1.20)))
+    left = max(0, int(x1 - face_w * 1.28))
+    right = min(W, int(x2 + face_w * 1.28))
     if top >= bottom or left >= right:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
@@ -4112,10 +4112,10 @@ def _build_residual_strand_cleanup_mask(
 
     keep_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(candidate_u8, 8)
-    max_area = max(900, int(face_w * face_h * 0.060))
-    max_width = max(24, int(face_w * 0.18))
-    max_height = max(96, int(face_h * 0.42))
-    max_offset = max(160, int(face_w * 0.80))
+    max_area = max(1400, int(face_w * face_h * 0.090))
+    max_width = max(32, int(face_w * 0.24))
+    max_height = max(220, int(face_h * 0.96))
+    max_offset = max(220, int(face_w * 1.02))
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
         y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -4133,7 +4133,7 @@ def _build_residual_strand_cleanup_mask(
         if abs(comp_cx - cx) > max_offset:
             continue
         fill_ratio = float(area) / float(max(w * h, 1))
-        if fill_ratio > 0.74 and area > 36:
+        if fill_ratio > 0.82 and area > 44:
             continue
         keep_u8[labels == idx] = 255
 
@@ -4142,7 +4142,7 @@ def _build_residual_strand_cleanup_mask(
 
     keep_u8 = cv2.dilate(
         keep_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 7)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 11)),
         iterations=1,
     )
     keep_u8 = cv2.bitwise_and(keep_u8, zone_u8)

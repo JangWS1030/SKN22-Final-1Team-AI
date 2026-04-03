@@ -3309,6 +3309,7 @@ class MirrAISDPipeline:
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short lower garment cleanup failed (ignored): {e}")
             center_residual_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
+            residual_strand_cleanup_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
             if (
                 hair_length in ("short", "medium")
                 and cloth_restore_mask_for_post is not None
@@ -3438,6 +3439,11 @@ class MirrAISDPipeline:
                     residual_strand_u8 = (
                         (np.clip(residual_strand_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
                     )
+                    residual_strand_cleanup_mask_for_post = np.clip(
+                        residual_strand_mask.astype(np.float32),
+                        0.0,
+                        1.0,
+                    )
                     residual_strand_px = int((residual_strand_u8 > 0).sum())
                     if residual_strand_px >= 16:
                         final_rgb = self._lama_inpaint(final_rgb, residual_strand_u8)
@@ -3556,13 +3562,29 @@ class MirrAISDPipeline:
                     try:
                         final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                         final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
-                        female_short_cloth_reference_mask = cloth_restore_mask_for_post
+                        female_short_cloth_reference_mask = np.clip(
+                            cloth_restore_mask_for_post.astype(np.float32),
+                            0.0,
+                            1.0,
+                        )
+                        if (
+                            torso_cloth_preserve_for_post is not None
+                            and torso_cloth_preserve_for_post.shape == final_bgr.shape[:2]
+                            and float(torso_cloth_preserve_for_post.sum()) > 0.0
+                        ):
+                            female_short_cloth_reference_mask = np.maximum(
+                                female_short_cloth_reference_mask,
+                                np.clip(torso_cloth_preserve_for_post.astype(np.float32) * 0.82, 0.0, 1.0),
+                            )
                         if (
                             bright_cloth_preserve_for_post is not None
                             and bright_cloth_preserve_for_post.shape == final_bgr.shape[:2]
                             and float(bright_cloth_preserve_for_post.sum()) > 0.0
                         ):
-                            female_short_cloth_reference_mask = bright_cloth_preserve_for_post
+                            female_short_cloth_reference_mask = np.maximum(
+                                female_short_cloth_reference_mask,
+                                np.clip(bright_cloth_preserve_for_post.astype(np.float32) * 0.96, 0.0, 1.0),
+                            )
                         female_short_direct_cloth_restore_mask = np.maximum(
                             short_lower_garment_cleanup_mask_for_post,
                             final_source_cloth_rescue_mask_for_post,
@@ -3571,6 +3593,15 @@ class MirrAISDPipeline:
                             female_short_direct_cloth_restore_mask,
                             np.clip(center_residual_cleanup_mask_for_post * 0.92, 0.0, 1.0),
                         ).astype(np.float32)
+                        if (
+                            residual_strand_cleanup_mask_for_post is not None
+                            and residual_strand_cleanup_mask_for_post.shape == final_bgr.shape[:2]
+                            and float(residual_strand_cleanup_mask_for_post.sum()) > 0.0
+                        ):
+                            female_short_direct_cloth_restore_mask = np.maximum(
+                                female_short_direct_cloth_restore_mask,
+                                np.clip(residual_strand_cleanup_mask_for_post * 0.90, 0.0, 1.0),
+                            ).astype(np.float32)
                         female_short_direct_cloth_restore_u8 = (
                             (
                                 np.clip(female_short_direct_cloth_restore_mask.astype(np.float32), 0.0, 1.0) > 0.06
@@ -3645,19 +3676,85 @@ class MirrAISDPipeline:
                                         female_short_direct_cloth_restore_u8,
                                         center_support_u8,
                                     )
-                            if final_hair_mask is not None and final_hair_mask.shape == final_bgr.shape[:2]:
-                                final_hair_u8 = cv2.dilate(
-                                    (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.14).astype(np.uint8) * 255,
-                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 23)),
+                            female_short_source_seed_u8 = cv2.bitwise_or(
+                                female_short_direct_cloth_restore_u8,
+                                direct_female_short_restore_u8,
+                            )
+                            if int((female_short_source_seed_u8 > 0).sum()) >= 48:
+                                source_gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                                current_gray = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                                gray_delta = np.abs(current_gray - source_gray)
+                                current_sat = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+                                source_sat = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+                                diff_rgb = np.abs(
+                                    final_rgb.astype(np.float32) - img_rgb.astype(np.float32)
+                                ).mean(axis=2)
+                                female_short_source_support_u8 = cv2.dilate(
+                                    female_short_source_seed_u8,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 23)),
                                     iterations=1,
                                 )
+                                female_short_source_rescue_u8 = (
+                                    (
+                                        (
+                                            (diff_rgb > 12.0)
+                                            | (gray_delta > 10.0)
+                                            | (current_sat > source_sat + 12.0)
+                                            | (current_gray + 10.0 < source_gray)
+                                            | (current_gray > source_gray + 14.0)
+                                        ).astype(np.uint8)
+                                    )
+                                    * 255
+                                )
+                                female_short_source_rescue_u8 = cv2.bitwise_and(
+                                    female_short_source_rescue_u8,
+                                    female_short_source_support_u8,
+                                )
+                                female_short_source_rescue_u8 = cv2.bitwise_and(
+                                    female_short_source_rescue_u8,
+                                    torso_gate_u8,
+                                )
+                                female_short_source_rescue_u8 = cv2.bitwise_and(
+                                    female_short_source_rescue_u8,
+                                    cloth_gate_u8,
+                                )
+                                female_short_direct_cloth_restore_u8 = cv2.bitwise_or(
+                                    female_short_direct_cloth_restore_u8,
+                                    female_short_source_rescue_u8,
+                                )
+                            if final_hair_mask is not None and final_hair_mask.shape == final_bgr.shape[:2]:
+                                final_hair_u8 = cv2.dilate(
+                                    (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.16).astype(np.uint8) * 255,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 19)),
+                                    iterations=1,
+                                )
+                                final_hair_core_u8 = cv2.erode(
+                                    final_hair_u8,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+                                    iterations=1,
+                                )
+                                upper_hair_guard_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                                upper_guard_top = max(0, int(cutoff_y_for_post - face_h * 0.04))
+                                upper_guard_bottom = min(H, int(cutoff_y_for_post + face_h * 0.34))
+                                if upper_guard_top < upper_guard_bottom:
+                                    upper_hair_guard_u8[upper_guard_top:upper_guard_bottom, :] = 255
+                                    upper_hair_guard_u8 = cv2.bitwise_and(upper_hair_guard_u8, final_hair_u8)
+                                lower_hair_core_guard_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                                lower_guard_top = max(0, int(cutoff_y_for_post + face_h * 0.18))
+                                lower_guard_bottom = min(H, int(cutoff_y_for_post + face_h * 1.42))
+                                if lower_guard_top < lower_guard_bottom:
+                                    lower_hair_core_guard_u8[lower_guard_top:lower_guard_bottom, :] = 255
+                                    lower_hair_core_guard_u8 = cv2.bitwise_and(
+                                        lower_hair_core_guard_u8,
+                                        final_hair_core_u8,
+                                    )
                                 female_short_direct_cloth_restore_u8 = cv2.bitwise_and(
                                     female_short_direct_cloth_restore_u8,
-                                    cv2.bitwise_not(final_hair_u8),
+                                    cv2.bitwise_not(cv2.bitwise_or(upper_hair_guard_u8, lower_hair_core_guard_u8)),
                                 )
                                 direct_female_short_restore_u8 = cv2.bitwise_and(
                                     direct_female_short_restore_u8,
-                                    cv2.bitwise_not(final_hair_u8),
+                                    cv2.bitwise_not(cv2.bitwise_or(upper_hair_guard_u8, lower_hair_core_guard_u8)),
                                 )
                             female_short_direct_cloth_restore_u8 = cv2.morphologyEx(
                                 female_short_direct_cloth_restore_u8,
@@ -3691,19 +3788,7 @@ class MirrAISDPipeline:
                                     final_rgb,
                                     img_rgb,
                                     female_short_direct_cloth_restore_mask,
-                                    strength=0.995,
-                                )
-                                final_rgb = self._overlay_reference_cloth_fill(
-                                    final_rgb,
-                                    img_rgb,
-                                    female_short_direct_cloth_restore_mask,
-                                    cloth_mask=female_short_cloth_reference_mask,
-                                )
-                                final_rgb = self._blend_neighbor_cloth_tone(
-                                    final_rgb,
-                                    female_short_direct_cloth_restore_mask,
-                                    cloth_mask=female_short_cloth_reference_mask,
-                                    reference_rgb=img_rgb,
+                                    strength=0.998,
                                 )
                                 final_rgb = self._cv2_refine_cloth_region(
                                     final_rgb,
