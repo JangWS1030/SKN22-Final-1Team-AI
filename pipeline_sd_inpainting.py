@@ -4285,8 +4285,10 @@ class MirrAISDPipeline:
         if upper_top < upper_bottom:
             upper_band_u8[upper_top:upper_bottom, :] = 255
 
-        upper_support_u8 = cv2.bitwise_and(candidate_u8, upper_band_u8)
+        candidate_upper_support_u8 = cv2.bitwise_and(candidate_u8, upper_band_u8)
+        upper_support_u8 = candidate_upper_support_u8.copy()
         bridge_u8 = np.zeros((H, W), dtype=np.uint8)
+        bridge_anchor_u8 = np.zeros((H, W), dtype=np.uint8)
         if shoulder_bridge_mask is not None:
             bridge_u8 = (
                 np.clip(shoulder_bridge_mask.astype(np.float32), 0.0, 1.0) > 0.08
@@ -4297,13 +4299,36 @@ class MirrAISDPipeline:
                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 9)),
                 iterations=1,
             )
-            upper_support_u8 = cv2.bitwise_or(upper_support_u8, bridge_u8)
+            if int((candidate_upper_support_u8 > 0).sum()) > 0:
+                bridge_anchor_gate_u8 = cv2.dilate(
+                    candidate_upper_support_u8,
+                    cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE,
+                        (_odd_size(face_w * 0.16, 21), _odd_size(face_h * 0.10, 17)),
+                    ),
+                    iterations=1,
+                )
+                bridge_anchor_u8 = cv2.bitwise_and(bridge_u8, bridge_anchor_gate_u8)
+                bridge_anchor_u8 = cv2.morphologyEx(
+                    bridge_anchor_u8,
+                    cv2.MORPH_OPEN,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+                )
+                bridge_anchor_u8 = _filter_components_by_area(
+                    bridge_anchor_u8,
+                    min_area=max(16, int(face_w * face_h * 0.00012)),
+                    max_area=max(1800, int(face_w * face_h * 0.0045)),
+                )
+                upper_support_u8 = cv2.bitwise_or(upper_support_u8, bridge_anchor_u8)
 
         top_profile = np.full(W, -1, dtype=np.int32)
         support_x_left = max(left, candidate_x1 - int(candidate_w * 0.02))
         support_x_right = min(right - 1, candidate_x2 + int(candidate_w * 0.02))
+        profile_source_u8 = candidate_upper_support_u8
+        if int((profile_source_u8 > 0).sum()) < max(28, int(face_w * 0.08)):
+            profile_source_u8 = upper_support_u8
         for x in range(max(0, support_x_left), min(W, support_x_right + 1)):
-            ys = np.where(upper_support_u8[:, x] > 0)[0]
+            ys = np.where(profile_source_u8[:, x] > 0)[0]
             if ys.size > 0:
                 top_profile[x] = int(ys.min())
 
@@ -4337,8 +4362,8 @@ class MirrAISDPipeline:
                 lineType=cv2.LINE_AA,
             )
             seam_guard_u8 = cv2.bitwise_or(
-                bridge_u8,
-                cv2.bitwise_and(candidate_u8, upper_band_u8),
+                bridge_anchor_u8,
+                candidate_upper_support_u8,
             )
             seam_guard_u8 = cv2.dilate(
                 seam_guard_u8,
