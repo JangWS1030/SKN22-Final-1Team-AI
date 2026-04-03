@@ -7116,7 +7116,7 @@ def _composite(
                 1.0,
             )
         alpha = alpha * (1.0 - np.clip(protect_dilated, 0.0, 1.0))
-    if protect_release_mask is not None and hair_length == "short":
+    if protect_release_mask is not None:
         release_u8 = (np.clip(protect_release_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255
         if int((release_u8 > 0).sum()) >= 20:
             release_u8 = cv2.dilate(

@@ -1387,6 +1387,7 @@ class MirrAISDPipeline:
                 soft_bangs_generation_mask = self._build_soft_bangs_generation_mask(
                     bangs_restore_for_sd,
                     face_bbox=face_bbox,
+                    hair_length=hair_length,
                 )
                 composite_bangs_release_mask = np.clip(
                     soft_bangs_generation_mask.astype(np.float32) * (1.28 if has_color_request else 1.15),
