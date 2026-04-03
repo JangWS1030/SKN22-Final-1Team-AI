@@ -3879,6 +3879,26 @@ class MirrAISDPipeline:
                                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
                                 iterations=1,
                             )
+                            if (
+                                center_chest_strand_removal_mask is not None
+                                and center_chest_strand_removal_mask.shape == final_bgr.shape[:2]
+                            ):
+                                center_direct_cleanup_u8 = cv2.dilate(
+                                    (
+                                        np.clip(center_chest_strand_removal_mask.astype(np.float32), 0.0, 1.0) > 0.05
+                                    ).astype(np.uint8)
+                                    * 255,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 73)),
+                                    iterations=1,
+                                )
+                                center_direct_cleanup_u8 = cv2.bitwise_and(
+                                    center_direct_cleanup_u8,
+                                    torso_gate_u8,
+                                )
+                                female_short_direct_cloth_restore_u8 = cv2.bitwise_or(
+                                    female_short_direct_cloth_restore_u8,
+                                    center_direct_cleanup_u8,
+                                )
                             female_short_direct_cloth_restore_px = int(
                                 (female_short_direct_cloth_restore_u8 > 0).sum()
                             )
