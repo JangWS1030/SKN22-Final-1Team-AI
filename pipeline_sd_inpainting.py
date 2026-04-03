@@ -3258,6 +3258,105 @@ class MirrAISDPipeline:
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short bob tail suppress failed (ignored): {e}")
+            if (
+                hair_length == "short"
+                and subject_gender_mode != "male"
+                and cloth_mask_dilated is not None
+                and cutoff_y_for_post is not None
+            ):
+                try:
+                    final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
+                    final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    deep_short_cloth_hair_cleanup_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                    if final_hair_mask is not None and final_hair_mask.shape == final_bgr.shape[:2]:
+                        final_hair_u8 = cv2.dilate(
+                            (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.16).astype(np.uint8) * 255,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+                            iterations=1,
+                        )
+                        cloth_u8 = cv2.dilate(
+                            (np.clip(cloth_mask_dilated.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
+                            iterations=1,
+                        )
+                        deep_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                        deep_top = max(0, int(cutoff_y_for_post + face_h * 0.18))
+                        deep_bottom = min(H, int(cutoff_y_for_post + face_h * 1.42))
+                        deep_left = max(0, int(x1 - face_w * 1.06))
+                        deep_right = min(W, int(x2 + face_w * 1.06))
+                        if deep_top < deep_bottom and deep_left < deep_right:
+                            deep_gate_u8[deep_top:deep_bottom, deep_left:deep_right] = 255
+                        candidate_u8 = cv2.bitwise_and(final_hair_u8, cloth_u8)
+                        candidate_u8 = cv2.bitwise_and(candidate_u8, deep_gate_u8)
+                        if int((candidate_u8 > 0).sum()) >= 40:
+                            keep_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                            num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(candidate_u8, 8)
+                            min_area = max(40, int(face_w * face_h * 0.002))
+                            max_area = max(18000, int(face_w * face_h * 0.40))
+                            min_height = max(34, int(face_h * 0.18))
+                            max_width = max(172, int(face_w * 0.92))
+                            deep_bottom_threshold = int(cutoff_y_for_post + face_h * 0.72)
+                            center_accept_offset = max(24, int(face_w * 0.24))
+                            max_offset = max(230, int(face_w * 1.02))
+                            for idx in range(1, num_labels):
+                                x = int(stats[idx, cv2.CC_STAT_LEFT])
+                                y = int(stats[idx, cv2.CC_STAT_TOP])
+                                w = int(stats[idx, cv2.CC_STAT_WIDTH])
+                                h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+                                area = int(stats[idx, cv2.CC_STAT_AREA])
+                                bottom_y = y + h
+                                comp_cx = float(centroids[idx][0])
+                                if area < min_area or area > max_area:
+                                    continue
+                                if h < min_height or w > max_width:
+                                    continue
+                                if bottom_y < deep_bottom_threshold:
+                                    continue
+                                if abs(comp_cx - face_cx) > max_offset:
+                                    continue
+                                fill_ratio = float(area) / float(max(w * h, 1))
+                                if (
+                                    abs(comp_cx - face_cx) > center_accept_offset
+                                    and fill_ratio > 0.88
+                                    and w > max(70, int(face_w * 0.36))
+                                ):
+                                    continue
+                                keep_u8[labels == idx] = 255
+                            if int((keep_u8 > 0).sum()) >= 40:
+                                keep_u8 = cv2.morphologyEx(
+                                    keep_u8,
+                                    cv2.MORPH_CLOSE,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 21)),
+                                )
+                                keep_u8 = cv2.dilate(
+                                    keep_u8,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 15)),
+                                    iterations=1,
+                                )
+                                deep_short_cloth_hair_cleanup_u8 = cv2.bitwise_and(keep_u8, deep_gate_u8)
+                    if int((deep_short_cloth_hair_cleanup_u8 > 0).sum()) >= 60:
+                        deep_short_cloth_hair_cleanup_mask = cv2.GaussianBlur(
+                            deep_short_cloth_hair_cleanup_u8.astype(np.float32) / 255.0,
+                            (0, 0),
+                            sigmaX=3.8,
+                            sigmaY=6.4,
+                        ).astype(np.float32)
+                        final_rgb = self._cleanup_region_with_cloth_restore(
+                            source_rgb=img_rgb,
+                            current_rgb=final_rgb,
+                            cleanup_mask=deep_short_cloth_hair_cleanup_mask,
+                            cloth_mask=cloth_mask_dilated,
+                            ignore_final_hair_for_cloth_restore=True,
+                            cleanup_dark_tail=True,
+                        )
+                        final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                    if debug_images_common is not None and rank == 0:
+                        debug_images_common["pipeline_deep_short_cloth_hair_cleanup_mask"] = cv2.cvtColor(
+                            deep_short_cloth_hair_cleanup_u8,
+                            cv2.COLOR_GRAY2BGR,
+                        )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] deep short cloth hair cleanup failed (ignored): {e}")
             short_lower_garment_cleanup_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
             center_residual_cleanup_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
             final_source_cloth_rescue_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
