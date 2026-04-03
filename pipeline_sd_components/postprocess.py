@@ -3235,95 +3235,147 @@ def _build_direct_short_column_restore_mask(
     zone_u8 = cv2.bitwise_and(zone_u8, corridor_u8)
     if int((zone_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
-    short_lateral_lane_u8 = np.zeros((H, W), dtype=np.uint8)
     lateral_only_short_restore = gender_mode != "male"
-    if lateral_only_short_restore:
-        left_lane_left = max(left, int(x1 - face_w * 0.72))
-        left_lane_right = min(right, int(x1 + face_w * 0.08))
-        right_lane_left = max(left, int(x2 - face_w * 0.08))
-        right_lane_right = min(right, int(x2 + face_w * 0.72))
-        if left_lane_left < left_lane_right:
-            short_lateral_lane_u8[top:bottom, left_lane_left:left_lane_right] = 255
-        if right_lane_left < right_lane_right:
-            short_lateral_lane_u8[top:bottom, right_lane_left:right_lane_right] = 255
-        zone_u8 = cv2.bitwise_and(zone_u8, short_lateral_lane_u8)
-        if int((zone_u8 > 0).sum()) < 40:
-            return np.zeros((H, W), dtype=np.float32)
+    def _collect_direct_mask(
+        *,
+        lane_inner_mul: float,
+        lane_outer_mul: float,
+        min_area_ratio: float,
+        min_height_mul: float,
+        min_height_floor: int,
+        max_width_mul: float,
+        max_width_floor: int,
+        center_reject_mul: float,
+        center_reject_floor: int,
+        lateral_center_reject_mul: float,
+        lateral_center_reject_floor: int,
+        trim_min_keep_px: int,
+    ) -> np.ndarray:
+        local_zone_u8 = zone_u8.copy()
+        short_lateral_lane_u8 = np.zeros((H, W), dtype=np.uint8)
+        if lateral_only_short_restore:
+            left_lane_left = max(left, int(x1 - face_w * lane_outer_mul))
+            left_lane_right = min(right, int(x1 + face_w * lane_inner_mul))
+            right_lane_left = max(left, int(x2 - face_w * lane_inner_mul))
+            right_lane_right = min(right, int(x2 + face_w * lane_outer_mul))
+            if left_lane_left < left_lane_right:
+                short_lateral_lane_u8[top:bottom, left_lane_left:left_lane_right] = 255
+            if right_lane_left < right_lane_right:
+                short_lateral_lane_u8[top:bottom, right_lane_left:right_lane_right] = 255
+            local_zone_u8 = cv2.bitwise_and(local_zone_u8, short_lateral_lane_u8)
+            if int((local_zone_u8 > 0).sum()) < 40:
+                return np.zeros((H, W), dtype=np.uint8)
 
-    zone_u8 = cv2.morphologyEx(
-        zone_u8,
-        cv2.MORPH_OPEN,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
-    )
-    zone_u8 = cv2.morphologyEx(
-        zone_u8,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 13)),
-    )
+        local_zone_u8 = cv2.morphologyEx(
+            local_zone_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+        local_zone_u8 = cv2.morphologyEx(
+            local_zone_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 13)),
+        )
 
-    keep_u8 = np.zeros((H, W), dtype=np.uint8)
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(zone_u8, 8)
-    min_area = max(120, int(face_w * face_h * 0.010))
-    max_area = max(9200, int(face_w * face_h * 0.34))
-    min_height = max(72, int(face_h * 0.28))
-    max_width = max(128, int(face_w * 0.78))
-    max_offset = max(180, int(face_w * 0.98))
-    center_reject_offset = max(26, int(face_w * 0.30))
-    lateral_center_reject_offset = max(38, int(face_w * 0.40))
-    for idx in range(1, num_labels):
-        x = int(stats[idx, cv2.CC_STAT_LEFT])
-        y = int(stats[idx, cv2.CC_STAT_TOP])
-        w = int(stats[idx, cv2.CC_STAT_WIDTH])
-        h = int(stats[idx, cv2.CC_STAT_HEIGHT])
-        area = int(stats[idx, cv2.CC_STAT_AREA])
-        bottom_y = y + h
-        comp_cx = float(centroids[idx][0])
-        if area < min_area or area > max_area:
-            continue
-        if h < min_height or w > max_width:
-            continue
-        if bottom_y < int(cutoff_y + face_h * 0.24):
-            continue
-        if bottom_y > int(cutoff_y + face_h * 1.56):
-            continue
-        if abs(comp_cx - cx) > max_offset:
-            continue
-        if lateral_only_short_restore and abs(comp_cx - cx) <= lateral_center_reject_offset:
-            continue
-        if (
-            abs(comp_cx - cx) <= center_reject_offset
-            and w > max(84, int(face_w * 0.38))
-            and area > max(1600, int(face_w * face_h * 0.06))
-        ):
-            continue
-        keep_u8[labels == idx] = 255
+        keep_u8 = np.zeros((H, W), dtype=np.uint8)
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(local_zone_u8, 8)
+        min_area = max(120, int(face_w * face_h * min_area_ratio))
+        max_area = max(9200, int(face_w * face_h * 0.34))
+        min_height = max(min_height_floor, int(face_h * min_height_mul))
+        max_width = max(max_width_floor, int(face_w * max_width_mul))
+        max_offset = max(180, int(face_w * 0.98))
+        center_reject_offset = max(center_reject_floor, int(face_w * center_reject_mul))
+        lateral_center_reject_offset = max(
+            lateral_center_reject_floor,
+            int(face_w * lateral_center_reject_mul),
+        )
+        for idx in range(1, num_labels):
+            x = int(stats[idx, cv2.CC_STAT_LEFT])
+            y = int(stats[idx, cv2.CC_STAT_TOP])
+            w = int(stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(stats[idx, cv2.CC_STAT_AREA])
+            bottom_y = y + h
+            comp_cx = float(centroids[idx][0])
+            if area < min_area or area > max_area:
+                continue
+            if h < min_height or w > max_width:
+                continue
+            if bottom_y < int(cutoff_y + face_h * 0.24):
+                continue
+            if bottom_y > int(cutoff_y + face_h * 1.56):
+                continue
+            if abs(comp_cx - cx) > max_offset:
+                continue
+            if lateral_only_short_restore and abs(comp_cx - cx) <= lateral_center_reject_offset:
+                continue
+            if (
+                abs(comp_cx - cx) <= center_reject_offset
+                and w > max(84, int(face_w * 0.38))
+                and area > max(1600, int(face_w * face_h * 0.06))
+            ):
+                continue
+            keep_u8[labels == idx] = 255
 
-    if int((keep_u8 > 0).sum()) < 80:
-        return np.zeros((H, W), dtype=np.float32)
+        if int((keep_u8 > 0).sum()) < trim_min_keep_px:
+            return np.zeros((H, W), dtype=np.uint8)
 
-    keep_u8 = cv2.dilate(
-        keep_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 33)),
-        iterations=1,
-    )
-    keep_u8 = cv2.bitwise_and(
-        keep_u8,
-        cv2.dilate(
-            cloth_u8,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+        keep_u8 = cv2.dilate(
+            keep_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 33)),
             iterations=1,
-        ),
+        )
+        keep_u8 = cv2.bitwise_and(
+            keep_u8,
+            cv2.dilate(
+                cloth_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+                iterations=1,
+            ),
+        )
+        keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
+        if lateral_only_short_restore:
+            keep_u8 = cv2.bitwise_and(keep_u8, short_lateral_lane_u8)
+        keep_u8 = self._trim_blocky_short_restore_mask_u8(
+            mask_u8=keep_u8,
+            face_bbox=face_bbox,
+            cutoff_y=cutoff_y,
+            min_keep_px=trim_min_keep_px,
+        )
+        if int((keep_u8 > 0).sum()) < trim_min_keep_px:
+            return np.zeros((H, W), dtype=np.uint8)
+        return keep_u8
+
+    keep_u8 = _collect_direct_mask(
+        lane_inner_mul=0.08,
+        lane_outer_mul=0.72,
+        min_area_ratio=0.010,
+        min_height_mul=0.28,
+        min_height_floor=72,
+        max_width_mul=0.78,
+        max_width_floor=128,
+        center_reject_mul=0.30,
+        center_reject_floor=26,
+        lateral_center_reject_mul=0.40,
+        lateral_center_reject_floor=38,
+        trim_min_keep_px=80,
     )
-    keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
-    if lateral_only_short_restore:
-        keep_u8 = cv2.bitwise_and(keep_u8, short_lateral_lane_u8)
-    keep_u8 = self._trim_blocky_short_restore_mask_u8(
-        mask_u8=keep_u8,
-        face_bbox=face_bbox,
-        cutoff_y=cutoff_y,
-        min_keep_px=80,
-    )
-    if int((keep_u8 > 0).sum()) < 80:
+    if lateral_only_short_restore and int((keep_u8 > 0).sum()) < 80:
+        keep_u8 = _collect_direct_mask(
+            lane_inner_mul=0.18,
+            lane_outer_mul=0.76,
+            min_area_ratio=0.008,
+            min_height_mul=0.20,
+            min_height_floor=48,
+            max_width_mul=0.94,
+            max_width_floor=148,
+            center_reject_mul=0.26,
+            center_reject_floor=24,
+            lateral_center_reject_mul=0.34,
+            lateral_center_reject_floor=34,
+            trim_min_keep_px=60,
+        )
+    if int((keep_u8 > 0).sum()) < 60:
         return np.zeros((H, W), dtype=np.float32)
 
     return cv2.GaussianBlur(
