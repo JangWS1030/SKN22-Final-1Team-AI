@@ -755,6 +755,9 @@ def _build_prompt(
     positive_parts.extend([
         "balanced framing",
         "same outfit, clean neckline",
+        "upper clothes in front, connected shoulders, no hair strands on clothes"
+        if hair_length in ("short", "medium")
+        else "natural garment continuity",
         "photorealistic portrait",
     ])
     positive = _compact_prompt_parts(positive_parts)
