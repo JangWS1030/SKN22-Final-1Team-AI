@@ -4320,6 +4320,71 @@ class MirrAISDPipeline:
             overlap_seed_u8 = cv2.bitwise_or(overlap_seed_u8, cv2.bitwise_and(torso_hair_u8, torso_u8))
         overlap_seed_u8 = cv2.bitwise_and(overlap_seed_u8, corridor_u8)
 
+        front_window_u8 = np.zeros((H, W), dtype=np.uint8)
+        front_seed_u8 = cv2.bitwise_or(cloth_support_u8, overlap_seed_u8)
+        front_seed_u8 = cv2.bitwise_or(front_seed_u8, torso_u8)
+        anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+        if shoulder_anchor_mask is not None:
+            anchor_u8 = (
+                np.clip(shoulder_anchor_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            anchor_u8 = cv2.bitwise_and(anchor_u8, corridor_u8)
+            front_seed_u8 = cv2.bitwise_or(front_seed_u8, anchor_u8)
+
+        anchor_ys, anchor_xs = np.where(anchor_u8 > 0)
+        front_ys, front_xs = np.where(front_seed_u8 > 0)
+        if anchor_xs.size > 0 and anchor_ys.size > 0:
+            support_y1 = int(anchor_ys.min())
+            support_y2 = int(anchor_ys.max())
+            support_x1 = int(np.percentile(anchor_xs, 4))
+            support_x2 = int(np.percentile(anchor_xs, 96))
+            center_x = int(round(0.5 * (support_x1 + support_x2)))
+            anchor_half = max(int((support_x2 - support_x1 + 1) * 0.56), int(face_w * 0.58))
+        elif front_xs.size > 0 and front_ys.size > 0:
+            support_y1 = int(front_ys.min())
+            support_y2 = int(front_ys.max())
+            support_x1 = int(np.percentile(front_xs, 4))
+            support_x2 = int(np.percentile(front_xs, 96))
+            center_x = int(round(0.5 * (support_x1 + support_x2)))
+            anchor_half = max(int((support_x2 - support_x1 + 1) * 0.50), int(face_w * 0.62))
+        else:
+            support_y1 = top
+            support_y2 = min(H - 1, int(y2 + face_h * 1.10))
+            center_x = int(round(0.5 * (x1 + x2)))
+            anchor_half = int(face_w * 0.76)
+
+        front_top = max(top, min(support_y1, int(y2 + face_h * 0.04)))
+        front_bottom = min(
+            H,
+            min(
+                int(y2 + face_h * 1.18),
+                max(
+                    int(y2 + face_h * 0.92),
+                    min(H - 1, support_y2) + int(face_h * 0.08),
+                ),
+            ),
+        )
+        shoulder_half = max(anchor_half, int(face_w * 0.76))
+        lower_half = max(int(face_w * 0.58), int(round(shoulder_half * 0.68)))
+        if front_top < front_bottom:
+            for y in range(front_top, front_bottom):
+                progress = (
+                    0.0
+                    if front_bottom <= front_top + 1
+                    else float(y - front_top) / float(front_bottom - front_top - 1)
+                )
+                half_width = int(round(shoulder_half * (1.0 - progress) + lower_half * progress))
+                left_x = max(0, center_x - half_width)
+                right_x = min(W, center_x + half_width)
+                if right_x > left_x:
+                    front_window_u8[y, left_x:right_x] = 255
+            front_window_u8 = cv2.morphologyEx(
+                front_window_u8,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 19)),
+            )
+            front_window_u8 = cv2.bitwise_and(front_window_u8, corridor_u8)
+
         overwrite_u8 = cv2.bitwise_or(amodal_base_u8, cloth_support_u8)
         overwrite_u8 = cv2.bitwise_or(overwrite_u8, torso_u8)
         overwrite_u8 = cv2.bitwise_or(overwrite_u8, overlap_seed_u8)
@@ -4334,6 +4399,14 @@ class MirrAISDPipeline:
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
             iterations=1,
         )
+        if int((front_window_u8 > 0).sum()) > 0:
+            overwrite_u8 = cv2.bitwise_and(overwrite_u8, front_window_u8)
+            overwrite_u8 = cv2.bitwise_or(overwrite_u8, cv2.bitwise_and(overlap_seed_u8, front_window_u8))
+            overwrite_u8 = cv2.morphologyEx(
+                overwrite_u8,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+            )
 
         if protect_mask is not None:
             protect_u8 = (
