@@ -873,51 +873,40 @@ def _build_prompt(
         subject_gender=gender_mode,
     )
     preserve_source_garment = hair_length in ("short", "medium")
-    garment_hint_data = source_garment_hints if isinstance(source_garment_hints, dict) else {}
     garment_positive_parts: List[str] = []
     garment_negative_parts: List[str] = []
     if preserve_source_garment:
-        color_name = str(garment_hint_data.get("color_name") or "").strip().lower()
-        pattern_type = str(garment_hint_data.get("pattern_type") or "").strip().lower()
-        material_hint = str(garment_hint_data.get("material_hint") or "").strip().lower()
-        neckline_hint = str(garment_hint_data.get("neckline_hint") or "").strip().lower()
-        negative_color_hints = [
-            str(item).strip()
-            for item in garment_hint_data.get("negative_color_hints", [])
-            if str(item).strip()
-        ]
-
-        if color_name:
-            garment_positive_parts.append(f"same {color_name} upper clothes")
-        else:
-            garment_positive_parts.append("same upper clothes as source image")
-
-        if pattern_type == "solid":
-            garment_positive_parts.append("solid color garment")
-            garment_negative_parts.append("high-contrast clothing pattern")
-        elif pattern_type == "ribbed":
-            garment_positive_parts.append("subtle ribbed knit texture")
-            garment_negative_parts.append("floral print clothes")
-        elif pattern_type == "textured":
-            garment_positive_parts.append("subtle textured fabric")
-            garment_negative_parts.append("bold graphic print clothes")
-
-        if material_hint and material_hint not in {"smooth fabric"}:
-            garment_positive_parts.append(f"same {material_hint}")
-        if neckline_hint:
-            garment_positive_parts.append(f"same {neckline_hint} neckline")
-        garment_positive_parts.append("same shoulder seams")
-        garment_negative_parts.extend(negative_color_hints)
+        garment_positive_parts.extend([
+            "plain white salon cape",
+            "clean white salon gown",
+            "smooth uniform fabric",
+            "covered shoulders",
+            "front salon drape",
+            "no visible original clothing",
+        ])
         garment_negative_parts.extend([
-            "different outfit",
-            "changed neckline",
-            "different shoulder seam",
-            "different sleeve design",
-            "new logo",
-            "new print",
-            "new text on clothes",
-            "altered blouse design",
-            "altered shirt structure",
+            "patterned clothes",
+            "printed fabric",
+            "graphic print",
+            "cardigan",
+            "blouse",
+            "shirt",
+            "jacket",
+            "hoodie",
+            "coat",
+            "knit texture",
+            "buttons",
+            "zipper",
+            "collar",
+            "open neckline",
+            "deep v-neck",
+            "exposed chest",
+            "visible original clothing",
+            "dark clothes",
+            "black clothes",
+            "blue clothes",
+            "beige clothes",
+            "brown clothes",
         ])
     else:
         garment_positive_parts.append("natural garment continuity")
