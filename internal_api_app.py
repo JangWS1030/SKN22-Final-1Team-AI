@@ -34,6 +34,8 @@ SCHEMA_VERSION = "2026-04-03"
 API_VERSION = "2026-04-03"
 SERVICE_ROLE = "model-ai-analysis-service"
 SERVICE_ENV = os.environ.get("MIRRAI_SERVICE_ENV", "local").strip() or "local"
+DEV_SERVICE_BASE_URL = "http://localhost:8000"
+PROD_SERVICE_BASE_URL = "https://mirrai.shop"
 ASSET_TTL_SECONDS = max(60, int(os.environ.get("MIRRAI_ASSET_TTL_SECONDS", "3600")))
 ASSET_DIR = PROJECT_ROOT / "output" / "internal_api_assets"
 ASSET_DIR.mkdir(parents=True, exist_ok=True)
@@ -93,8 +95,18 @@ class ExplainStyleRequest(BaseModel):
 app = FastAPI(
     title="MirrAI Internal AI Service",
     version=API_VERSION,
+    description=(
+        "Internal AI service contract for MirrAI backend integration. "
+        f"Development base URL: {DEV_SERVICE_BASE_URL}. "
+        f"Production base URL: {PROD_SERVICE_BASE_URL}. "
+        "All endpoints are mounted under /internal/ without path versioning."
+    ),
     docs_url="/internal/docs",
     openapi_url="/internal/openapi.json",
+    servers=[
+        {"url": DEV_SERVICE_BASE_URL, "description": "Development"},
+        {"url": PROD_SERVICE_BASE_URL, "description": "Production"},
+    ],
 )
 
 

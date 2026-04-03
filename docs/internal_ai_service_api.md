@@ -2,9 +2,17 @@
 
 이 문서는 backend가 `MIRRAI_AI_SERVICE_URL` 뒤에 붙여 호출하는 내부 AI 서비스 계약을 정의한다.
 
+기본 URL 규칙:
+
+- 로컬 개발: `MIRRAI_AI_SERVICE_URL=http://localhost:8000`
+- 운영: `MIRRAI_AI_SERVICE_URL=https://mirrai.shop`
+- backend는 위 base URL 뒤에 `/internal/health`, `/internal/analyze-face`, `/internal/generate-simulations`, `/internal/explain-style`를 붙여 호출한다.
+
 기본 규칙:
 
 - Base URL: `MIRRAI_AI_SERVICE_URL`
+- Development base URL: `http://localhost:8000`
+- Production base URL: `https://mirrai.shop`
 - Path versioning: 사용하지 않음
 - Endpoint prefix: `/internal/...`
 - Header versioning: 선택적 `X-MirrAI-API-Version: 2026-04-03`
@@ -458,6 +466,8 @@
 ## 운영 메모
 
 - `.env` 또는 runtime env에서 아래 값을 설정한다.
+  - backend development: `MIRRAI_AI_SERVICE_URL=http://localhost:8000`
+  - backend production: `MIRRAI_AI_SERVICE_URL=https://mirrai.shop`
   - `MIRRAI_SERVICE_MODE=http`
   - `MIRRAI_HTTP_HOST=0.0.0.0`
   - `MIRRAI_HTTP_PORT=8000`
@@ -466,4 +476,4 @@
   - `MIRRAI_SERVICE_ENV=staging|production|local`
 
 - 현재 RunPod serverless endpoint는 계속 기존 `handler_sd.py`를 사용한다.
-- HTTP 모드 배포가 따로 준비되면 backend는 `MIRRAI_AI_SERVICE_URL`을 이 서비스 base URL로 설정한다.
+- 로컬 HTTP 모드는 `http://localhost:8000`, 운영 HTTP 모드는 `https://mirrai.shop`를 base URL로 사용한다.

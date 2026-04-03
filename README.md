@@ -87,6 +87,13 @@ python -m pip install -r requirements-trends.txt
 - `docs/pipeline_runtime_config.md`: 현재 파이프라인이 실제로 읽는 runtime config 기준 문서
 - `docs/internal_ai_service_api.md`: backend 연동용 내부 AI 서비스 API 계약
 
+## Internal AI Service Base URL
+
+- 개발: `MIRRAI_AI_SERVICE_URL=http://localhost:8000`
+- 운영: `MIRRAI_AI_SERVICE_URL=https://mirrai.shop`
+- backend는 위 base URL 뒤에 `/internal/health`, `/internal/analyze-face`, `/internal/generate-simulations`, `/internal/explain-style`를 붙여 호출합니다.
+- 내부 API는 path versioning 없이 `/internal/...`를 사용하고, 선택적으로 `X-MirrAI-API-Version` 헤더를 받을 수 있습니다.
+
 ## RunPod API 엔드포인트
 
 `handler_sd.py`는 단일 RunPod Serverless 핸들러에서 `action` 필드 또는 입력 구조에 따라 4개 기능을 라우팅합니다.
