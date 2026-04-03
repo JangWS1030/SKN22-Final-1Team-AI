@@ -2559,6 +2559,7 @@ def _build_final_source_cloth_rescue_mask(
         keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(final_hair_u8))
 
     short_lateral_lane_u8 = np.zeros((H, W), dtype=np.uint8)
+    short_restore_gate_u8 = np.zeros((H, W), dtype=np.uint8)
     if lateral_only_short_restore:
         lane_top = max(top, int(cutoff_y + face_h * 0.06))
         lane_bottom = min(bottom, int(cutoff_y + face_h * 1.54))
@@ -2570,9 +2571,28 @@ def _build_final_source_cloth_rescue_mask(
             short_lateral_lane_u8[lane_top:lane_bottom, left_lane_left:left_lane_right] = 255
         if lane_top < lane_bottom and right_lane_left < right_lane_right:
             short_lateral_lane_u8[lane_top:lane_bottom, right_lane_left:right_lane_right] = 255
-        if int((short_lateral_lane_u8 > 0).sum()) > 0:
-            keep_u8 = cv2.bitwise_and(keep_u8, short_lateral_lane_u8)
-            pre_tone_keep_u8 = cv2.bitwise_and(pre_tone_keep_u8, short_lateral_lane_u8)
+        short_restore_gate_u8 = short_lateral_lane_u8.copy()
+        if center_support_mask is not None and center_support_mask.shape == (H, W):
+            center_support_u8 = cv2.dilate(
+                (np.clip(center_support_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 41)),
+                iterations=1,
+            )
+            center_lane_u8 = np.zeros((H, W), dtype=np.uint8)
+            center_lane_half_w = max(26, int(face_w * 0.20))
+            center_lane_left = max(0, cx - center_lane_half_w)
+            center_lane_right = min(W, cx + center_lane_half_w)
+            center_lane_top = max(top, int(cutoff_y + face_h * 0.06))
+            center_lane_bottom = min(bottom, int(cutoff_y + face_h * 1.46))
+            if center_lane_top < center_lane_bottom and center_lane_left < center_lane_right:
+                center_lane_u8[center_lane_top:center_lane_bottom, center_lane_left:center_lane_right] = 255
+                center_support_u8 = cv2.bitwise_and(center_support_u8, center_lane_u8)
+                center_support_u8 = cv2.bitwise_and(center_support_u8, candidate_cloth_u8)
+                if int((center_support_u8 > 0).sum()) >= 24:
+                    short_restore_gate_u8 = cv2.bitwise_or(short_restore_gate_u8, center_support_u8)
+        if int((short_restore_gate_u8 > 0).sum()) > 0:
+            keep_u8 = cv2.bitwise_and(keep_u8, short_restore_gate_u8)
+            pre_tone_keep_u8 = cv2.bitwise_and(pre_tone_keep_u8, short_restore_gate_u8)
 
     if int((keep_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
@@ -2625,8 +2645,8 @@ def _build_final_source_cloth_rescue_mask(
         iterations=1,
     )
     filtered_u8 = cv2.bitwise_and(filtered_u8, candidate_cloth_u8)
-    if lateral_only_short_restore and int((short_lateral_lane_u8 > 0).sum()) > 0:
-        filtered_u8 = cv2.bitwise_and(filtered_u8, short_lateral_lane_u8)
+    if lateral_only_short_restore and int((short_restore_gate_u8 > 0).sum()) > 0:
+        filtered_u8 = cv2.bitwise_and(filtered_u8, short_restore_gate_u8)
     if int((exclusion_u8 > 0).sum()) > 0:
         filtered_u8 = cv2.bitwise_and(filtered_u8, cv2.bitwise_not(exclusion_u8))
     if hair_length == "short":
