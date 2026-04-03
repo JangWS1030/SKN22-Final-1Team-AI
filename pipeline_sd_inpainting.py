@@ -4128,6 +4128,139 @@ class MirrAISDPipeline:
                                     or female_short_broad_cloth_restore_mask is not None
                                 ):
                                     if female_short_direct_cloth_restore_px >= 120:
+                                        x1, y1, x2, y2 = face_bbox
+                                        face_w = max(int(x2 - x1), 1)
+                                        face_h = max(int(y2 - y1), 1)
+                                        cx = int(0.5 * (x1 + x2))
+                                        if (
+                                            source_gray is None
+                                            or current_gray is None
+                                            or source_sat is None
+                                            or current_sat is None
+                                            or diff_rgb is None
+                                        ):
+                                            source_gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                                            current_gray = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                                            source_sat = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+                                            current_sat = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+                                            diff_rgb = np.abs(
+                                                final_rgb.astype(np.float32) - img_rgb.astype(np.float32)
+                                            ).mean(axis=2)
+
+                                        source_visible_gate_u8 = cloth_gate_u8.copy()
+                                        if (
+                                            subject_cloth_anchor_for_post is not None
+                                            and subject_cloth_anchor_for_post.shape == final_bgr.shape[:2]
+                                        ):
+                                            source_visible_gate_u8 = cv2.bitwise_or(
+                                                source_visible_gate_u8,
+                                                cv2.dilate(
+                                                    (
+                                                        np.clip(
+                                                            subject_cloth_anchor_for_post.astype(np.float32),
+                                                            0.0,
+                                                            1.0,
+                                                        )
+                                                        > 0.04
+                                                    ).astype(np.uint8)
+                                                    * 255,
+                                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+                                                    iterations=1,
+                                                ),
+                                            )
+                                        source_visible_gate_u8 = cv2.bitwise_and(source_visible_gate_u8, torso_gate_u8)
+                                        source_lap = np.abs(
+                                            cv2.Laplacian(source_gray.astype(np.uint8), cv2.CV_32F, ksize=3)
+                                        )
+                                        source_visible_cloth_u8 = (
+                                            (
+                                                (source_gray > 170.0)
+                                                & (source_sat < 92.0)
+                                                & (source_lap < 30.0)
+                                            ).astype(np.uint8)
+                                            * 255
+                                        )
+                                        source_visible_cloth_u8 = cv2.bitwise_and(
+                                            source_visible_cloth_u8,
+                                            source_visible_gate_u8,
+                                        )
+                                        source_visible_cloth_u8 = cv2.morphologyEx(
+                                            source_visible_cloth_u8,
+                                            cv2.MORPH_CLOSE,
+                                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 19)),
+                                        )
+                                        source_visible_cloth_u8 = cv2.dilate(
+                                            source_visible_cloth_u8,
+                                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+                                            iterations=1,
+                                        )
+                                        if int((source_visible_cloth_u8 > 0).sum()) >= 180:
+                                            source_visible_cloth_mask = cv2.GaussianBlur(
+                                                source_visible_cloth_u8.astype(np.float32) / 255.0,
+                                                (0, 0),
+                                                sigmaX=4.2,
+                                                sigmaY=6.0,
+                                            ).astype(np.float32)
+                                            female_short_cloth_reference_mask = np.maximum(
+                                                female_short_cloth_reference_mask,
+                                                np.clip(source_visible_cloth_mask * 0.98, 0.0, 1.0),
+                                            )
+                                            source_visible_rescue_u8 = (
+                                                (
+                                                    (diff_rgb > 10.0)
+                                                    | (np.abs(current_gray - source_gray) > 9.0)
+                                                    | (current_gray + 8.0 < source_gray)
+                                                    | (current_gray > source_gray + 10.0)
+                                                    | (current_sat > source_sat + 9.0)
+                                                ).astype(np.uint8)
+                                                * 255
+                                            )
+                                            source_visible_rescue_u8 = cv2.bitwise_and(
+                                                source_visible_rescue_u8,
+                                                source_visible_cloth_u8,
+                                            )
+                                            if (
+                                                removal_mask_for_post is not None
+                                                and removal_mask_for_post.shape == final_bgr.shape[:2]
+                                            ):
+                                                source_visible_rescue_u8 = cv2.bitwise_and(
+                                                    source_visible_rescue_u8,
+                                                    cv2.dilate(
+                                                        (
+                                                            np.clip(removal_mask_for_post.astype(np.float32), 0.0, 1.0)
+                                                            > 0.04
+                                                        ).astype(np.uint8)
+                                                        * 255,
+                                                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31)),
+                                                        iterations=1,
+                                                    ),
+                                                )
+                                            if int((source_visible_rescue_u8 > 0).sum()) >= 120:
+                                                source_visible_rescue_mask = cv2.GaussianBlur(
+                                                    source_visible_rescue_u8.astype(np.float32) / 255.0,
+                                                    (0, 0),
+                                                    sigmaX=4.4,
+                                                    sigmaY=6.4,
+                                                ).astype(np.float32)
+                                                final_rgb = self._restore_reference_region(
+                                                    final_rgb,
+                                                    img_rgb,
+                                                    source_visible_rescue_mask,
+                                                    strength=0.98,
+                                                )
+                                                final_rgb = self._overlay_reference_cloth_fill(
+                                                    final_rgb,
+                                                    img_rgb,
+                                                    source_visible_rescue_mask,
+                                                    cloth_mask=female_short_cloth_reference_mask,
+                                                )
+                                                final_rgb = self._cv2_refine_cloth_region(
+                                                    final_rgb,
+                                                    source_visible_rescue_mask,
+                                                    reference_rgb=img_rgb,
+                                                    reference_mask=female_short_cloth_reference_mask,
+                                                )
+
                                         center_fill_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                                         center_fill_half_w = max(24, int(face_w * 0.24))
                                         center_fill_left = max(0, cx - center_fill_half_w)
