@@ -3541,6 +3541,12 @@ class MirrAISDPipeline:
                             ).astype(np.uint8)
                             * 255
                         )
+                        direct_female_short_restore_u8 = (
+                            (
+                                np.clip(direct_side_column_restore_mask_for_post.astype(np.float32), 0.0, 1.0) > 0.06
+                            ).astype(np.uint8)
+                            * 255
+                        )
                         if int((female_short_direct_cloth_restore_u8 > 0).sum()) >= 120:
                             x1, y1, x2, y2 = face_bbox
                             face_w = max(int(x2 - x1), 1)
@@ -3565,8 +3571,16 @@ class MirrAISDPipeline:
                                 female_short_direct_cloth_restore_u8,
                                 torso_gate_u8,
                             )
+                            direct_female_short_restore_u8 = cv2.bitwise_and(
+                                direct_female_short_restore_u8,
+                                torso_gate_u8,
+                            )
                             female_short_direct_cloth_restore_u8 = cv2.bitwise_and(
                                 female_short_direct_cloth_restore_u8,
+                                cloth_gate_u8,
+                            )
+                            direct_female_short_restore_u8 = cv2.bitwise_and(
+                                direct_female_short_restore_u8,
                                 cloth_gate_u8,
                             )
                             if (
@@ -3604,6 +3618,15 @@ class MirrAISDPipeline:
                                 female_short_direct_cloth_restore_u8 = cv2.bitwise_and(
                                     female_short_direct_cloth_restore_u8,
                                     cv2.bitwise_not(final_hair_u8),
+                                )
+                                direct_female_short_restore_u8 = cv2.bitwise_and(
+                                    direct_female_short_restore_u8,
+                                    cv2.bitwise_not(final_hair_u8),
+                                )
+                            if int((direct_female_short_restore_u8 > 0).sum()) >= 48:
+                                female_short_direct_cloth_restore_u8 = cv2.bitwise_or(
+                                    female_short_direct_cloth_restore_u8,
+                                    direct_female_short_restore_u8,
                                 )
                             female_short_direct_cloth_restore_u8 = cv2.morphologyEx(
                                 female_short_direct_cloth_restore_u8,
@@ -3661,7 +3684,7 @@ class MirrAISDPipeline:
                                         final_rgb,
                                         img_rgb,
                                         direct_side_column_restore_mask_for_post,
-                                        strength=0.92,
+                                        strength=0.97,
                                     )
                                 final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                                 if debug_images_common is not None and rank == 0:
