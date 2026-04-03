@@ -593,12 +593,247 @@ def _preserve_original_hair_tone(
     out = tuned_rgb.astype(np.float32) * alpha + target_rgb.astype(np.float32) * (1.0 - alpha)
     return np.clip(out, 0, 255).astype(np.uint8)
 
+def _extract_source_garment_prompt_hints(
+    self,
+    source_rgb: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    torso_candidate_mask: Optional[np.ndarray],
+    source_cloth_overlap_mask: Optional[np.ndarray],
+    hair_mask_for_removal: Optional[np.ndarray],
+    protect_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+) -> Tuple[Dict[str, Any], np.ndarray]:
+    H, W = source_rgb.shape[:2]
+    empty_mask = np.zeros((H, W), dtype=np.float32)
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return {}, empty_mask
+
+    cloth_u8 = (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+    if int((cloth_u8 > 0).sum()) < 120:
+        return {}, empty_mask
+
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+
+    support_u8 = cloth_u8.copy()
+    if torso_candidate_mask is not None and torso_candidate_mask.shape == (H, W):
+        torso_u8 = cv2.dilate(
+            (np.clip(torso_candidate_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
+            iterations=1,
+        )
+        torso_supported_u8 = cv2.bitwise_and(support_u8, torso_u8)
+        if int((torso_supported_u8 > 0).sum()) >= 160:
+            support_u8 = torso_supported_u8
+
+    corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+    top = max(0, int(y2 - face_h * 0.04))
+    bottom = min(H, int(y2 + face_h * 1.95))
+    left = max(0, int(x1 - face_w * 1.10))
+    right = min(W, int(x2 + face_w * 1.10))
+    if top >= bottom or left >= right:
+        return {}, empty_mask
+    corridor_u8[top:bottom, left:right] = 255
+    support_u8 = cv2.bitwise_and(support_u8, corridor_u8)
+
+    exclude_u8 = np.zeros((H, W), dtype=np.uint8)
+    exclusion_specs = (
+        (source_cloth_overlap_mask, 0.04, (13, 13)),
+        (hair_mask_for_removal, 0.08, (11, 11)),
+        (protect_mask, 0.08, (9, 9)),
+    )
+    for mask, threshold, kernel_size in exclusion_specs:
+        if mask is None or mask.shape != (H, W):
+            continue
+        mask_u8 = (np.clip(mask.astype(np.float32), 0.0, 1.0) > threshold).astype(np.uint8) * 255
+        if int((mask_u8 > 0).sum()) <= 0:
+            continue
+        mask_u8 = cv2.dilate(
+            mask_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, kernel_size),
+            iterations=1,
+        )
+        exclude_u8 = cv2.bitwise_or(exclude_u8, mask_u8)
+    support_u8 = cv2.bitwise_and(support_u8, cv2.bitwise_not(exclude_u8))
+
+    neckline_cut_y = max(0, int(y2 - face_h * 0.03))
+    if neckline_cut_y > 0:
+        support_u8[:neckline_cut_y, :] = 0
+
+    support_u8 = cv2.erode(
+        support_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    )
+    support_u8 = cv2.morphologyEx(
+        support_u8,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+    )
+    if int((support_u8 > 0).sum()) < max(180, int(face_w * face_h * 0.010)):
+        return {}, empty_mask
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats((support_u8 > 0).astype(np.uint8), 8)
+    if num_labels <= 1:
+        return {}, empty_mask
+    best_label = 0
+    best_area = 0
+    for label in range(1, num_labels):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area > best_area:
+            best_area = area
+            best_label = label
+    if best_label <= 0 or best_area < max(180, int(face_w * face_h * 0.010)):
+        return {}, empty_mask
+
+    support_u8 = np.zeros((H, W), dtype=np.uint8)
+    support_u8[labels == best_label] = 255
+    support_mask = support_u8 > 0
+    if int(support_mask.sum()) < 180:
+        return {}, empty_mask
+
+    lab_img = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    lab_pixels = lab_img[support_mask]
+    median_lab = np.median(lab_pixels, axis=0)
+
+    palette_rgb = {
+        "white": (245, 244, 239),
+        "ivory": (236, 226, 204),
+        "cream": (229, 214, 182),
+        "beige": (200, 178, 147),
+        "gray": (145, 145, 145),
+        "black": (46, 46, 46),
+        "navy": (49, 65, 101),
+        "blue": (74, 112, 181),
+        "brown": (122, 87, 66),
+    }
+    color_name = "neutral"
+    best_dist = float("inf")
+    for name, rgb in palette_rgb.items():
+        rgb_arr = np.array([[rgb]], dtype=np.uint8)
+        pal_lab = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2LAB).astype(np.float32)[0, 0]
+        dist = float(np.linalg.norm(median_lab - pal_lab))
+        if dist < best_dist:
+            best_dist = dist
+            color_name = name
+
+    gray_img = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    gx = cv2.Sobel(gray_img, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray_img, cv2.CV_32F, 0, 1, ksize=3)
+    edges = cv2.Canny(source_rgb, 80, 160)
+    edge_density = float((edges[support_mask] > 0).mean())
+    light_std = float(gray_img[support_mask].std())
+    chroma_std = float(np.sqrt(lab_pixels[:, 1].var() + lab_pixels[:, 2].var()))
+    gx_mean = float(np.abs(gx[support_mask]).mean())
+    gy_mean = float(np.abs(gy[support_mask]).mean())
+    vertical_texture_ratio = gx_mean / max(gy_mean, 1e-4)
+
+    pattern_type = "solid"
+    pattern_confidence = 0.62
+    if edge_density > 0.028 and vertical_texture_ratio > 1.35:
+        pattern_type = "ribbed"
+        pattern_confidence = 0.78
+    elif edge_density > 0.030 or light_std > 18.0 or chroma_std > 18.0:
+        pattern_type = "textured"
+        pattern_confidence = 0.68
+    elif edge_density < 0.016 and light_std < 13.0 and chroma_std < 14.0:
+        pattern_type = "solid"
+        pattern_confidence = 0.84
+
+    material_hint: Optional[str] = None
+    material_confidence = 0.0
+    if pattern_type == "ribbed":
+        material_hint = "ribbed knit"
+        material_confidence = 0.82
+    elif pattern_type == "textured":
+        material_hint = "knit fabric"
+        material_confidence = 0.66
+    elif pattern_type == "solid" and edge_density < 0.018 and light_std < 12.5:
+        material_hint = "smooth fabric"
+        material_confidence = 0.58
+
+    ys, xs = np.where(support_mask)
+    x_min, x_max = int(xs.min()), int(xs.max())
+    bbox_w = max(int(x_max - x_min + 1), 1)
+    top_profile = np.full(W, H, dtype=np.int32)
+    for x in range(x_min, x_max + 1):
+        col_ys = np.where(support_u8[:, x] > 0)[0]
+        if col_ys.size > 0:
+            top_profile[x] = int(col_ys[0])
+
+    def _median_top(x_start: int, x_end: int) -> Optional[float]:
+        x_start = max(x_min, x_start)
+        x_end = min(x_max + 1, x_end)
+        if x_end <= x_start:
+            return None
+        vals = top_profile[x_start:x_end]
+        vals = vals[vals < H]
+        if vals.size < 6:
+            return None
+        return float(np.median(vals))
+
+    center_x = int(0.5 * (x_min + x_max))
+    center_top = _median_top(center_x - int(bbox_w * 0.12), center_x + int(bbox_w * 0.12))
+    left_top = _median_top(x_min + int(bbox_w * 0.08), x_min + int(bbox_w * 0.26))
+    right_top = _median_top(x_max - int(bbox_w * 0.26), x_max - int(bbox_w * 0.08))
+
+    neckline_hint: Optional[str] = None
+    neckline_confidence = 0.0
+    if center_top is not None:
+        side_candidates = [v for v in (left_top, right_top) if v is not None]
+        if side_candidates:
+            side_top = float(np.median(side_candidates))
+            center_drop = float(center_top - side_top)
+            if center_drop > max(10.0, face_h * 0.06):
+                neckline_hint = "v-neck"
+                neckline_confidence = 0.79
+            elif center_drop > max(4.0, face_h * 0.03):
+                neckline_hint = "round"
+                neckline_confidence = 0.56
+
+    negative_color_map = {
+        "white": ["black clothes", "navy clothes", "blue clothes"],
+        "ivory": ["black clothes", "navy clothes", "blue clothes"],
+        "cream": ["black clothes", "navy clothes", "blue clothes"],
+        "beige": ["black clothes", "navy clothes", "blue clothes"],
+        "gray": ["bright blue clothes", "cream clothes"],
+        "black": ["white clothes", "cream clothes", "bright blue clothes"],
+        "navy": ["white clothes", "cream clothes", "beige clothes"],
+        "blue": ["white clothes", "cream clothes", "beige clothes"],
+        "brown": ["blue clothes", "navy clothes", "bright white clothes"],
+        "neutral": [],
+    }
+
+    hints: Dict[str, Any] = {
+        "color_name": color_name,
+        "pattern_type": pattern_type,
+        "material_hint": material_hint,
+        "neckline_hint": neckline_hint,
+        "negative_color_hints": negative_color_map.get(color_name, []),
+        "support_pixels": int(support_mask.sum()),
+        "confidence": {
+            "color": round(max(0.35, 1.0 - min(best_dist, 42.0) / 42.0), 3),
+            "pattern": round(pattern_confidence, 3),
+            "material": round(material_confidence, 3),
+            "neckline": round(neckline_confidence, 3),
+        },
+        "stats": {
+            "edge_density": round(edge_density, 4),
+            "light_std": round(light_std, 3),
+            "chroma_std": round(chroma_std, 3),
+            "vertical_texture_ratio": round(vertical_texture_ratio, 3),
+        },
+    }
+    return hints, support_u8.astype(np.float32) / 255.0
+
 def _build_prompt(
     hairstyle_text: str,
     color_text: str,
     hair_length: str = "long",
     subject_gender: Optional[str] = None,
     sd_prompt_data: Optional[Dict[str, Any]] = None,
+    source_garment_hints: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str, float]:
     """
     Returns:
@@ -638,19 +873,59 @@ def _build_prompt(
         subject_gender=gender_mode,
     )
     preserve_source_garment = hair_length in ("short", "medium")
-    garment_positive_hint = (
-        "same upper clothes as source image, same clothing color tone, same fabric pattern, "
-        "same neckline and shoulder seams, preserve original garment material and folds"
-        if preserve_source_garment
-        else "natural garment continuity"
-    )
-    garment_negative_hint = (
-        "different outfit, changed clothing color, changed fabric pattern, changed neckline, "
-        "different shoulder seam, different sleeve design, new logo, new print, new text on clothes, "
-        "mismatched garment texture, altered blouse design, altered shirt structure, "
-        if preserve_source_garment
-        else ""
-    )
+    garment_hint_data = source_garment_hints if isinstance(source_garment_hints, dict) else {}
+    garment_positive_parts: List[str] = []
+    garment_negative_parts: List[str] = []
+    if preserve_source_garment:
+        color_name = str(garment_hint_data.get("color_name") or "").strip().lower()
+        pattern_type = str(garment_hint_data.get("pattern_type") or "").strip().lower()
+        material_hint = str(garment_hint_data.get("material_hint") or "").strip().lower()
+        neckline_hint = str(garment_hint_data.get("neckline_hint") or "").strip().lower()
+        negative_color_hints = [
+            str(item).strip()
+            for item in garment_hint_data.get("negative_color_hints", [])
+            if str(item).strip()
+        ]
+
+        if color_name:
+            garment_positive_parts.append(f"same {color_name} upper clothes")
+        else:
+            garment_positive_parts.append("same upper clothes as source image")
+
+        if pattern_type == "solid":
+            garment_positive_parts.append("solid color garment")
+            garment_negative_parts.append("high-contrast clothing pattern")
+        elif pattern_type == "ribbed":
+            garment_positive_parts.append("subtle ribbed knit texture")
+            garment_negative_parts.append("floral print clothes")
+        elif pattern_type == "textured":
+            garment_positive_parts.append("subtle textured fabric")
+            garment_negative_parts.append("bold graphic print clothes")
+
+        if material_hint and material_hint not in {"smooth fabric"}:
+            garment_positive_parts.append(f"same {material_hint}")
+        if neckline_hint:
+            garment_positive_parts.append(f"same {neckline_hint} neckline")
+        garment_positive_parts.append("same shoulder seams")
+        garment_negative_parts.extend(negative_color_hints)
+        garment_negative_parts.extend([
+            "different outfit",
+            "changed neckline",
+            "different shoulder seam",
+            "different sleeve design",
+            "new logo",
+            "new print",
+            "new text on clothes",
+            "altered blouse design",
+            "altered shirt structure",
+        ])
+    else:
+        garment_positive_parts.append("natural garment continuity")
+
+    garment_positive_hint = ", ".join(garment_positive_parts)
+    garment_negative_hint = ", ".join(garment_negative_parts)
+    if garment_negative_hint:
+        garment_negative_hint += ", "
 
     # ── DB 프롬프트 데이터가 있으면 우선 사용 ─────────────────────────────
     if sd_prompt_data and sd_prompt_data.get("sd_positive"):
@@ -803,4 +1078,5 @@ def bind_prompt_methods_to_pipeline(cls) -> None:
     cls._estimate_male_medium_fit_penalty = _estimate_male_medium_fit_penalty
     cls._estimate_mask_mass_center_offset = staticmethod(_estimate_mask_mass_center_offset)
     cls._preserve_original_hair_tone = _preserve_original_hair_tone
+    cls._extract_source_garment_prompt_hints = _extract_source_garment_prompt_hints
     cls._build_prompt = staticmethod(_build_prompt)

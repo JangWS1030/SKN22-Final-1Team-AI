@@ -2433,6 +2433,39 @@ class MirrAISDPipeline:
         # ── Step 5: 얼굴 crop (IP-Adapter) ───────────────────────────────────
         face_crop_pil = self._crop_face(img_pil, face_bbox)
 
+        source_garment_prompt_hints: Dict[str, Any] = {}
+        source_garment_prompt_support_mask = np.zeros((H, W), dtype=np.float32)
+        if hair_length in ("short", "medium"):
+            try:
+                (
+                    source_garment_prompt_hints,
+                    source_garment_prompt_support_mask,
+                ) = self._extract_source_garment_prompt_hints(
+                    img_rgb,
+                    cloth_mask=cloth_mask,
+                    torso_candidate_mask=subject_torso_candidate_mask,
+                    source_cloth_overlap_mask=source_cloth_overlap_mask,
+                    hair_mask_for_removal=hair_mask_for_removal,
+                    protect_mask=protect_mask_for_sd,
+                    face_bbox=face_bbox,
+                )
+            except Exception as e:
+                logger.warning(f"[SDPipeline] source garment prompt hint extraction failed (ignored): {e}")
+                source_garment_prompt_hints = {}
+                source_garment_prompt_support_mask = np.zeros((H, W), dtype=np.float32)
+        _store_mask("pipeline_source_garment_prompt_support_mask", source_garment_prompt_support_mask)
+        if debug_data_common is not None and source_garment_prompt_hints:
+            debug_data_common["source_garment_prompt_hints"] = source_garment_prompt_hints
+        if source_garment_prompt_hints:
+            logger.info(
+                "[SDPipeline] source garment prompt hints: color=%s pattern=%s material=%s neckline=%s support_px=%s",
+                source_garment_prompt_hints.get("color_name"),
+                source_garment_prompt_hints.get("pattern_type"),
+                source_garment_prompt_hints.get("material_hint"),
+                source_garment_prompt_hints.get("neckline_hint"),
+                source_garment_prompt_hints.get("support_pixels"),
+            )
+
         # ── Step 6: 프롬프트 ─────────────────────────────────────────────────
         prompt, neg_prompt, guidance = self._build_prompt(
             effective_hairstyle_text,
@@ -2440,6 +2473,7 @@ class MirrAISDPipeline:
             hair_length,
             subject_gender=subject_gender_mode,
             sd_prompt_data=sd_prompt_data,
+            source_garment_hints=source_garment_prompt_hints,
         )
         logger.info(f"[SDPipeline] 프롬프트: {prompt}")
         logger.info(f"[SDPipeline] 네거티브: {neg_prompt}")
