@@ -2360,22 +2360,42 @@ class MirrAISDPipeline:
                 "gen_idx": gen_idx,
             })
 
+        prefer_short_color_first_ranking = (
+            hair_length == "short"
+            and subject_gender_mode != "male"
+            and has_color_request
+            and target_hair_lab is not None
+        )
+
         if has_color_request and target_hair_lab is not None and len(candidates) > 1:
             sortable_count = sum(c["color_distance"] is not None for c in candidates)
             if sortable_count >= 2:
-                candidates.sort(
-                    key=lambda c: (
-                        c["accessory_penalty"] is None,
-                        c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
-                        c["male_medium_fit_penalty"] is None,
-                        c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
-                        c["male_short_fit_penalty"] is None,
-                        c["male_short_fit_penalty"] if c["male_short_fit_penalty"] is not None else 1e9,
-                        c["color_distance"] is None,
-                        c["color_distance"] if c["color_distance"] is not None else 1e9,
-                        c["gen_idx"],
+                if prefer_short_color_first_ranking:
+                    candidates.sort(
+                        key=lambda c: (
+                            c["color_distance"] is None,
+                            c["color_distance"] if c["color_distance"] is not None else 1e9,
+                            c["tail_penalty"] is None,
+                            c["tail_penalty"] if c["tail_penalty"] is not None else 1e9,
+                            c["accessory_penalty"] is None,
+                            c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                            c["gen_idx"],
+                        )
                     )
-                )
+                else:
+                    candidates.sort(
+                        key=lambda c: (
+                            c["male_medium_fit_penalty"] is None,
+                            c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
+                            c["male_short_fit_penalty"] is None,
+                            c["male_short_fit_penalty"] if c["male_short_fit_penalty"] is not None else 1e9,
+                            c["color_distance"] is None,
+                            c["color_distance"] if c["color_distance"] is not None else 1e9,
+                            c["accessory_penalty"] is None,
+                            c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                            c["gen_idx"],
+                        )
+                    )
                 logger.info("[SDPipeline] 컬러 유사도 기준으로 결과 재정렬 완료")
             else:
                 logger.info("[SDPipeline] 컬러 유사도 재정렬 스킵 (유효 샘플 부족)")
@@ -2405,7 +2425,20 @@ class MirrAISDPipeline:
         if hair_length == "short" and len(candidates) > 1:
             tail_sortable = sum(c["tail_penalty"] is not None for c in candidates)
             short_fit_sortable = sum(c["male_short_fit_penalty"] is not None for c in candidates)
-            if tail_sortable >= 2 or short_fit_sortable >= 2:
+            if prefer_short_color_first_ranking and tail_sortable >= 2:
+                candidates.sort(
+                    key=lambda c: (
+                        c["color_distance"] is None,
+                        c["color_distance"] if c["color_distance"] is not None else 1e9,
+                        c["tail_penalty"] is None,
+                        c["tail_penalty"] if c["tail_penalty"] is not None else 1e9,
+                        c["accessory_penalty"] is None,
+                        c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                        c["gen_idx"],
+                    )
+                )
+                logger.info("[SDPipeline] short female color-first + short tail ranking applied")
+            elif tail_sortable >= 2 or short_fit_sortable >= 2:
                 candidates.sort(
                     key=lambda c: (
                         c["accessory_penalty"] is None,
@@ -3523,6 +3556,13 @@ class MirrAISDPipeline:
                     try:
                         final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                         final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                        female_short_cloth_reference_mask = cloth_restore_mask_for_post
+                        if (
+                            bright_cloth_preserve_for_post is not None
+                            and bright_cloth_preserve_for_post.shape == final_bgr.shape[:2]
+                            and float(bright_cloth_preserve_for_post.sum()) > 0.0
+                        ):
+                            female_short_cloth_reference_mask = bright_cloth_preserve_for_post
                         female_short_direct_cloth_restore_mask = np.maximum(
                             short_lower_garment_cleanup_mask_for_post,
                             final_source_cloth_rescue_mask_for_post,
@@ -3530,10 +3570,6 @@ class MirrAISDPipeline:
                         female_short_direct_cloth_restore_mask = np.maximum(
                             female_short_direct_cloth_restore_mask,
                             np.clip(center_residual_cleanup_mask_for_post * 0.92, 0.0, 1.0),
-                        ).astype(np.float32)
-                        female_short_direct_cloth_restore_mask = np.maximum(
-                            female_short_direct_cloth_restore_mask,
-                            np.clip(direct_side_column_restore_mask_for_post.astype(np.float32), 0.0, 1.0),
                         ).astype(np.float32)
                         female_short_direct_cloth_restore_u8 = (
                             (
@@ -3623,11 +3659,6 @@ class MirrAISDPipeline:
                                     direct_female_short_restore_u8,
                                     cv2.bitwise_not(final_hair_u8),
                                 )
-                            if int((direct_female_short_restore_u8 > 0).sum()) >= 48:
-                                female_short_direct_cloth_restore_u8 = cv2.bitwise_or(
-                                    female_short_direct_cloth_restore_u8,
-                                    direct_female_short_restore_u8,
-                                )
                             female_short_direct_cloth_restore_u8 = cv2.morphologyEx(
                                 female_short_direct_cloth_restore_u8,
                                 cv2.MORPH_CLOSE,
@@ -3641,6 +3672,14 @@ class MirrAISDPipeline:
                             female_short_direct_cloth_restore_px = int(
                                 (female_short_direct_cloth_restore_u8 > 0).sum()
                             )
+                            direct_side_restore_mask = None
+                            if int((direct_female_short_restore_u8 > 0).sum()) >= 48:
+                                direct_side_restore_mask = cv2.GaussianBlur(
+                                    direct_female_short_restore_u8.astype(np.float32) / 255.0,
+                                    (0, 0),
+                                    sigmaX=3.6,
+                                    sigmaY=5.4,
+                                ).astype(np.float32)
                             if female_short_direct_cloth_restore_px >= 120:
                                 female_short_direct_cloth_restore_mask = cv2.GaussianBlur(
                                     female_short_direct_cloth_restore_u8.astype(np.float32) / 255.0,
@@ -3654,37 +3693,30 @@ class MirrAISDPipeline:
                                     female_short_direct_cloth_restore_mask,
                                     strength=0.995,
                                 )
-                                if float(direct_side_column_restore_mask_for_post.sum()) > 0.0:
-                                    final_rgb = self._overlay_reference_cloth_fill(
-                                        final_rgb,
-                                        img_rgb,
-                                        direct_side_column_restore_mask_for_post,
-                                        cloth_mask=cloth_restore_mask_for_post,
-                                    )
                                 final_rgb = self._overlay_reference_cloth_fill(
                                     final_rgb,
                                     img_rgb,
                                     female_short_direct_cloth_restore_mask,
-                                    cloth_mask=cloth_restore_mask_for_post,
+                                    cloth_mask=female_short_cloth_reference_mask,
                                 )
                                 final_rgb = self._blend_neighbor_cloth_tone(
                                     final_rgb,
                                     female_short_direct_cloth_restore_mask,
-                                    cloth_mask=cloth_restore_mask_for_post,
+                                    cloth_mask=female_short_cloth_reference_mask,
                                     reference_rgb=img_rgb,
                                 )
                                 final_rgb = self._cv2_refine_cloth_region(
                                     final_rgb,
                                     female_short_direct_cloth_restore_mask,
                                     reference_rgb=img_rgb,
-                                    reference_mask=cloth_restore_mask_for_post,
+                                    reference_mask=female_short_cloth_reference_mask,
                                 )
-                                if float(direct_side_column_restore_mask_for_post.sum()) > 0.0:
+                                if direct_side_restore_mask is not None:
                                     final_rgb = self._restore_reference_region(
                                         final_rgb,
                                         img_rgb,
-                                        direct_side_column_restore_mask_for_post,
-                                        strength=0.97,
+                                        direct_side_restore_mask,
+                                        strength=0.96,
                                     )
                                 final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                                 if debug_images_common is not None and rank == 0:
