@@ -914,9 +914,26 @@ def _harmonize_short_bangs_tone(
         return img_rgb
 
     bangs_mean = bangs_vals.mean(axis=0)
-    ref_mean = ref_vals.mean(axis=0)
+    if ref_vals.shape[0] >= 72:
+        bright_keep = ref_vals[:, 0] >= np.percentile(ref_vals[:, 0], 34.0)
+        if int(bright_keep.sum()) >= 32:
+            ref_vals = ref_vals[bright_keep]
+    ref_mean = np.median(ref_vals, axis=0).astype(np.float32)
     if target_lab is not None and np.asarray(target_lab).shape == (3,):
-        ref_mean = ref_mean * 0.90 + np.asarray(target_lab, dtype=np.float32) * 0.10
+        target_lab_np = np.asarray(target_lab, dtype=np.float32)
+        if ref_vals.shape[0] >= 48:
+            target_dist = (
+                np.abs(ref_vals[:, 0] - target_lab_np[0]) * 0.24
+                + np.abs(ref_vals[:, 1] - target_lab_np[1]) * 0.94
+                + np.abs(ref_vals[:, 2] - target_lab_np[2]) * 0.94
+            )
+            target_keep = target_dist <= np.percentile(target_dist, 68.0)
+            if int(target_keep.sum()) >= 24:
+                ref_vals = ref_vals[target_keep]
+                ref_mean = np.median(ref_vals, axis=0).astype(np.float32)
+        ref_mean = ref_mean * 0.82 + target_lab_np * 0.18
+    if ref_vals.shape[0] >= 48:
+        ref_mean[0] = max(ref_mean[0], float(np.percentile(ref_vals[:, 0], 58.0)) - 1.0)
 
     center_focus_u8 = np.zeros((H, W), dtype=np.uint8)
     center_left = max(0, int(cx - face_w * 0.42))
@@ -936,12 +953,12 @@ def _harmonize_short_bangs_tone(
         center_outlier_u8 = (
             (
                 (
-                    (center_l < ref_mean[0] - 5.0)
-                    | (center_a < ref_mean[1] - 4.0)
-                    | (center_b < ref_mean[2] - 5.0)
+                    (center_l < ref_mean[0] - 3.5)
+                    | (center_a < ref_mean[1] - 3.0)
+                    | (center_b < ref_mean[2] - 3.5)
                     | (
-                        (np.abs(center_a - ref_mean[1]) > 7.0)
-                        & (np.abs(center_b - ref_mean[2]) > 7.0)
+                        (np.abs(center_a - ref_mean[1]) > 5.5)
+                        & (np.abs(center_b - ref_mean[2]) > 5.5)
                     )
                 )
                 & (band_hair_u8 > 0)
@@ -969,14 +986,14 @@ def _harmonize_short_bangs_tone(
 
     tuned_lab = lab.copy()
     tuned_vals = tuned_lab[bangs_u8 > 0]
-    tuned_vals[:, 0] = np.clip(tuned_vals[:, 0] + (ref_mean[0] - bangs_mean[0]) * 0.60, 0.0, 255.0)
-    tuned_vals[:, 1] = np.clip(tuned_vals[:, 1] + (ref_mean[1] - bangs_mean[1]) * 0.88, 0.0, 255.0)
-    tuned_vals[:, 2] = np.clip(tuned_vals[:, 2] + (ref_mean[2] - bangs_mean[2]) * 0.92, 0.0, 255.0)
+    tuned_vals[:, 0] = np.clip(tuned_vals[:, 0] + (ref_mean[0] - bangs_mean[0]) * 0.70, 0.0, 255.0)
+    tuned_vals[:, 1] = np.clip(tuned_vals[:, 1] + (ref_mean[1] - bangs_mean[1]) * 0.92, 0.0, 255.0)
+    tuned_vals[:, 2] = np.clip(tuned_vals[:, 2] + (ref_mean[2] - bangs_mean[2]) * 0.96, 0.0, 255.0)
     tuned_lab[bangs_u8 > 0] = tuned_vals
 
     tuned_rgb = cv2.cvtColor(tuned_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
     alpha = cv2.GaussianBlur(bangs_u8.astype(np.float32) / 255.0, (0, 0), sigmaX=2.4, sigmaY=2.8)
-    alpha = np.clip(alpha * 0.86, 0.0, 1.0)[..., np.newaxis]
+    alpha = np.clip(alpha * 0.90, 0.0, 1.0)[..., np.newaxis]
     out = tuned_rgb.astype(np.float32) * alpha + img_rgb.astype(np.float32) * (1.0 - alpha)
     if int((center_outlier_u8 > 0).sum()) >= 16:
         outlier_alpha = cv2.GaussianBlur(
@@ -985,7 +1002,7 @@ def _harmonize_short_bangs_tone(
             sigmaX=2.0,
             sigmaY=2.4,
         )[..., np.newaxis]
-        outlier_alpha = np.clip(outlier_alpha * 0.96, 0.0, 1.0)
+        outlier_alpha = np.clip(outlier_alpha * 1.00, 0.0, 1.0)
         out = tuned_rgb.astype(np.float32) * outlier_alpha + out.astype(np.float32) * (1.0 - outlier_alpha)
     return np.clip(out, 0, 255).astype(np.uint8)
 

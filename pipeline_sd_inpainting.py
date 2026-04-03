@@ -2850,6 +2850,7 @@ class MirrAISDPipeline:
                 and cloth_mask_dilated is not None
                 and cutoff_y_for_post is not None
             ):
+                direct_side_column_restore_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
                 try:
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
@@ -2924,6 +2925,11 @@ class MirrAISDPipeline:
                             0.0,
                             1.0,
                         )
+                    direct_side_column_restore_mask_for_post = np.clip(
+                        direct_side_column_restore_mask.astype(np.float32),
+                        0.0,
+                        1.0,
+                    )
                     if float(direct_side_column_restore_mask.sum()) > 0.0:
                         side_column_restore_mask = np.maximum(
                             side_column_restore_mask,
@@ -3525,6 +3531,10 @@ class MirrAISDPipeline:
                             female_short_direct_cloth_restore_mask,
                             np.clip(center_residual_cleanup_mask_for_post * 0.92, 0.0, 1.0),
                         ).astype(np.float32)
+                        female_short_direct_cloth_restore_mask = np.maximum(
+                            female_short_direct_cloth_restore_mask,
+                            np.clip(direct_side_column_restore_mask_for_post.astype(np.float32), 0.0, 1.0),
+                        ).astype(np.float32)
                         female_short_direct_cloth_restore_u8 = (
                             (
                                 np.clip(female_short_direct_cloth_restore_mask.astype(np.float32), 0.0, 1.0) > 0.06
@@ -3619,7 +3629,20 @@ class MirrAISDPipeline:
                                     final_rgb,
                                     img_rgb,
                                     female_short_direct_cloth_restore_mask,
-                                    strength=0.98,
+                                    strength=0.995,
+                                )
+                                if float(direct_side_column_restore_mask_for_post.sum()) > 0.0:
+                                    final_rgb = self._overlay_reference_cloth_fill(
+                                        final_rgb,
+                                        img_rgb,
+                                        direct_side_column_restore_mask_for_post,
+                                        cloth_mask=cloth_restore_mask_for_post,
+                                    )
+                                final_rgb = self._overlay_reference_cloth_fill(
+                                    final_rgb,
+                                    img_rgb,
+                                    female_short_direct_cloth_restore_mask,
+                                    cloth_mask=cloth_restore_mask_for_post,
                                 )
                                 final_rgb = self._blend_neighbor_cloth_tone(
                                     final_rgb,
@@ -3633,6 +3656,13 @@ class MirrAISDPipeline:
                                     reference_rgb=img_rgb,
                                     reference_mask=cloth_restore_mask_for_post,
                                 )
+                                if float(direct_side_column_restore_mask_for_post.sum()) > 0.0:
+                                    final_rgb = self._restore_reference_region(
+                                        final_rgb,
+                                        img_rgb,
+                                        direct_side_column_restore_mask_for_post,
+                                        strength=0.92,
+                                    )
                                 final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                                 if debug_images_common is not None and rank == 0:
                                     debug_images_common["pipeline_female_short_direct_cloth_restore_mask"] = cv2.cvtColor(
