@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 REST_BASE_URL = "https://rest.runpod.io/v1"
 SERVERLESS_BASE_URL = "https://api.runpod.ai/v2"
+VERSIONED_BUILD_TAG_RE = re.compile(r"^v\d+$", re.IGNORECASE)
 
 
 def clean_env_value(value: str | None) -> str | None:
@@ -235,6 +237,24 @@ def infer_build_tag(image_name: str) -> str | None:
     if ":" not in tail:
         return None
     return tail.rsplit(":", 1)[-1].strip() or None
+
+
+def build_tag_matches_expected(
+    expected_build_tag: str | None,
+    actual_build_tag: str | None,
+) -> tuple[bool, str | None]:
+    expected = str(expected_build_tag or "").strip()
+    actual = str(actual_build_tag or "").strip()
+    if not expected:
+        return True, None
+    if actual == expected:
+        return True, None
+    if expected.lower() == "latest" and VERSIONED_BUILD_TAG_RE.fullmatch(actual):
+        return True, (
+            "[health] accepted build_tag alias: "
+            f"target tag 'latest' resolved to concrete build '{actual}'."
+        )
+    return False, None
 
 
 def resolve_target_image(
@@ -504,8 +524,14 @@ def main() -> int:
                 interval=args.poll_interval,
             )
             actual_build_tag = str(output.get("build_tag") or "").strip()
-            if expected_build_tag is None or actual_build_tag == expected_build_tag:
+            build_tag_matched, build_tag_note = build_tag_matches_expected(
+                expected_build_tag,
+                actual_build_tag,
+            )
+            if build_tag_matched:
                 build_tag_confirmed = True
+                if build_tag_note:
+                    print(build_tag_note)
                 break
 
             pod_id = str(((output.get("runpod") or {}).get("pod_id") or "")).strip()
