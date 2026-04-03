@@ -3289,10 +3289,65 @@ class MirrAISDPipeline:
                     )
                     center_residual_px = int((center_residual_u8 > 0).sum())
                     if center_residual_px >= 24:
+                        center_residual_cleanup_u8 = cv2.dilate(
+                            center_residual_u8,
+                            cv2.getStructuringElement(
+                                cv2.MORPH_ELLIPSE,
+                                (25, 41) if hair_length == "short" else (21, 33),
+                            ),
+                            iterations=1,
+                        )
+                        if (
+                            hair_length == "short"
+                            and center_chest_strand_removal_mask is not None
+                            and center_chest_strand_removal_mask.shape == final_bgr.shape[:2]
+                        ):
+                            center_support_u8 = cv2.dilate(
+                                (
+                                    np.clip(center_chest_strand_removal_mask.astype(np.float32), 0.0, 1.0) > 0.05
+                                ).astype(np.uint8)
+                                * 255,
+                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 33)),
+                                iterations=1,
+                            )
+                            center_cleanup_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                            center_gate_half_w = max(24, int((x2 - x1) * 0.22))
+                            center_gate_left = max(0, int(0.5 * (x1 + x2)) - center_gate_half_w)
+                            center_gate_right = min(W, int(0.5 * (x1 + x2)) + center_gate_half_w)
+                            center_gate_top = max(0, int(cutoff_y_for_post + max(y2 - y1, 1) * 0.04))
+                            center_gate_bottom = min(H, int(cutoff_y_for_post + max(y2 - y1, 1) * 1.42))
+                            if center_gate_top < center_gate_bottom and center_gate_left < center_gate_right:
+                                center_cleanup_gate_u8[
+                                    center_gate_top:center_gate_bottom,
+                                    center_gate_left:center_gate_right,
+                                ] = 255
+                                center_support_u8 = cv2.bitwise_and(center_support_u8, center_cleanup_gate_u8)
+                                center_residual_cleanup_u8 = cv2.bitwise_or(
+                                    center_residual_cleanup_u8,
+                                    center_support_u8,
+                                )
+                        if cloth_restore_mask_for_post is not None and cloth_restore_mask_for_post.shape == final_bgr.shape[:2]:
+                            center_residual_cleanup_u8 = cv2.bitwise_and(
+                                center_residual_cleanup_u8,
+                                cv2.dilate(
+                                    (
+                                        np.clip(cloth_restore_mask_for_post.astype(np.float32), 0.0, 1.0) > 0.04
+                                    ).astype(np.uint8)
+                                    * 255,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
+                                    iterations=1,
+                                ),
+                            )
+                        center_residual_cleanup_mask = cv2.GaussianBlur(
+                            center_residual_cleanup_u8.astype(np.float32) / 255.0,
+                            (0, 0),
+                            sigmaX=3.8,
+                            sigmaY=6.6,
+                        ).astype(np.float32)
                         final_rgb = self._cleanup_region_with_cloth_restore(
                             source_rgb=img_rgb,
                             current_rgb=final_rgb,
-                            cleanup_mask=center_residual_mask,
+                            cleanup_mask=center_residual_cleanup_mask,
                             cloth_mask=cloth_restore_mask_for_post,
                             ignore_final_hair_for_cloth_restore=True,
                             cleanup_dark_tail=True,
@@ -3303,6 +3358,11 @@ class MirrAISDPipeline:
                             center_residual_u8,
                             cv2.COLOR_GRAY2BGR,
                         )
+                        if center_residual_px >= 24:
+                            debug_images_common["pipeline_center_residual_cleanup_mask"] = cv2.cvtColor(
+                                center_residual_cleanup_u8,
+                                cv2.COLOR_GRAY2BGR,
+                            )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] center residual cleanup failed (ignored): {e}")
             if (
