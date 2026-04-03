@@ -799,6 +799,7 @@ class MirrAISDPipeline:
         composite_bangs_release_mask = np.zeros((H, W), dtype=np.float32)
         center_chest_strand_mask = np.zeros((H, W), dtype=np.float32)
         center_chest_strand_removal_mask = np.zeros((H, W), dtype=np.float32)
+        shoulder_cross_bridge_for_post = np.zeros((H, W), dtype=np.float32)
         if hair_length in ("short", "medium"):
             head_x1, head_y1, head_x2, head_y2, cutoff_y = self._estimate_head_generation_box(
                 image_shape=(H, W),
@@ -1061,6 +1062,27 @@ class MirrAISDPipeline:
                         removal_mask.sum(),
                     )
             if hair_length == "short":
+                shoulder_cross_bridge_for_post = self._build_short_shoulder_cross_bridge_mask(
+                    source_shoulder_contour_anchor_mask=source_shoulder_contour_anchor_mask,
+                    source_torso_hair_mask=source_torso_hair_mask,
+                    cloth_mask=cloth_mask_dilated,
+                    protect_mask=protect_mask_for_sd,
+                    face_bbox=face_bbox,
+                    cutoff_y=cutoff_y,
+                    support_mask=lower_tail_support_for_post,
+                    center_support_mask=center_chest_strand_mask,
+                )
+                if float(shoulder_cross_bridge_for_post.sum()) > 0.0:
+                    removal_mask = np.maximum(
+                        removal_mask.astype(np.float32),
+                        shoulder_cross_bridge_for_post.astype(np.float32),
+                    ).astype(np.float32)
+                    logger.info(
+                        "[SDPipeline] short shoulder cross bridge added: pixels=%.0f merged_pixels=%.0f",
+                        shoulder_cross_bridge_for_post.sum(),
+                        removal_mask.sum(),
+                    )
+            if hair_length == "short":
                 removal_mask = self._filter_short_torso_box_mask(
                     img_rgb=img_rgb,
                     removal_mask=removal_mask,
@@ -1137,6 +1159,16 @@ class MirrAISDPipeline:
                                 cv2.bitwise_and(center_anchor_u8, center_band_u8),
                             )
 
+                    shoulder_cross_bridge_u8 = np.zeros((H, W), dtype=np.uint8)
+                    if float(shoulder_cross_bridge_for_post.sum()) > 0.0:
+                        shoulder_cross_bridge_u8 = (
+                            np.clip(shoulder_cross_bridge_for_post.astype(np.float32), 0.0, 1.0) > 0.08
+                        ).astype(np.uint8) * 255
+                        lane_gate_u8 = cv2.bitwise_or(
+                            lane_gate_u8,
+                            shoulder_cross_bridge_u8,
+                        )
+
                     removal_u8 = cv2.bitwise_and(removal_u8, lane_gate_u8)
                     tail_rescue_u8 = np.zeros((H, W), dtype=np.uint8)
                     rescue_min_area = max(18, int(face_w * face_h * 0.00012))
@@ -1209,6 +1241,11 @@ class MirrAISDPipeline:
                             removal_u8,
                             cv2.bitwise_and(tail_rescue_u8, lane_gate_u8),
                         )
+                    if int((shoulder_cross_bridge_u8 > 0).sum()) > 0:
+                        removal_u8 = cv2.bitwise_or(
+                            removal_u8,
+                            cv2.bitwise_and(shoulder_cross_bridge_u8, lane_gate_u8),
+                        )
 
                     filtered_removal_u8 = np.zeros((H, W), dtype=np.uint8)
                     min_lane_area = max(28, int(face_w * face_h * 0.00018))
@@ -1231,7 +1268,15 @@ class MirrAISDPipeline:
                         rescue_pixels = int(
                             np.logical_and(component_u8 > 0, tail_rescue_u8 > 0).sum()
                         )
-                        if width > max_lane_width and center_pixels <= 0 and rescue_pixels < max(10, int(area * 0.10)):
+                        bridge_pixels = int(
+                            np.logical_and(component_u8 > 0, shoulder_cross_bridge_u8 > 0).sum()
+                        )
+                        if (
+                            width > max_lane_width
+                            and center_pixels <= 0
+                            and rescue_pixels < max(10, int(area * 0.10))
+                            and bridge_pixels <= 0
+                        ):
                             continue
                         filtered_removal_u8 = cv2.bitwise_or(
                             filtered_removal_u8,
@@ -1244,6 +1289,7 @@ class MirrAISDPipeline:
             _store_mask("pipeline_lower_tail_removal_extension_mask", lower_tail_removal_extension)
             _store_mask("pipeline_center_chest_strand_removal_mask", center_chest_strand_removal_mask)
             _store_mask("pipeline_shoulder_cloth_release_mask", shoulder_cloth_release_for_post)
+            _store_mask("pipeline_short_shoulder_cross_bridge_mask", shoulder_cross_bridge_for_post)
             gen_mask = np.zeros((H, W), dtype=np.float32)
             short_generation_seed_mask_for_debug: Optional[np.ndarray] = None
             if hair_length == "short":
@@ -4593,6 +4639,190 @@ class MirrAISDPipeline:
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
         )
         return anchor_u8.astype(np.float32) / 255.0
+
+    def _build_short_shoulder_cross_bridge_mask(
+        self,
+        *,
+        source_shoulder_contour_anchor_mask: Optional[np.ndarray],
+        source_torso_hair_mask: Optional[np.ndarray],
+        cloth_mask: Optional[np.ndarray],
+        protect_mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+        cutoff_y: int,
+        support_mask: Optional[np.ndarray] = None,
+        center_support_mask: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        base_shape = None
+        for mask in (
+            source_shoulder_contour_anchor_mask,
+            source_torso_hair_mask,
+            cloth_mask,
+            protect_mask,
+            support_mask,
+            center_support_mask,
+        ):
+            if isinstance(mask, np.ndarray):
+                base_shape = mask.shape[:2]
+                break
+        if base_shape is None:
+            return np.zeros((1, 1), dtype=np.float32)
+
+        H, W = base_shape
+        if (
+            source_shoulder_contour_anchor_mask is None
+            or source_shoulder_contour_anchor_mask.shape != (H, W)
+        ):
+            return np.zeros((H, W), dtype=np.float32)
+        if source_torso_hair_mask is not None and source_torso_hair_mask.shape != (H, W):
+            source_torso_hair_mask = None
+        if cloth_mask is not None and cloth_mask.shape != (H, W):
+            cloth_mask = None
+        if protect_mask is not None and protect_mask.shape != (H, W):
+            protect_mask = None
+        if support_mask is not None and support_mask.shape != (H, W):
+            support_mask = None
+        if center_support_mask is not None and center_support_mask.shape != (H, W):
+            center_support_mask = None
+
+        x1, y1, x2, y2 = [int(v) for v in face_bbox]
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+        face_cx = int(0.5 * (x1 + x2))
+
+        band_u8 = np.zeros((H, W), dtype=np.uint8)
+        band_top = max(0, int(y2 + face_h * 0.04))
+        band_bottom = min(H, int(y2 + face_h * 0.72))
+        band_left = max(0, int(x1 - face_w * 1.18))
+        band_right = min(W, int(x2 + face_w * 1.18))
+        if band_top >= band_bottom or band_left >= band_right:
+            return np.zeros((H, W), dtype=np.float32)
+        band_u8[band_top:band_bottom, band_left:band_right] = 255
+
+        anchor_u8 = (
+            np.clip(source_shoulder_contour_anchor_mask.astype(np.float32), 0.0, 1.0) > 0.08
+        ).astype(np.uint8) * 255
+        anchor_u8 = cv2.dilate(
+            anchor_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+            iterations=1,
+        )
+        anchor_u8 = cv2.bitwise_and(anchor_u8, band_u8)
+        if int((anchor_u8 > 0).sum()) < max(20, int(face_w * face_h * 0.00015)):
+            return np.zeros((H, W), dtype=np.float32)
+
+        left_anchor_u8 = anchor_u8.copy()
+        left_anchor_u8[:, face_cx:] = 0
+        right_anchor_u8 = anchor_u8.copy()
+        right_anchor_u8[:, :face_cx] = 0
+        if int((left_anchor_u8 > 0).sum()) < 10 or int((right_anchor_u8 > 0).sum()) < 10:
+            return np.zeros((H, W), dtype=np.float32)
+
+        left_ys, left_xs = np.where(left_anchor_u8 > 0)
+        right_ys, right_xs = np.where(right_anchor_u8 > 0)
+        left_inner_x = int(left_xs.max())
+        right_inner_x = int(right_xs.min())
+        if left_inner_x >= right_inner_x:
+            return np.zeros((H, W), dtype=np.float32)
+
+        left_strip = left_ys[left_xs >= max(band_left, left_inner_x - max(4, int(face_w * 0.03)))]
+        right_strip = right_ys[right_xs <= min(band_right - 1, right_inner_x + max(4, int(face_w * 0.03)))]
+        if left_strip.size == 0 or right_strip.size == 0:
+            return np.zeros((H, W), dtype=np.float32)
+
+        left_y = int(np.percentile(left_strip, 35))
+        right_y = int(np.percentile(right_strip, 35))
+        left_pt = (left_inner_x, int(np.clip(left_y, band_top, band_bottom - 1)))
+        right_pt = (right_inner_x, int(np.clip(right_y, band_top, band_bottom - 1)))
+
+        bridge_u8 = np.zeros((H, W), dtype=np.uint8)
+        bridge_thickness = max(12, int(face_h * 0.16))
+        cv2.line(bridge_u8, left_pt, right_pt, 255, thickness=bridge_thickness)
+        bridge_u8 = cv2.morphologyEx(
+            bridge_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+        )
+
+        support_u8 = np.zeros((H, W), dtype=np.uint8)
+        if source_torso_hair_mask is not None:
+            torso_u8 = (
+                np.clip(source_torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            support_u8 = cv2.bitwise_or(
+                support_u8,
+                cv2.dilate(
+                    torso_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 17)),
+                    iterations=1,
+                ),
+            )
+        if support_mask is not None:
+            support_u8 = cv2.bitwise_or(
+                support_u8,
+                cv2.dilate(
+                    (
+                        np.clip(support_mask.astype(np.float32), 0.0, 1.0) > 0.08
+                    ).astype(np.uint8) * 255,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+                    iterations=1,
+                ),
+            )
+        if center_support_mask is not None:
+            support_u8 = cv2.bitwise_or(
+                support_u8,
+                cv2.dilate(
+                    (
+                        np.clip(center_support_mask.astype(np.float32), 0.0, 1.0) > 0.08
+                    ).astype(np.uint8) * 255,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 21)),
+                    iterations=1,
+                ),
+            )
+        if cloth_mask is not None:
+            cloth_u8 = (
+                np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04
+            ).astype(np.uint8) * 255
+            support_u8 = cv2.bitwise_or(
+                support_u8,
+                cv2.dilate(
+                    cloth_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
+                    iterations=1,
+                ),
+            )
+
+        if int((support_u8 > 0).sum()) > 0:
+            bridge_overlap = cv2.bitwise_and(
+                bridge_u8,
+                cv2.dilate(
+                    support_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 11)),
+                    iterations=1,
+                ),
+            )
+            if int((bridge_overlap > 0).sum()) >= max(40, int(face_w * 0.12)):
+                bridge_u8 = cv2.bitwise_or(bridge_u8, bridge_overlap)
+
+        bridge_u8 = cv2.bitwise_and(bridge_u8, band_u8)
+        bridge_u8 = cv2.bitwise_or(bridge_u8, anchor_u8)
+
+        if protect_mask is not None:
+            protect_u8 = (
+                np.clip(protect_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            protect_u8 = cv2.dilate(
+                protect_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
+                iterations=1,
+            )
+            bridge_u8 = cv2.bitwise_and(bridge_u8, cv2.bitwise_not(protect_u8))
+
+        bridge_u8 = cv2.morphologyEx(
+            bridge_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+        return bridge_u8.astype(np.float32) / 255.0
 
     def _estimate_head_generation_box(
         self,
