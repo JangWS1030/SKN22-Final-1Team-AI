@@ -872,7 +872,7 @@ def _build_prompt(
         hair_length,
         subject_gender=gender_mode,
     )
-    preserve_source_garment = hair_length in ("short", "medium")
+    preserve_source_garment = True
     garment_positive_parts: List[str] = []
     garment_negative_parts: List[str] = []
     if preserve_source_garment:
@@ -908,9 +908,6 @@ def _build_prompt(
             "beige clothes",
             "brown clothes",
         ])
-    else:
-        garment_positive_parts.append("natural garment continuity")
-
     garment_positive_hint = ", ".join(garment_positive_parts)
     garment_negative_hint = ", ".join(garment_negative_parts)
     if garment_negative_hint:
@@ -1035,9 +1032,7 @@ def _build_prompt(
         "balanced framing",
         "clean neckline",
         garment_positive_hint,
-        "white t-shirt in front, connected shoulders, no hair strands on clothes"
-        if hair_length in ("short", "medium")
-        else "natural garment continuity",
+        "white t-shirt in front, connected shoulders, no hair strands on clothes",
         "photorealistic portrait",
     ])
     positive = _compact_prompt_parts(positive_parts)
