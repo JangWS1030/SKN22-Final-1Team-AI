@@ -898,16 +898,64 @@ def _harmonize_short_bangs_tone(
     if target_lab is not None and np.asarray(target_lab).shape == (3,):
         ref_mean = ref_mean * 0.72 + np.asarray(target_lab, dtype=np.float32) * 0.28
 
+    center_focus_u8 = np.zeros((H, W), dtype=np.uint8)
+    center_left = max(0, int(cx - face_w * 0.42))
+    center_right = min(W, int(cx + face_w * 0.42))
+    center_top = max(0, int(y1 - face_h * 0.10))
+    center_bottom = min(H, int(y1 + face_h * 0.46))
+    if center_top < center_bottom and center_left < center_right:
+        center_focus_u8[center_top:center_bottom, center_left:center_right] = 255
+
+    band_hair_u8 = cv2.bitwise_and(hair_u8, band_u8)
+    band_hair_u8 = cv2.bitwise_and(band_hair_u8, center_focus_u8)
+    if int((band_hair_u8 > 0).sum()) >= 32:
+        center_l = lab[:, :, 0]
+        center_a = lab[:, :, 1]
+        center_b = lab[:, :, 2]
+        center_outlier_u8 = (
+            (
+                (
+                    (center_l < ref_mean[0] - 5.0)
+                    | (center_a < ref_mean[1] - 4.0)
+                    | (center_b < ref_mean[2] - 5.0)
+                    | (
+                        (np.abs(center_a - ref_mean[1]) > 7.0)
+                        & (np.abs(center_b - ref_mean[2]) > 7.0)
+                    )
+                )
+                & (band_hair_u8 > 0)
+            ).astype(np.uint8)
+            * 255
+        )
+        if int((center_outlier_u8 > 0).sum()) >= 16:
+            center_outlier_u8 = cv2.morphologyEx(
+                center_outlier_u8,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+            )
+            center_outlier_u8 = cv2.dilate(
+                center_outlier_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
+                iterations=1,
+            )
+            bangs_u8 = cv2.bitwise_or(bangs_u8, center_outlier_u8)
+            bangs_u8 = cv2.bitwise_and(bangs_u8, band_u8)
+            bangs_u8 = cv2.bitwise_and(bangs_u8, hair_u8)
+            bangs_vals = lab[bangs_u8 > 0]
+            if bangs_vals.size == 0:
+                return img_rgb
+            bangs_mean = bangs_vals.mean(axis=0)
+
     tuned_lab = lab.copy()
     tuned_vals = tuned_lab[bangs_u8 > 0]
-    tuned_vals[:, 0] = np.clip(tuned_vals[:, 0] + (ref_mean[0] - bangs_mean[0]) * 0.52, 0.0, 255.0)
-    tuned_vals[:, 1] = np.clip(tuned_vals[:, 1] + (ref_mean[1] - bangs_mean[1]) * 0.74, 0.0, 255.0)
-    tuned_vals[:, 2] = np.clip(tuned_vals[:, 2] + (ref_mean[2] - bangs_mean[2]) * 0.74, 0.0, 255.0)
+    tuned_vals[:, 0] = np.clip(tuned_vals[:, 0] + (ref_mean[0] - bangs_mean[0]) * 0.60, 0.0, 255.0)
+    tuned_vals[:, 1] = np.clip(tuned_vals[:, 1] + (ref_mean[1] - bangs_mean[1]) * 0.88, 0.0, 255.0)
+    tuned_vals[:, 2] = np.clip(tuned_vals[:, 2] + (ref_mean[2] - bangs_mean[2]) * 0.92, 0.0, 255.0)
     tuned_lab[bangs_u8 > 0] = tuned_vals
 
     tuned_rgb = cv2.cvtColor(tuned_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
     alpha = cv2.GaussianBlur(bangs_u8.astype(np.float32) / 255.0, (0, 0), sigmaX=2.4, sigmaY=2.8)
-    alpha = np.clip(alpha * 0.76, 0.0, 1.0)[..., np.newaxis]
+    alpha = np.clip(alpha * 0.86, 0.0, 1.0)[..., np.newaxis]
     out = tuned_rgb.astype(np.float32) * alpha + img_rgb.astype(np.float32) * (1.0 - alpha)
     return np.clip(out, 0, 255).astype(np.uint8)
 
