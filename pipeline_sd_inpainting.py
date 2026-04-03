@@ -4103,27 +4103,30 @@ class MirrAISDPipeline:
                                     sigmaX=6.4,
                                     sigmaY=9.2,
                                 ).astype(np.float32)
-                            if (
-                                female_short_direct_cloth_restore_px >= 120
-                                or female_short_broad_cloth_restore_mask is not None
-                            ):
-                                if female_short_direct_cloth_restore_px >= 120:
-                                    female_short_direct_cloth_restore_mask = cv2.GaussianBlur(
-                                        female_short_direct_cloth_restore_u8.astype(np.float32) / 255.0,
-                                        (0, 0),
-                                        sigmaX=4.2,
-                                        sigmaY=6.2,
-                                    ).astype(np.float32)
-                                    final_rgb = self._restore_reference_region(
-                                        final_rgb,
-                                        img_rgb,
-                                        female_short_direct_cloth_restore_mask,
-                                        strength=0.998,
-                                    )
-                                    final_rgb = self._cv2_refine_cloth_region(
-                                        final_rgb,
-                                        female_short_direct_cloth_restore_mask,
-                                        reference_rgb=img_rgb,
+                                if (
+                                    female_short_direct_cloth_restore_px >= 120
+                                    or female_short_broad_cloth_restore_mask is not None
+                                ):
+                                    if female_short_direct_cloth_restore_px >= 120:
+                                        female_short_direct_cloth_restore_mask = cv2.GaussianBlur(
+                                            female_short_direct_cloth_restore_u8.astype(np.float32) / 255.0,
+                                            (0, 0),
+                                            sigmaX=4.2,
+                                            sigmaY=6.2,
+                                        ).astype(np.float32)
+                                        final_rgb = self._cleanup_region_with_cloth_restore(
+                                            source_rgb=img_rgb,
+                                            current_rgb=final_rgb,
+                                            cleanup_mask=female_short_direct_cloth_restore_mask,
+                                            cloth_mask=female_short_cloth_reference_mask,
+                                            final_hair_mask=final_hair_mask,
+                                            ignore_final_hair_for_cloth_restore=True,
+                                            cleanup_dark_tail=True,
+                                        )
+                                        final_rgb = self._cv2_refine_cloth_region(
+                                            final_rgb,
+                                            female_short_direct_cloth_restore_mask,
+                                            reference_rgb=img_rgb,
                                         reference_mask=female_short_cloth_reference_mask,
                                     )
                                     if direct_side_restore_mask is not None:
