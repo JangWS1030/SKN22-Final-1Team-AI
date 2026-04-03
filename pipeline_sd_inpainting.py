@@ -609,11 +609,9 @@ class MirrAISDPipeline:
             debug_data_common["short_postprocess"]["disabled_for_experiment"] = bool(
                 disable_short_postprocess_experiment
             )
-        if hair_length == "short" and len(seeds) < 5:
-            extra = 5 - len(seeds)
-            seeds.extend(random.randint(0, 2**31 - 1) for _ in range(extra))
+        if hair_length == "short":
             logger.info(
-                f"[SDPipeline] short internal candidate expansion: requested={requested_top_k}, internal={len(seeds)}"
+                f"[SDPipeline] short internal candidate count: requested={requested_top_k}, internal={len(seeds)}"
             )
         elif subject_gender_mode == "male" and hair_length in ("short", "medium") and len(seeds) < 3:
             extra = 3 - len(seeds)
@@ -2245,6 +2243,12 @@ class MirrAISDPipeline:
             img_512, mask_512, canny_512, face_crop_pil, prompt, neg_prompt, guidance, seeds,
             hair_length=hair_length,
         )
+        logger.info(
+            "[SDPipeline] generation batch returned: images=%d requested_top_k=%d internal_candidates=%d",
+            len(gen_images),
+            requested_top_k,
+            len(seeds),
+        )
 
         # ── Step 8: Composite → 원본 해상도 ───────────────────────────────────
         # 전략 2는 원본 위에 short 생성물을 합성한 뒤, cutoff 아래 잔여 긴머리만 정리한다.
@@ -2260,6 +2264,12 @@ class MirrAISDPipeline:
 
         candidates: List[Dict[str, Any]] = []
         for gen_idx, (gen_pil, seed) in enumerate(zip(gen_images, seeds)):
+            logger.info(
+                "[SDPipeline] candidate postprocess start: idx=%d/%d seed=%d",
+                gen_idx + 1,
+                len(gen_images),
+                int(seed),
+            )
             gen_preview_bgr = cv2.cvtColor(np.array(gen_pil), cv2.COLOR_RGB2BGR)
             composited_bgr = self._composite(
                 composite_base_bgr, composite_base_rgb,
@@ -2379,6 +2389,14 @@ class MirrAISDPipeline:
                 "male_medium_fit_penalty": male_medium_fit_penalty,
                 "gen_idx": gen_idx,
             })
+            logger.info(
+                "[SDPipeline] candidate postprocess done: idx=%d/%d seed=%d tail_penalty=%s accessory_penalty=%s",
+                gen_idx + 1,
+                len(gen_images),
+                int(seed),
+                "none" if tail_penalty is None else f"{float(tail_penalty):.4f}",
+                "none" if accessory_penalty is None else f"{float(accessory_penalty):.4f}",
+            )
 
         if has_color_request and target_hair_lab is not None and len(candidates) > 1:
             sortable_count = sum(c["color_distance"] is not None for c in candidates)

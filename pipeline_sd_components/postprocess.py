@@ -93,6 +93,24 @@ def _generate(
         torch.Generator(device=self.device).manual_seed(s) for s in seeds
     ]
     logger.info(f"[SDPipeline] 배치 생성 시작 (n={n}, seeds={seeds})")
+    diffusion_started = time.time()
+    try:
+        free_gb = None
+        total_gb = None
+        if torch.cuda.is_available():
+            free_mem, total_mem = torch.cuda.mem_get_info()
+            free_gb = free_mem / (1024 ** 3)
+            total_gb = total_mem / (1024 ** 3)
+        logger.info(
+            "[SDPipeline] diffusion forward dispatch: steps=%d size=%dx%d free_gpu_gb=%s total_gpu_gb=%s",
+            int(self.config.num_inference_steps),
+            int(SD_SIZE),
+            int(SD_SIZE),
+            "n/a" if free_gb is None else f"{free_gb:.2f}",
+            "n/a" if total_gb is None else f"{total_gb:.2f}",
+        )
+    except Exception as e:
+        logger.warning(f"[SDPipeline] diffusion dispatch stats failed (ignored): {e}")
 
     with torch.inference_mode():
         out = self._sd_pipe(
@@ -112,7 +130,11 @@ def _generate(
             strength=1.0,
         )
 
-    logger.info(f"[SDPipeline] 배치 생성 완료 → {len(out.images)}장")
+    logger.info(
+        "[SDPipeline] 배치 생성 완료 → %d장 (%.2fs)",
+        len(out.images),
+        time.time() - diffusion_started,
+    )
     return out.images
 
 def _cv2_refine_cloth_region(
