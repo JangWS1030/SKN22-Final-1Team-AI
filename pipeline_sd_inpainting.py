@@ -598,6 +598,17 @@ class MirrAISDPipeline:
         source_garment_prepass_mask: Optional[np.ndarray] = None
         source_garment_prepass_enabled = False
         source_garment_prepass_applied = False
+        # Temporary experiment: bypass short-hair post-cleanup so we can
+        # isolate whether the remaining lower-tail artifacts come from the
+        # short postprocess stack rather than the base generation/removal masks.
+        disable_short_postprocess_experiment = hair_length == "short"
+        if disable_short_postprocess_experiment:
+            logger.info("[SDPipeline] short postprocess disabled for experiment")
+        if debug_data_common is not None:
+            debug_data_common.setdefault("short_postprocess", {})
+            debug_data_common["short_postprocess"]["disabled_for_experiment"] = bool(
+                disable_short_postprocess_experiment
+            )
         if hair_length == "short" and len(seeds) < 5:
             extra = 5 - len(seeds)
             seeds.extend(random.randint(0, 2**31 - 1) for _ in range(extra))
@@ -1524,7 +1535,7 @@ class MirrAISDPipeline:
                         f"[SDPipeline] cloth overlap 복원 적용: pixels={int((cloth_overlap > 0).sum())}"
                     )
 
-                if hair_length == "short":
+                if hair_length == "short" and not disable_short_postprocess_experiment:
                     try:
                         tail_core_mask = self._build_short_tail_core_mask(
                             removal_mask=removal_mask,
@@ -1780,7 +1791,7 @@ class MirrAISDPipeline:
                         source_shoulder_contour_anchor_px >= 80 and source_garment_prepass_applied
                     )
 
-            if hair_length == "short":
+            if hair_length == "short" and not disable_short_postprocess_experiment:
                 if not skip_source_cloth_preclean and not source_garment_prepass_enabled:
                     try:
                         preclean_cloth_hair_cleanup_mask = self._build_preclean_cloth_hair_cleanup_mask(
@@ -2912,6 +2923,7 @@ class MirrAISDPipeline:
             use_short_torso_garment_repaint = hair_length == "short"
             if (
                 hair_length in ("short", "medium")
+                and (hair_length != "short" or not disable_short_postprocess_experiment)
                 and cloth_mask_dilated is not None
                 and removal_mask_for_post is not None
                 and cutoff_y_for_post is not None
@@ -3022,6 +3034,7 @@ class MirrAISDPipeline:
                     logger.warning(f"[SDPipeline] final hair lane cleanup failed (ignored): {e}")
             if (
                 hair_length == "short"
+                and not disable_short_postprocess_experiment
                 and cloth_mask_dilated is not None
                 and removal_mask_for_post is not None
                 and cutoff_y_for_post is not None
@@ -3061,6 +3074,7 @@ class MirrAISDPipeline:
                     logger.warning(f"[SDPipeline] short bob tail suppress failed (ignored): {e}")
             if (
                 hair_length == "short"
+                and not disable_short_postprocess_experiment
                 and removal_mask_for_post is not None
                 and cutoff_y_for_post is not None
                 and not source_garment_prepass_applied
@@ -3144,6 +3158,7 @@ class MirrAISDPipeline:
                     logger.warning(f"[SDPipeline] short lower cloth hard override failed (ignored): {e}")
             if (
                 hair_length in ("short", "medium")
+                and (hair_length != "short" or not disable_short_postprocess_experiment)
                 and cloth_mask_dilated is not None
                 and removal_mask_for_post is not None
                 and cutoff_y_for_post is not None
@@ -3184,6 +3199,7 @@ class MirrAISDPipeline:
                     logger.warning(f"[SDPipeline] residual strand cleanup failed (ignored): {e}")
             if (
                 hair_length in ("short", "medium")
+                and (hair_length != "short" or not disable_short_postprocess_experiment)
                 and cloth_mask_dilated is not None
                 and removal_mask_for_post is not None
                 and cutoff_y_for_post is not None
