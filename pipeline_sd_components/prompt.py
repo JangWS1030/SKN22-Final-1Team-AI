@@ -877,11 +877,10 @@ def _build_prompt(
     garment_negative_parts: List[str] = []
     if preserve_source_garment:
         garment_positive_parts.extend([
-            "plain white salon cape",
-            "clean white salon gown",
-            "smooth uniform fabric",
+            "plain white t-shirt",
+            "simple clean white crew-neck t-shirt",
+            "smooth plain cotton fabric",
             "covered shoulders",
-            "front salon drape",
             "no visible original clothing",
         ])
         garment_negative_parts.extend([
@@ -890,10 +889,11 @@ def _build_prompt(
             "graphic print",
             "cardigan",
             "blouse",
-            "shirt",
             "jacket",
             "hoodie",
             "coat",
+            "salon cape",
+            "salon gown",
             "knit texture",
             "buttons",
             "zipper",
@@ -939,7 +939,7 @@ def _build_prompt(
         if color_pos_hint:
             positive_parts.append(color_pos_hint)
         positive_parts.extend([
-            "same outfit, clean neckline, preserved fabric folds",
+            "clean neckline",
             garment_positive_hint,
             "photorealistic, natural lighting, sharp focus",
         ])
@@ -1033,9 +1033,9 @@ def _build_prompt(
         positive_parts.append(color_pos_hint)
     positive_parts.extend([
         "balanced framing",
-        "same outfit, clean neckline",
+        "clean neckline",
         garment_positive_hint,
-        "upper clothes in front, connected shoulders, no hair strands on clothes"
+        "white t-shirt in front, connected shoulders, no hair strands on clothes"
         if hair_length in ("short", "medium")
         else "natural garment continuity",
         "photorealistic portrait",
