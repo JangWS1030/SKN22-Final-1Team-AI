@@ -4127,6 +4127,7 @@ class MirrAISDPipeline:
                                     female_short_direct_cloth_restore_px >= 120
                                     or female_short_broad_cloth_restore_mask is not None
                                 ):
+                                    neighbor_cloth_reference_rgb = final_rgb.copy()
                                     if female_short_direct_cloth_restore_px >= 120:
                                         female_short_direct_cloth_restore_mask = cv2.GaussianBlur(
                                             female_short_direct_cloth_restore_u8.astype(np.float32) / 255.0,
@@ -4134,54 +4135,63 @@ class MirrAISDPipeline:
                                             sigmaX=4.2,
                                             sigmaY=6.2,
                                         ).astype(np.float32)
-                                        final_rgb = self._cleanup_region_with_cloth_restore(
-                                            source_rgb=img_rgb,
-                                            current_rgb=final_rgb,
-                                            cleanup_mask=female_short_direct_cloth_restore_mask,
+                                        direct_cleanup_u8 = cv2.dilate(
+                                            female_short_direct_cloth_restore_u8,
+                                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 13)),
+                                            iterations=1,
+                                        )
+                                        final_rgb = self._lama_inpaint(final_rgb, direct_cleanup_u8)
+                                        final_rgb = self._blend_neighbor_cloth_tone(
+                                            final_rgb,
+                                            female_short_direct_cloth_restore_mask,
                                             cloth_mask=female_short_cloth_reference_mask,
-                                            final_hair_mask=final_hair_mask,
-                                            ignore_final_hair_for_cloth_restore=True,
-                                            cleanup_dark_tail=True,
+                                            reference_rgb=neighbor_cloth_reference_rgb,
                                         )
                                         final_rgb = self._cv2_refine_cloth_region(
                                             final_rgb,
                                             female_short_direct_cloth_restore_mask,
-                                            reference_rgb=img_rgb,
-                                        reference_mask=female_short_cloth_reference_mask,
-                                    )
-                                    if direct_side_restore_mask is not None:
-                                        final_rgb = self._restore_reference_region(
-                                            final_rgb,
-                                            img_rgb,
-                                            direct_side_restore_mask,
-                                            strength=0.96,
+                                            reference_rgb=neighbor_cloth_reference_rgb,
+                                            reference_mask=female_short_cloth_reference_mask,
                                         )
-                                    if female_short_plain_cloth_cleanup_mask is not None:
-                                        final_rgb = self._overlay_reference_cloth_fill(
-                                            final_rgb,
-                                            img_rgb,
-                                            female_short_plain_cloth_cleanup_mask,
-                                            cloth_mask=female_short_cloth_reference_mask,
-                                        )
+                                        if direct_side_restore_mask is not None:
+                                            final_rgb = self._restore_reference_region(
+                                                final_rgb,
+                                                img_rgb,
+                                                direct_side_restore_mask,
+                                                strength=0.96,
+                                            )
+                                        if female_short_plain_cloth_cleanup_mask is not None:
+                                            final_rgb = self._overlay_reference_cloth_fill(
+                                                final_rgb,
+                                                img_rgb,
+                                                female_short_plain_cloth_cleanup_mask,
+                                                cloth_mask=female_short_cloth_reference_mask,
+                                            )
+                                            final_rgb = self._blend_neighbor_cloth_tone(
+                                                final_rgb,
+                                                female_short_plain_cloth_cleanup_mask,
+                                                cloth_mask=female_short_cloth_reference_mask,
+                                                reference_rgb=img_rgb,
+                                            )
+                                            final_rgb = self._cv2_refine_cloth_region(
+                                                final_rgb,
+                                                female_short_plain_cloth_cleanup_mask,
+                                                reference_rgb=img_rgb,
+                                                reference_mask=female_short_cloth_reference_mask,
+                                            )
+                                    elif female_short_broad_cloth_restore_mask is not None:
                                         final_rgb = self._blend_neighbor_cloth_tone(
                                             final_rgb,
-                                            female_short_plain_cloth_cleanup_mask,
+                                            female_short_broad_cloth_restore_mask,
                                             cloth_mask=female_short_cloth_reference_mask,
-                                            reference_rgb=img_rgb,
+                                            reference_rgb=neighbor_cloth_reference_rgb,
                                         )
                                         final_rgb = self._cv2_refine_cloth_region(
                                             final_rgb,
-                                            female_short_plain_cloth_cleanup_mask,
-                                            reference_rgb=img_rgb,
+                                            female_short_broad_cloth_restore_mask,
+                                            reference_rgb=neighbor_cloth_reference_rgb,
                                             reference_mask=female_short_cloth_reference_mask,
                                         )
-                                if female_short_broad_cloth_restore_mask is not None:
-                                    final_rgb = self._restore_reference_region(
-                                        final_rgb,
-                                        img_rgb,
-                                        female_short_broad_cloth_restore_mask,
-                                        strength=0.998,
-                                    )
                                 final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                                 if debug_images_common is not None and rank == 0:
                                     if female_short_direct_cloth_restore_px >= 120:
