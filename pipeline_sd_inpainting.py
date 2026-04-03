@@ -3990,6 +3990,7 @@ class MirrAISDPipeline:
                             broad_right = min(W, int(cx + face_w * 1.95))
                             if broad_top < broad_bottom and broad_left < broad_right:
                                 broad_restore_gate_u8[broad_top:broad_bottom, broad_left:broad_right] = 255
+                            expanded_cloth_gate_u8 = None
                             if (
                                 cloth_mask_dilated is not None
                                 and cloth_mask_dilated.shape == final_bgr.shape[:2]
@@ -4007,6 +4008,52 @@ class MirrAISDPipeline:
                                     broad_restore_gate_u8,
                                     cv2.bitwise_and(expanded_cloth_gate_u8, torso_gate_u8),
                                 )
+                            broad_source_cloth_support_u8 = broad_restore_gate_u8.copy()
+                            if (
+                                cloth_mask_dilated is not None
+                                and cloth_mask_dilated.shape == final_bgr.shape[:2]
+                                and float(cloth_mask_dilated.sum()) > 0.0
+                            ):
+                                cloth_seed_u8 = (
+                                    (
+                                        np.clip(cloth_mask_dilated.astype(np.float32), 0.0, 1.0) > 0.04
+                                    ).astype(np.uint8)
+                                    * 255
+                                )
+                                cloth_seed_bool = cloth_seed_u8 > 0
+                                if int(cloth_seed_bool.sum()) >= 60:
+                                    seed_gray_med = float(np.median(source_gray[cloth_seed_bool]))
+                                    seed_sat_med = float(np.median(source_sat[cloth_seed_bool]))
+                                    broad_source_cloth_support_u8 = (
+                                        (
+                                            (
+                                                source_gray > max(78.0, seed_gray_med - 44.0)
+                                            )
+                                            & (
+                                                source_sat < min(176.0, seed_sat_med + 48.0)
+                                            )
+                                        ).astype(np.uint8)
+                                        * 255
+                                    )
+                                    broad_source_cloth_support_u8 = cv2.bitwise_and(
+                                        broad_source_cloth_support_u8,
+                                        broad_restore_gate_u8,
+                                    )
+                                    if expanded_cloth_gate_u8 is not None:
+                                        broad_source_cloth_support_u8 = cv2.bitwise_and(
+                                            broad_source_cloth_support_u8,
+                                            expanded_cloth_gate_u8,
+                                        )
+                                    broad_source_cloth_support_u8 = cv2.morphologyEx(
+                                        broad_source_cloth_support_u8,
+                                        cv2.MORPH_CLOSE,
+                                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 27)),
+                                    )
+                                    broad_source_cloth_support_u8 = cv2.dilate(
+                                        broad_source_cloth_support_u8,
+                                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+                                        iterations=1,
+                                    )
                             broad_changed_u8 = (
                                 (
                                     (
@@ -4028,11 +4075,15 @@ class MirrAISDPipeline:
                                 broad_changed_u8,
                                 broad_restore_gate_u8,
                             )
+                            broad_changed_u8 = cv2.bitwise_and(
+                                broad_changed_u8,
+                                broad_source_cloth_support_u8,
+                            )
                             broad_changed_u8 = cv2.bitwise_or(
                                 broad_changed_u8,
                                 cv2.bitwise_and(
                                     female_short_direct_cloth_restore_u8,
-                                    broad_restore_gate_u8,
+                                    broad_source_cloth_support_u8,
                                 ),
                             )
                             broad_changed_u8 = cv2.morphologyEx(
