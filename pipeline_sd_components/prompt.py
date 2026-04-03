@@ -637,6 +637,20 @@ def _build_prompt(
         hair_length,
         subject_gender=gender_mode,
     )
+    preserve_source_garment = hair_length in ("short", "medium")
+    garment_positive_hint = (
+        "same upper clothes as source image, same clothing color tone, same fabric pattern, "
+        "same neckline and shoulder seams, preserve original garment material and folds"
+        if preserve_source_garment
+        else "natural garment continuity"
+    )
+    garment_negative_hint = (
+        "different outfit, changed clothing color, changed fabric pattern, changed neckline, "
+        "different shoulder seam, different sleeve design, new logo, new print, new text on clothes, "
+        "mismatched garment texture, altered blouse design, altered shirt structure, "
+        if preserve_source_garment
+        else ""
+    )
 
     # ── DB 프롬프트 데이터가 있으면 우선 사용 ─────────────────────────────
     if sd_prompt_data and sd_prompt_data.get("sd_positive"):
@@ -662,11 +676,12 @@ def _build_prompt(
             positive_parts.append(color_pos_hint)
         positive_parts.extend([
             "same outfit, clean neckline, preserved fabric folds",
+            garment_positive_hint,
             "photorealistic, natural lighting, sharp focus",
         ])
         positive = _compact_prompt_parts(positive_parts)
         negative_base = _NEGATIVE_BASE + ", " + _COMMON_STYLE_BLOCK_NEGATIVE
-        negative = sd_neg + (", " if sd_neg else "") + color_neg_hint + negative_base
+        negative = sd_neg + (", " if sd_neg else "") + color_neg_hint + garment_negative_hint + negative_base
 
         return positive, negative, guidance
 
@@ -755,6 +770,7 @@ def _build_prompt(
     positive_parts.extend([
         "balanced framing",
         "same outfit, clean neckline",
+        garment_positive_hint,
         "upper clothes in front, connected shoulders, no hair strands on clothes"
         if hair_length in ("short", "medium")
         else "natural garment continuity",
@@ -767,7 +783,7 @@ def _build_prompt(
         + ", "
         + _COMMON_STYLE_BLOCK_NEGATIVE
     )
-    negative = neg_prefix + color_neg_hint + negative_base
+    negative = neg_prefix + color_neg_hint + garment_negative_hint + negative_base
 
     return positive, negative, guidance
 
