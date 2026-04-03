@@ -4544,6 +4544,12 @@ class MirrAISDPipeline:
                             reference_rgb=img_rgb,
                             reference_mask=cloth_reference_mask,
                         )
+                        final_rgb = self._stabilize_under_jaw_cloth_fill(
+                            final_rgb,
+                            img_rgb,
+                            under_jaw_cloth_refine_mask,
+                            cloth_reference_mask,
+                        )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_under_jaw_cloth_refine_mask"] = cv2.cvtColor(

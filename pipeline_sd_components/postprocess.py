@@ -491,14 +491,16 @@ def _sd_refine_removed_region(
 
     if refine_mode == "under_jaw_cloth":
         fill_prompt = (
-            "professional studio portrait photo, preserve the original shirt or white blouse under the jaw, "
-            "realistic fabric texture continuity, natural folds and seams, coherent collar and neckline, "
-            "clean neck and shoulders, no hair strands in masked region, photorealistic clothing details"
+            "professional studio portrait photo, preserve the original light shirt or white blouse under the jaw, "
+            "white inner shirt continuity when the garment is bright, realistic fabric texture continuity, "
+            "natural folds and seams, coherent open collar and neckline, clean neck and shoulders, "
+            "no hair strands in masked region, no dark patch under the neck, photorealistic clothing details"
         )
-        fill_guidance = 7.2 if hair_length == "short" else 7.0
+        fill_guidance = 6.9 if hair_length == "short" else 6.8
         fill_negative = (
-            "hair strands, loose dangling hair, dark streaks, smudged cloth, melted fabric, "
-            "warped shirt, warped blouse, broken neckline, duplicate collar, extra folds, extra buttons, "
+            "hair strands, loose dangling hair, dark streaks, dark bib, black patch, black cloth shadow, "
+            "scarf, ribbon, tie, smudged cloth, melted fabric, warped shirt, warped blouse, "
+            "broken neckline, duplicate collar, extra folds, extra buttons, "
             "deformed neck, artifacts, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
@@ -566,7 +568,7 @@ def _sd_refine_removed_region(
     if refine_mode == "under_jaw_cloth":
         fill_control = float(np.clip(max(self.config.controlnet_conditioning_scale, 0.14), 0.10, 0.22))
         fill_steps = max(18, self.config.num_inference_steps - 10)
-        fill_strength = 0.86
+        fill_strength = 0.82
     elif refine_mode == "cloth":
         fill_control = float(np.clip(max(self.config.controlnet_conditioning_scale, 0.16), 0.10, 0.24))
         fill_steps = max(20, self.config.num_inference_steps - 8)
@@ -989,12 +991,12 @@ def _build_under_jaw_cloth_refine_mask(
         return np.zeros((H, W), dtype=np.float32)
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    top = max(0, int(cutoff_y + face_h * 0.03))
+    top = max(0, int(cutoff_y + face_h * 0.06))
     bottom = min(
         H,
-        int(cutoff_y + face_h * (1.18 if hair_length == "short" else 1.36 if hair_length == "medium" else 1.54)),
+        int(cutoff_y + face_h * (1.08 if hair_length == "short" else 1.22 if hair_length == "medium" else 1.40)),
     )
-    half_w = max(26, int(face_w * (0.50 if hair_length == "short" else 0.58 if hair_length == "medium" else 0.64)))
+    half_w = max(24, int(face_w * (0.46 if hair_length == "short" else 0.52 if hair_length == "medium" else 0.60)))
     left = max(0, cx - half_w)
     right = min(W, cx + half_w)
     if top >= bottom or left >= right:
@@ -1056,8 +1058,8 @@ def _build_under_jaw_cloth_refine_mask(
         support_half_w = max(20, int(face_w * (0.24 if hair_length == "short" else 0.22)))
         support_left = max(0, cx - support_half_w)
         support_right = min(W, cx + support_half_w)
-        support_top = max(top, int(cutoff_y + face_h * 0.04))
-        support_bottom = min(bottom, int(cutoff_y + face_h * 1.18))
+        support_top = max(top, int(cutoff_y + face_h * 0.08))
+        support_bottom = min(bottom, int(cutoff_y + face_h * (1.02 if hair_length == "short" else 1.12)))
         if support_top < support_bottom and support_left < support_right:
             support_gate_u8[support_top:support_bottom, support_left:support_right] = 255
             support_u8 = cv2.bitwise_and(support_u8, support_gate_u8)
@@ -1137,6 +1139,154 @@ def _build_under_jaw_cloth_refine_mask(
         sigmaY=5.4,
     )
     return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+def _stabilize_under_jaw_cloth_fill(
+    self,
+    current_rgb: np.ndarray,
+    source_rgb: np.ndarray,
+    fill_mask: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+) -> np.ndarray:
+    H, W = current_rgb.shape[:2]
+    if source_rgb.shape[:2] != (H, W) or fill_mask.shape != (H, W):
+        return current_rgb
+
+    cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return current_rgb
+
+    cloth_cleanup_mask = np.clip(
+        fill_mask.astype(np.float32)
+        * (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.float32),
+        0.0,
+        1.0,
+    )
+    cloth_cleanup_u8 = (cloth_cleanup_mask > 0.08).astype(np.uint8) * 255
+    if int((cloth_cleanup_u8 > 0).sum()) < 30:
+        return current_rgb
+
+    visible_cloth_u8 = cv2.bitwise_and(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        cv2.bitwise_not(
+            cv2.dilate(
+                cloth_cleanup_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19)),
+                iterations=1,
+            )
+        ),
+    )
+    if int((visible_cloth_u8 > 0).sum()) < 80:
+        return current_rgb
+
+    source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    source_sat = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+    plain_gray = float(np.median(source_gray[visible_cloth_u8 > 0]))
+    plain_sat = float(np.median(source_sat[visible_cloth_u8 > 0]))
+    use_plain_cloth_force = plain_gray >= 168.0 and plain_sat <= 84.0
+    if not use_plain_cloth_force:
+        return current_rgb
+
+    plain_fill_rgb = source_rgb.copy()
+    plain_fill_color = np.median(source_rgb[visible_cloth_u8 > 0], axis=0).astype(np.uint8)
+    plain_fill_rgb[cloth_cleanup_u8 > 0] = plain_fill_color
+    reference_fill_rgb = self._restore_reference_region(
+        current_rgb,
+        plain_fill_rgb,
+        cloth_cleanup_mask,
+        strength=0.94,
+    )
+    reference_fill_rgb = self._blend_neighbor_cloth_tone(
+        reference_fill_rgb,
+        cloth_cleanup_mask,
+        cloth_mask=cloth_mask,
+        reference_rgb=source_rgb,
+    )
+    reference_fill_rgb = self._cv2_refine_cloth_region(
+        reference_fill_rgb,
+        cloth_cleanup_mask,
+        reference_rgb=source_rgb,
+        reference_mask=cloth_mask,
+    )
+
+    cleaned = self._overlay_reference_cloth_fill(
+        current_rgb,
+        reference_fill_rgb,
+        cloth_cleanup_mask,
+        cloth_mask=cloth_mask,
+    )
+    cleaned = self._blend_neighbor_cloth_tone(
+        cleaned,
+        cloth_cleanup_mask,
+        cloth_mask=cloth_mask,
+        reference_rgb=reference_fill_rgb,
+    )
+    cleaned = self._cv2_refine_cloth_region(
+        cleaned,
+        cloth_cleanup_mask,
+        reference_rgb=reference_fill_rgb,
+        reference_mask=cloth_mask,
+    )
+
+    cleaned_gray = cv2.cvtColor(cleaned, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    cleaned_sat = cv2.cvtColor(cleaned, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+    ref_gray = cv2.cvtColor(reference_fill_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    blackhat = cv2.morphologyEx(
+        cleaned_gray.astype(np.uint8),
+        cv2.MORPH_BLACKHAT,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 19)),
+    )
+    dark_residual_u8 = (
+        (
+            (
+                (cleaned_gray + 10.0 < ref_gray)
+                & (cleaned_sat < 132.0)
+            )
+            | (
+                (cleaned_gray < plain_gray - 16.0)
+                & (cleaned_sat < 126.0)
+            )
+            | (
+                (cleaned_gray < plain_gray - 10.0)
+                & (blackhat > 7)
+                & (cleaned_sat < 140.0)
+            )
+        ).astype(np.uint8)
+        * 255
+    )
+    dark_residual_u8 = cv2.bitwise_and(dark_residual_u8, cloth_cleanup_u8)
+    dark_residual_u8 = cv2.morphologyEx(
+        dark_residual_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 15)),
+    )
+    dark_residual_u8 = cv2.dilate(
+        dark_residual_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+        iterations=1,
+    )
+    if int((dark_residual_u8 > 0).sum()) < 24:
+        return cleaned
+
+    dark_residual_mask = dark_residual_u8.astype(np.float32) / 255.0
+    cleaned = self._restore_reference_region(
+        cleaned,
+        reference_fill_rgb,
+        dark_residual_mask,
+        strength=0.98,
+    )
+    cleaned = self._overlay_reference_cloth_fill(
+        cleaned,
+        reference_fill_rgb,
+        dark_residual_mask,
+        cloth_mask=cloth_mask,
+    )
+    cleaned = self._blend_neighbor_cloth_tone(
+        cleaned,
+        dark_residual_mask,
+        cloth_mask=cloth_mask,
+        reference_rgb=reference_fill_rgb,
+    )
+    return cleaned
 
 def _build_generation_protect_mask(
     self,
@@ -7377,6 +7527,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._filter_short_center_cleanup_mask = _filter_short_center_cleanup_mask
     cls._build_post_cloth_refine_mask = _build_post_cloth_refine_mask
     cls._build_under_jaw_cloth_refine_mask = _build_under_jaw_cloth_refine_mask
+    cls._stabilize_under_jaw_cloth_fill = _stabilize_under_jaw_cloth_fill
     cls._build_generation_protect_mask = _build_generation_protect_mask
     cls._build_removal_protect_mask = _build_removal_protect_mask
     cls._build_neckline_preserve_mask = _build_neckline_preserve_mask
