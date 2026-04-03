@@ -7116,6 +7116,22 @@ def _composite(
                 1.0,
             )
         alpha = alpha * (1.0 - np.clip(protect_dilated, 0.0, 1.0))
+    if protect_release_mask is not None and hair_length == "short":
+        release_u8 = (np.clip(protect_release_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255
+        if int((release_u8 > 0).sum()) >= 20:
+            release_u8 = cv2.dilate(
+                release_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
+                iterations=1,
+            )
+            release_alpha = cv2.GaussianBlur(
+                release_u8.astype(np.float32) / 255.0,
+                (0, 0),
+                sigmaX=2.2,
+                sigmaY=2.6,
+            )
+            # Force generated bangs to cover the released fringe band.
+            alpha = np.maximum(alpha, np.clip(release_alpha * 0.82, 0.0, 0.92))
 
     alpha = alpha[..., np.newaxis]   # H×W×1
 
