@@ -1260,25 +1260,53 @@ def _build_short_below_bob_torso_mask(
     cutoff_y: int,
     hair_length: str,
     final_hair_mask: Optional[np.ndarray] = None,
+    torso_candidate_mask: Optional[np.ndarray] = None,
+    completed_torso_fill_mask: Optional[np.ndarray] = None,
+    shoulder_anchor_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    if cloth_mask is None:
+    base_shape = None
+    for mask in (
+        cloth_mask,
+        torso_candidate_mask,
+        completed_torso_fill_mask,
+        shoulder_anchor_mask,
+    ):
+        if isinstance(mask, np.ndarray):
+            base_shape = mask.shape[:2]
+            break
+    if base_shape is None:
         return np.zeros((1, 1), dtype=np.float32)
     if hair_length != "short":
-        return np.zeros(cloth_mask.shape[:2], dtype=np.float32)
+        return np.zeros(base_shape, dtype=np.float32)
 
-    H, W = cloth_mask.shape[:2]
+    H, W = base_shape
     x1, y1, x2, y2 = face_bbox
     face_w = max(int(x2 - x1), 1)
     face_h = max(int(y2 - y1), 1)
     cx = int(0.5 * (x1 + x2))
 
-    cloth_u8 = cv2.dilate(
-        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.06).astype(np.uint8) * 255,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
-        iterations=1,
-    )
-    if int((cloth_u8 > 0).sum()) < 80:
-        return np.zeros((H, W), dtype=np.float32)
+    cloth_u8 = np.zeros((H, W), dtype=np.uint8)
+    if cloth_mask is not None and cloth_mask.shape == (H, W):
+        cloth_u8 = cv2.dilate(
+            (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.06).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
+            iterations=1,
+        )
+
+    amodal_support_u8 = np.zeros((H, W), dtype=np.uint8)
+    for mask, kernel in (
+        (torso_candidate_mask, (15, 21)),
+        (completed_torso_fill_mask, (17, 23)),
+        (shoulder_anchor_mask, (17, 21)),
+    ):
+        if mask is None or mask.shape != (H, W):
+            continue
+        support_part_u8 = cv2.dilate(
+            (np.clip(mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, kernel),
+            iterations=1,
+        )
+        amodal_support_u8 = cv2.bitwise_or(amodal_support_u8, support_part_u8)
 
     bob_floor = max(0, int(max(y2 + face_h * 0.10, cutoff_y + face_h * 0.08)))
     bottom = min(H, int(cutoff_y + face_h * 1.74))
@@ -1301,11 +1329,20 @@ def _build_short_below_bob_torso_mask(
     if center_top < bottom:
         torso_u8[center_top:bottom, max(0, cx - center_half):min(W, cx + center_half)] = 255
 
-    torso_u8 = cv2.bitwise_and(torso_u8, cloth_u8)
+    use_amodal_support = int((amodal_support_u8 > 0).sum()) >= 40
+    if use_amodal_support:
+        torso_u8 = cv2.bitwise_or(torso_u8, amodal_support_u8)
+    elif int((cloth_u8 > 0).sum()) >= 80:
+        torso_u8 = cv2.bitwise_and(torso_u8, cloth_u8)
+
     if int((torso_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
 
-    if final_hair_mask is not None and final_hair_mask.shape == (H, W):
+    if (
+        not use_amodal_support
+        and final_hair_mask is not None
+        and final_hair_mask.shape == (H, W)
+    ):
         final_hair_u8 = cv2.dilate(
             (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.18).astype(np.uint8) * 255,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 23)),
@@ -3804,6 +3841,7 @@ def _build_short_below_bob_generation_block_mask(
     cutoff_y: int,
     hair_length: str,
     support_mask: Optional[np.ndarray] = None,
+    force_keep_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if removal_mask is None:
         return np.zeros((1, 1), dtype=np.float32)
@@ -3821,6 +3859,13 @@ def _build_short_below_bob_generation_block_mask(
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 23)),
         iterations=1,
     )
+    force_keep_u8 = np.zeros((H, W), dtype=np.uint8)
+    if force_keep_mask is not None and force_keep_mask.shape == (H, W):
+        force_keep_u8 = cv2.dilate(
+            (np.clip(force_keep_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 25)),
+            iterations=1,
+        )
     zone_u8 = removal_u8.copy()
     if support_mask is not None and support_mask.shape == (H, W):
         support_u8 = cv2.dilate(
@@ -3862,6 +3907,8 @@ def _build_short_below_bob_generation_block_mask(
     if center_lane_top < bottom and center_x1 < center_x2:
         lane_u8[center_lane_top:bottom, center_x1:center_x2] = 255
     zone_u8 = cv2.bitwise_and(zone_u8, lane_u8)
+    if int((force_keep_u8 > 0).sum()) > 0:
+        zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(force_keep_u8))
     if int((zone_u8 > 0).sum()) < 60:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -3902,6 +3949,9 @@ def _build_short_below_bob_generation_block_mask(
         if offset < center_keepout and bottom_y < deep_center_bottom:
             continue
         keep_u8[labels == idx] = 255
+
+    if int((force_keep_u8 > 0).sum()) > 0:
+        keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(force_keep_u8))
 
     if int((keep_u8 > 0).sum()) < 40:
         return np.zeros((H, W), dtype=np.float32)

@@ -723,6 +723,8 @@ class MirrAISDPipeline:
         short_upper_body_repaint_mask = np.zeros((H, W), dtype=np.float32)
         short_upper_body_repaint_px = 0
         upper_clothes_overwrite_mask = np.zeros((H, W), dtype=np.float32)
+        upper_clothes_overwrite_core_mask = np.zeros((H, W), dtype=np.float32)
+        upper_clothes_overwrite_anchor_mask = np.zeros((H, W), dtype=np.float32)
         upper_clothes_overwrite_px = 0
         use_upper_clothes_overwrite = bool(
             self.config.enable_upper_clothes_overwrite
@@ -752,9 +754,24 @@ class MirrAISDPipeline:
             protect_mask=protect_mask_for_sd,
             face_bbox=face_bbox,
         )
+        if isinstance(subject_torso_anchor_mask, np.ndarray) and subject_torso_anchor_mask.shape == (H, W):
+            upper_clothes_overwrite_anchor_mask = np.maximum(
+                upper_clothes_overwrite_anchor_mask,
+                np.clip(subject_torso_anchor_mask.astype(np.float32), 0.0, 1.0),
+            ).astype(np.float32)
+        if (
+            isinstance(source_shoulder_contour_anchor_mask, np.ndarray)
+            and source_shoulder_contour_anchor_mask.shape == (H, W)
+        ):
+            upper_clothes_overwrite_anchor_mask = np.maximum(
+                upper_clothes_overwrite_anchor_mask,
+                np.clip(source_shoulder_contour_anchor_mask.astype(np.float32), 0.0, 1.0),
+            ).astype(np.float32)
         if use_upper_clothes_overwrite:
             upper_clothes_overwrite_mask = self._build_upper_clothes_overwrite_mask(
                 cloth_mask=cloth_mask_dilated,
+                amodal_torso_mask=completed_torso_fill_mask,
+                shoulder_anchor_mask=upper_clothes_overwrite_anchor_mask,
                 torso_candidate_mask=subject_torso_candidate_mask,
                 completed_torso_fill_mask=completed_torso_fill_mask,
                 source_torso_hair_mask=source_torso_hair_mask,
@@ -802,7 +819,19 @@ class MirrAISDPipeline:
                     cutoff_y=short_repaint_cutoff_y,
                     hair_length=hair_length,
                     final_hair_mask=None,
+                    torso_candidate_mask=subject_torso_candidate_mask,
+                    completed_torso_fill_mask=completed_torso_fill_mask,
+                    shoulder_anchor_mask=upper_clothes_overwrite_anchor_mask,
                 )
+                if short_upper_body_repaint_seed_mask.shape == (H, W):
+                    upper_clothes_overwrite_core_mask = np.maximum(
+                        upper_clothes_overwrite_core_mask,
+                        np.clip(
+                            short_upper_body_repaint_seed_mask.astype(np.float32) - protect_mask_for_sd.astype(np.float32),
+                            0.0,
+                            1.0,
+                        ),
+                    ).astype(np.float32)
                 short_upper_body_repaint_mask = self._build_short_torso_garment_repaint_mask(
                     cloth_mask=cloth_mask_dilated,
                     torso_mask=short_upper_body_repaint_seed_mask,
@@ -822,6 +851,11 @@ class MirrAISDPipeline:
                     * 255
                 )
                 short_upper_body_repaint_px = int((short_upper_body_repaint_u8 > 0).sum())
+                if use_upper_clothes_overwrite and upper_clothes_overwrite_core_mask.shape == (H, W):
+                    upper_clothes_overwrite_mask = np.maximum(
+                        upper_clothes_overwrite_mask.astype(np.float32),
+                        np.clip(upper_clothes_overwrite_core_mask.astype(np.float32) * 0.98, 0.0, 1.0),
+                    ).astype(np.float32)
                 if short_upper_body_repaint_px >= 120:
                     repaint_release_u8 = cv2.dilate(
                         short_upper_body_repaint_u8,
@@ -856,6 +890,7 @@ class MirrAISDPipeline:
         _store_mask("pipeline_short_upper_body_repaint_seed_mask", short_upper_body_repaint_seed_mask)
         _store_mask("pipeline_short_upper_body_repaint_mask", short_upper_body_repaint_mask)
         _store_mask("pipeline_upper_clothes_overwrite_mask", upper_clothes_overwrite_mask)
+        _store_mask("pipeline_upper_clothes_overwrite_core_mask", upper_clothes_overwrite_core_mask)
         _store_mask("pipeline_hair_mask_cloth_protected", hair_mask)
         logger.info(
             f"[SDPipeline] 옷 픽셀 제거 완료, pixels={hair_mask.sum():.0f}"
@@ -1497,6 +1532,7 @@ class MirrAISDPipeline:
                     cutoff_y=cutoff_y,
                     hair_length=hair_length,
                     support_mask=lower_tail_support_for_post,
+                    force_keep_mask=upper_clothes_overwrite_core_mask,
                 )
                 below_bob_cloth_restore_for_post = self._build_short_below_bob_cloth_restore_mask(
                     removal_mask=removal_mask_for_post,
@@ -1583,6 +1619,15 @@ class MirrAISDPipeline:
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
                     iterations=1,
                 )
+            if use_upper_clothes_overwrite and upper_clothes_overwrite_core_mask.shape == (H, W):
+                core_restore_mask = upper_clothes_overwrite_core_mask.astype(np.float32)
+                if protect_mask_for_sd.shape == (H, W):
+                    core_restore_mask = np.clip(
+                        core_restore_mask - protect_mask_for_sd.astype(np.float32),
+                        0.0,
+                        1.0,
+                    )
+                gen_mask = np.maximum(gen_mask.astype(np.float32), core_restore_mask).astype(np.float32)
             composite_bangs_release_mask = np.zeros((H, W), dtype=np.float32)
             if float(bangs_restore_for_sd.sum()) > 0.0:
                 soft_bangs_generation_mask = self._build_soft_bangs_generation_mask(
@@ -1600,6 +1645,15 @@ class MirrAISDPipeline:
                 )
                 _store_mask("pipeline_bangs_generation_soft_mask", soft_bangs_generation_mask)
                 _store_mask("pipeline_bangs_composite_release_mask", composite_bangs_release_mask)
+            if use_upper_clothes_overwrite and upper_clothes_overwrite_core_mask.shape == (H, W):
+                core_restore_mask = upper_clothes_overwrite_core_mask.astype(np.float32)
+                if protect_mask_for_sd.shape == (H, W):
+                    core_restore_mask = np.clip(
+                        core_restore_mask - protect_mask_for_sd.astype(np.float32),
+                        0.0,
+                        1.0,
+                    )
+                gen_mask = np.maximum(gen_mask.astype(np.float32), core_restore_mask).astype(np.float32)
 
             _store_mask("pipeline_short_removal_mask", removal_mask_for_post)
             _store_mask("pipeline_short_generation_seed_mask", short_generation_seed_mask_for_debug)
@@ -2276,6 +2330,11 @@ class MirrAISDPipeline:
                     hair_mask_for_sd,
                     upper_clothes_overwrite_mask.astype(np.float32),
                 ).astype(np.float32)
+            if use_upper_clothes_overwrite and upper_clothes_overwrite_core_mask.shape == (H, W):
+                hair_mask_for_sd = np.maximum(
+                    hair_mask_for_sd,
+                    upper_clothes_overwrite_core_mask.astype(np.float32),
+                ).astype(np.float32)
             img_rgb_for_sd   = img_rgb_cleaned
         else:
             # long 헤어는 기존 단일 패스 유지
@@ -2329,6 +2388,15 @@ class MirrAISDPipeline:
                 canny_suppress = np.maximum(
                     canny_suppress,
                     upper_clothes_overwrite_mask.astype(np.float32),
+                ).astype(np.float32)
+            if (
+                use_upper_clothes_overwrite
+                and self.config.controlnet_use_masked_edges
+                and upper_clothes_overwrite_core_mask.shape == canny_suppress.shape
+            ):
+                canny_suppress = np.maximum(
+                    canny_suppress,
+                    upper_clothes_overwrite_core_mask.astype(np.float32),
                 ).astype(np.float32)
             if hair_length == "short":
                 canny_suppress = np.maximum(
@@ -2415,6 +2483,11 @@ class MirrAISDPipeline:
                 composite_mask = np.maximum(
                     composite_mask.astype(np.float32),
                     upper_clothes_overwrite_mask.astype(np.float32),
+                ).astype(np.float32)
+            if use_upper_clothes_overwrite and upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape:
+                composite_mask = np.maximum(
+                    composite_mask.astype(np.float32),
+                    upper_clothes_overwrite_core_mask.astype(np.float32),
                 ).astype(np.float32)
             composited_bgr = self._composite(
                 composite_base_bgr, composite_base_rgb,
@@ -3466,6 +3539,9 @@ class MirrAISDPipeline:
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
                         final_hair_mask=final_hair_mask,
+                        torso_candidate_mask=subject_torso_candidate_mask,
+                        completed_torso_fill_mask=completed_torso_fill_mask,
+                        shoulder_anchor_mask=upper_clothes_overwrite_anchor_mask,
                     )
                     short_subject_cloth_cleanup_mask = self._build_short_subject_cloth_cleanup_mask(
                         current_rgb=final_rgb,
@@ -3522,6 +3598,9 @@ class MirrAISDPipeline:
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
                         final_hair_mask=final_hair_mask,
+                        torso_candidate_mask=subject_torso_candidate_mask,
+                        completed_torso_fill_mask=completed_torso_fill_mask,
+                        shoulder_anchor_mask=upper_clothes_overwrite_anchor_mask,
                     )
                     garment_repaint_mask = self._build_short_torso_garment_repaint_mask(
                         cloth_mask=cloth_mask_dilated,
@@ -4011,6 +4090,8 @@ class MirrAISDPipeline:
         self,
         *,
         cloth_mask: Optional[np.ndarray],
+        amodal_torso_mask: Optional[np.ndarray],
+        shoulder_anchor_mask: Optional[np.ndarray],
         torso_candidate_mask: Optional[np.ndarray],
         completed_torso_fill_mask: Optional[np.ndarray],
         source_torso_hair_mask: Optional[np.ndarray],
@@ -4020,6 +4101,8 @@ class MirrAISDPipeline:
     ) -> np.ndarray:
         base_shape = None
         for mask in (
+            amodal_torso_mask,
+            shoulder_anchor_mask,
             cloth_mask,
             torso_candidate_mask,
             completed_torso_fill_mask,
@@ -4034,6 +4117,10 @@ class MirrAISDPipeline:
             return np.zeros((1, 1), dtype=np.float32)
 
         H, W = base_shape
+        if amodal_torso_mask is not None and amodal_torso_mask.shape != (H, W):
+            amodal_torso_mask = None
+        if shoulder_anchor_mask is not None and shoulder_anchor_mask.shape != (H, W):
+            shoulder_anchor_mask = None
         if cloth_mask is not None and cloth_mask.shape != (H, W):
             cloth_mask = None
         if torso_candidate_mask is not None and torso_candidate_mask.shape != (H, W):
@@ -4069,6 +4156,34 @@ class MirrAISDPipeline:
             cloth_u8 = (cloth_dilated > 0.04).astype(np.uint8) * 255
             cloth_u8 = cv2.bitwise_and(cloth_u8, corridor_u8)
 
+        amodal_base_u8 = np.zeros((H, W), dtype=np.uint8)
+        for mask, kernel in (
+            (amodal_torso_mask, (19, 27)),
+            (completed_torso_fill_mask, (17, 23)),
+            (torso_candidate_mask, (15, 21)),
+            (shoulder_anchor_mask, (17, 21)),
+        ):
+            if mask is None:
+                continue
+            part_u8 = cv2.dilate(
+                (np.clip(mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, kernel),
+                iterations=1,
+            )
+            amodal_base_u8 = cv2.bitwise_or(amodal_base_u8, part_u8)
+        amodal_base_u8 = cv2.bitwise_and(amodal_base_u8, corridor_u8)
+        if int((amodal_base_u8 > 0).sum()) > 0:
+            amodal_base_u8 = cv2.morphologyEx(
+                amodal_base_u8,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 27)),
+            )
+            amodal_base_u8 = cv2.dilate(
+                amodal_base_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+                iterations=1,
+            )
+
         torso_u8 = np.zeros((H, W), dtype=np.uint8)
         for mask in (torso_candidate_mask, completed_torso_fill_mask):
             if mask is None:
@@ -4085,6 +4200,24 @@ class MirrAISDPipeline:
                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 23)),
             )
 
+        support_gate_u8 = amodal_base_u8.copy()
+        if int((support_gate_u8 > 0).sum()) < 80:
+            support_gate_u8 = cv2.bitwise_or(torso_u8, cloth_u8)
+
+        cloth_support_u8 = np.zeros((H, W), dtype=np.uint8)
+        if int((cloth_u8 > 0).sum()) > 0:
+            if int((support_gate_u8 > 0).sum()) > 0:
+                cloth_support_u8 = cv2.bitwise_and(
+                    cloth_u8,
+                    cv2.dilate(
+                        support_gate_u8,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 35)),
+                        iterations=1,
+                    ),
+                )
+            else:
+                cloth_support_u8 = cloth_u8.copy()
+
         overlap_seed_u8 = np.zeros((H, W), dtype=np.uint8)
         if source_cloth_overlap_mask is not None:
             overlap_part_u8 = (
@@ -4096,9 +4229,9 @@ class MirrAISDPipeline:
                 np.clip(source_torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08
             ).astype(np.uint8) * 255
             torso_hair_u8 = cv2.bitwise_and(torso_hair_u8, corridor_u8)
-            if int((cloth_u8 > 0).sum()) > 0:
+            if int((support_gate_u8 > 0).sum()) > 0:
                 cloth_overlap_gate_u8 = cv2.dilate(
-                    cloth_u8,
+                    support_gate_u8,
                     cv2.getStructuringElement(
                         cv2.MORPH_ELLIPSE,
                         (
@@ -4115,7 +4248,8 @@ class MirrAISDPipeline:
             overlap_seed_u8 = cv2.bitwise_or(overlap_seed_u8, cv2.bitwise_and(torso_hair_u8, torso_u8))
         overlap_seed_u8 = cv2.bitwise_and(overlap_seed_u8, corridor_u8)
 
-        overwrite_u8 = cv2.bitwise_or(cloth_u8, torso_u8)
+        overwrite_u8 = cv2.bitwise_or(amodal_base_u8, cloth_support_u8)
+        overwrite_u8 = cv2.bitwise_or(overwrite_u8, torso_u8)
         overwrite_u8 = cv2.bitwise_or(overwrite_u8, overlap_seed_u8)
         overwrite_u8 = cv2.bitwise_and(overwrite_u8, corridor_u8)
         overwrite_u8 = cv2.morphologyEx(
