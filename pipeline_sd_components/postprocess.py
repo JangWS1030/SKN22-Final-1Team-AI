@@ -1227,6 +1227,37 @@ def _stabilize_under_jaw_cloth_fill(
         reference_mask=cloth_mask,
     )
 
+    mask_ys, mask_xs = np.where(cloth_cleanup_u8 > 0)
+    if mask_xs.size >= 24 and mask_ys.size >= 24:
+        mask_left = int(mask_xs.min())
+        mask_right = int(mask_xs.max()) + 1
+        mask_top = int(mask_ys.min())
+        mask_bottom = int(mask_ys.max()) + 1
+        mask_center_x = int(0.5 * (mask_left + mask_right))
+        inner_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+        inner_half_w = max(10, int((mask_right - mask_left) * 0.24))
+        inner_top = mask_top
+        inner_bottom = min(mask_bottom, mask_top + max(16, int((mask_bottom - mask_top) * 0.72)))
+        inner_left = max(0, mask_center_x - inner_half_w)
+        inner_right = min(W, mask_center_x + inner_half_w)
+        if inner_top < inner_bottom and inner_left < inner_right:
+            inner_gate_u8[inner_top:inner_bottom, inner_left:inner_right] = 255
+            inner_gate_u8 = cv2.bitwise_and(inner_gate_u8, cloth_cleanup_u8)
+            if int((inner_gate_u8 > 0).sum()) >= 24:
+                inner_gate_mask = inner_gate_u8.astype(np.float32) / 255.0
+                cleaned = self._restore_reference_region(
+                    cleaned,
+                    reference_fill_rgb,
+                    inner_gate_mask,
+                    strength=0.97,
+                )
+                cleaned = self._blend_neighbor_cloth_tone(
+                    cleaned,
+                    inner_gate_mask,
+                    cloth_mask=cloth_mask,
+                    reference_rgb=reference_fill_rgb,
+                )
+
     cleaned_gray = cv2.cvtColor(cleaned, cv2.COLOR_RGB2GRAY).astype(np.float32)
     cleaned_sat = cv2.cvtColor(cleaned, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
     ref_gray = cv2.cvtColor(reference_fill_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
