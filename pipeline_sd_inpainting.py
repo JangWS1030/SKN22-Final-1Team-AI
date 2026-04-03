@@ -4549,6 +4549,7 @@ class MirrAISDPipeline:
                             img_rgb,
                             under_jaw_cloth_refine_mask,
                             cloth_reference_mask,
+                            hair_length=hair_length,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     if debug_images_common is not None and rank == 0:

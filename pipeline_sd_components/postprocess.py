@@ -1146,6 +1146,7 @@ def _stabilize_under_jaw_cloth_fill(
     source_rgb: np.ndarray,
     fill_mask: np.ndarray,
     cloth_mask: Optional[np.ndarray],
+    hair_length: str = "",
 ) -> np.ndarray:
     H, W = current_rgb.shape[:2]
     if source_rgb.shape[:2] != (H, W) or fill_mask.shape != (H, W):
@@ -1208,8 +1209,23 @@ def _stabilize_under_jaw_cloth_fill(
         reference_mask=cloth_mask,
     )
 
+    prefer_reference_first = str(hair_length or "").strip().lower() == "short"
+    if prefer_reference_first:
+        cleaned = self._restore_reference_region(
+            current_rgb,
+            reference_fill_rgb,
+            cloth_cleanup_mask,
+            strength=0.985,
+        )
+    else:
+        cleaned = self._overlay_reference_cloth_fill(
+            current_rgb,
+            reference_fill_rgb,
+            cloth_cleanup_mask,
+            cloth_mask=cloth_mask,
+        )
     cleaned = self._overlay_reference_cloth_fill(
-        current_rgb,
+        cleaned,
         reference_fill_rgb,
         cloth_cleanup_mask,
         cloth_mask=cloth_mask,
