@@ -4474,6 +4474,84 @@ class MirrAISDPipeline:
                                         )
                     except Exception as e:
                         logger.warning(f"[SDPipeline] female short direct cloth restore failed (ignored): {e}")
+            if (
+                self.config.enable_post_cloth_refine
+                and rank == 0
+                and hair_length in ("short", "medium")
+                and cloth_mask_dilated is not None
+                and removal_mask_for_post is not None
+                and cutoff_y_for_post is not None
+            ):
+                try:
+                    final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
+                    final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    cloth_reference_mask = (
+                        cloth_restore_mask_for_post
+                        if cloth_restore_mask_for_post is not None and cloth_restore_mask_for_post.shape == final_bgr.shape[:2]
+                        else cloth_mask_dilated
+                    )
+                    under_jaw_candidate_mask = np.maximum(
+                        short_lower_garment_cleanup_mask_for_post,
+                        center_residual_cleanup_mask_for_post,
+                    ).astype(np.float32)
+                    under_jaw_candidate_mask = np.maximum(
+                        under_jaw_candidate_mask,
+                        final_source_cloth_rescue_mask_for_post,
+                    ).astype(np.float32)
+                    under_jaw_candidate_mask = np.maximum(
+                        under_jaw_candidate_mask,
+                        residual_strand_cleanup_mask_for_post,
+                    ).astype(np.float32)
+                    under_jaw_cloth_refine_mask = self._build_under_jaw_cloth_refine_mask(
+                        current_rgb=final_rgb,
+                        source_rgb=img_rgb,
+                        removal_mask=removal_mask_for_post,
+                        cloth_mask=cloth_reference_mask,
+                        face_bbox=face_bbox,
+                        cutoff_y=cutoff_y_for_post,
+                        hair_length=hair_length,
+                        protect_mask=protect_mask_for_sd,
+                        final_hair_mask=final_hair_mask,
+                        candidate_mask=under_jaw_candidate_mask,
+                        center_support_mask=center_chest_strand_removal_mask,
+                    )
+                    under_jaw_cloth_refine_u8 = (
+                        (np.clip(under_jaw_cloth_refine_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
+                        * 255
+                    )
+                    under_jaw_cloth_refine_px = int((under_jaw_cloth_refine_u8 > 0).sum())
+                    if under_jaw_cloth_refine_px >= 140:
+                        final_rgb = self._sd_refine_removed_region(
+                            base_rgb=final_rgb,
+                            removal_mask=under_jaw_cloth_refine_mask,
+                            face_bbox=face_bbox,
+                            face_crop_pil=face_crop_pil,
+                            protect_mask=protect_mask_for_sd,
+                            cloth_mask=cloth_reference_mask,
+                            hair_length=hair_length,
+                            seed=int(cand["seed"]) + 1871,
+                            refine_mode="under_jaw_cloth",
+                        )
+                        final_rgb = self._blend_neighbor_cloth_tone(
+                            final_rgb,
+                            under_jaw_cloth_refine_mask,
+                            cloth_mask=cloth_reference_mask,
+                            reference_rgb=img_rgb,
+                        )
+                        final_rgb = self._cv2_refine_cloth_region(
+                            final_rgb,
+                            under_jaw_cloth_refine_mask,
+                            reference_rgb=img_rgb,
+                            reference_mask=cloth_reference_mask,
+                        )
+                        final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                    if debug_images_common is not None and rank == 0:
+                        debug_images_common["pipeline_under_jaw_cloth_refine_mask"] = cv2.cvtColor(
+                            under_jaw_cloth_refine_u8,
+                            cv2.COLOR_GRAY2BGR,
+                        )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] under-jaw cloth refine failed (ignored): {e}")
             try:
                 final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                 final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
