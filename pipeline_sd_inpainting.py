@@ -4127,55 +4127,123 @@ class MirrAISDPipeline:
                                     female_short_direct_cloth_restore_px >= 120
                                     or female_short_broad_cloth_restore_mask is not None
                                 ):
-                                    neighbor_cloth_reference_rgb = final_rgb.copy()
                                     if female_short_direct_cloth_restore_px >= 120:
-                                        female_short_direct_cloth_restore_mask = cv2.GaussianBlur(
-                                            female_short_direct_cloth_restore_u8.astype(np.float32) / 255.0,
-                                            (0, 0),
-                                            sigmaX=4.2,
-                                            sigmaY=6.2,
-                                        ).astype(np.float32)
-                                        direct_cleanup_u8 = cv2.dilate(
+                                        center_fill_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                                        center_fill_half_w = max(24, int(face_w * 0.24))
+                                        center_fill_left = max(0, cx - center_fill_half_w)
+                                        center_fill_right = min(W, cx + center_fill_half_w)
+                                        center_fill_top = max(0, int(cutoff_y_for_post + face_h * 0.04))
+                                        center_fill_bottom = min(H, int(cutoff_y_for_post + face_h * 1.34))
+                                        if (
+                                            center_fill_top < center_fill_bottom
+                                            and center_fill_left < center_fill_right
+                                        ):
+                                            center_fill_gate_u8[
+                                                center_fill_top:center_fill_bottom,
+                                                center_fill_left:center_fill_right,
+                                            ] = 255
+
+                                        center_fill_u8 = cv2.bitwise_and(
                                             female_short_direct_cloth_restore_u8,
-                                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 13)),
+                                            center_fill_gate_u8,
+                                        )
+                                        if (
+                                            center_chest_strand_removal_mask is not None
+                                            and center_chest_strand_removal_mask.shape == final_bgr.shape[:2]
+                                        ):
+                                            center_support_u8 = cv2.dilate(
+                                                (
+                                                    np.clip(center_chest_strand_removal_mask.astype(np.float32), 0.0, 1.0)
+                                                    > 0.05
+                                                ).astype(np.uint8)
+                                                * 255,
+                                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 37)),
+                                                iterations=1,
+                                            )
+                                            center_support_u8 = cv2.bitwise_and(center_support_u8, center_fill_gate_u8)
+                                            center_fill_u8 = cv2.bitwise_or(center_fill_u8, center_support_u8)
+                                        center_fill_u8 = cv2.bitwise_and(center_fill_u8, torso_gate_u8)
+                                        center_fill_u8 = cv2.bitwise_and(center_fill_u8, cloth_gate_u8)
+                                        center_fill_u8 = cv2.morphologyEx(
+                                            center_fill_u8,
+                                            cv2.MORPH_CLOSE,
+                                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 17)),
+                                        )
+
+                                        side_center_keepout_u8 = cv2.dilate(
+                                            center_fill_gate_u8,
+                                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (23, 41)),
                                             iterations=1,
                                         )
-                                        final_rgb = self._lama_inpaint(final_rgb, direct_cleanup_u8)
-                                        final_rgb = self._blend_neighbor_cloth_tone(
-                                            final_rgb,
-                                            female_short_direct_cloth_restore_mask,
-                                            cloth_mask=female_short_cloth_reference_mask,
-                                            reference_rgb=neighbor_cloth_reference_rgb,
-                                        )
-                                        final_rgb = self._cv2_refine_cloth_region(
-                                            final_rgb,
-                                            female_short_direct_cloth_restore_mask,
-                                            reference_rgb=neighbor_cloth_reference_rgb,
-                                            reference_mask=female_short_cloth_reference_mask,
+                                        side_restore_u8 = cv2.bitwise_and(
+                                            female_short_direct_cloth_restore_u8,
+                                            cv2.bitwise_not(side_center_keepout_u8),
                                         )
                                         if direct_side_restore_mask is not None:
+                                            side_restore_extra_u8 = (
+                                                (
+                                                    np.clip(direct_side_restore_mask.astype(np.float32), 0.0, 1.0) > 0.06
+                                                ).astype(np.uint8)
+                                                * 255
+                                            )
+                                            side_restore_u8 = cv2.bitwise_or(side_restore_u8, side_restore_extra_u8)
+                                        side_restore_u8 = cv2.bitwise_and(side_restore_u8, torso_gate_u8)
+                                        side_restore_u8 = cv2.bitwise_and(side_restore_u8, cloth_gate_u8)
+                                        side_restore_u8 = cv2.morphologyEx(
+                                            side_restore_u8,
+                                            cv2.MORPH_CLOSE,
+                                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 19)),
+                                        )
+                                        side_restore_u8 = cv2.dilate(
+                                            side_restore_u8,
+                                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+                                            iterations=1,
+                                        )
+
+                                        side_restore_px = int((side_restore_u8 > 0).sum())
+                                        center_fill_px = int((center_fill_u8 > 0).sum())
+                                        if side_restore_px >= 80:
+                                            side_restore_mask = cv2.GaussianBlur(
+                                                side_restore_u8.astype(np.float32) / 255.0,
+                                                (0, 0),
+                                                sigmaX=3.8,
+                                                sigmaY=5.8,
+                                            ).astype(np.float32)
                                             final_rgb = self._restore_reference_region(
                                                 final_rgb,
                                                 img_rgb,
-                                                direct_side_restore_mask,
-                                                strength=0.96,
+                                                side_restore_mask,
+                                                strength=0.97,
                                             )
-                                        if female_short_plain_cloth_cleanup_mask is not None:
                                             final_rgb = self._overlay_reference_cloth_fill(
                                                 final_rgb,
                                                 img_rgb,
-                                                female_short_plain_cloth_cleanup_mask,
+                                                side_restore_mask,
                                                 cloth_mask=female_short_cloth_reference_mask,
                                             )
+                                            final_rgb = self._cv2_refine_cloth_region(
+                                                final_rgb,
+                                                side_restore_mask,
+                                                reference_rgb=img_rgb,
+                                                reference_mask=female_short_cloth_reference_mask,
+                                            )
+                                        if center_fill_px >= 60:
+                                            center_fill_mask = cv2.GaussianBlur(
+                                                center_fill_u8.astype(np.float32) / 255.0,
+                                                (0, 0),
+                                                sigmaX=3.2,
+                                                sigmaY=5.2,
+                                            ).astype(np.float32)
+                                            final_rgb = self._cv2_cleanup_dark_tail_blob(final_rgb, center_fill_u8)
                                             final_rgb = self._blend_neighbor_cloth_tone(
                                                 final_rgb,
-                                                female_short_plain_cloth_cleanup_mask,
+                                                center_fill_mask,
                                                 cloth_mask=female_short_cloth_reference_mask,
                                                 reference_rgb=img_rgb,
                                             )
                                             final_rgb = self._cv2_refine_cloth_region(
                                                 final_rgb,
-                                                female_short_plain_cloth_cleanup_mask,
+                                                center_fill_mask,
                                                 reference_rgb=img_rgb,
                                                 reference_mask=female_short_cloth_reference_mask,
                                             )
@@ -4184,12 +4252,12 @@ class MirrAISDPipeline:
                                             final_rgb,
                                             female_short_broad_cloth_restore_mask,
                                             cloth_mask=female_short_cloth_reference_mask,
-                                            reference_rgb=neighbor_cloth_reference_rgb,
+                                            reference_rgb=img_rgb,
                                         )
                                         final_rgb = self._cv2_refine_cloth_region(
                                             final_rgb,
                                             female_short_broad_cloth_restore_mask,
-                                            reference_rgb=neighbor_cloth_reference_rgb,
+                                            reference_rgb=img_rgb,
                                             reference_mask=female_short_cloth_reference_mask,
                                         )
                                 final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
