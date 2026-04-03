@@ -3219,6 +3219,9 @@ class MirrAISDPipeline:
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short bob tail suppress failed (ignored): {e}")
+            short_lower_garment_cleanup_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
+            center_residual_cleanup_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
+            final_source_cloth_rescue_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
             if (
                 hair_length == "short"
                 and removal_mask_for_post is not None
@@ -3244,6 +3247,11 @@ class MirrAISDPipeline:
                         * 255
                     )
                     short_lower_garment_cleanup_px = int((short_lower_garment_cleanup_u8 > 0).sum())
+                    short_lower_garment_cleanup_mask_for_post = np.clip(
+                        short_lower_garment_cleanup_mask.astype(np.float32),
+                        0.0,
+                        1.0,
+                    )
                     if short_lower_garment_cleanup_px >= 100:
                         final_rgb = self._cleanup_region_with_cloth_restore(
                             source_rgb=img_rgb,
@@ -3344,6 +3352,11 @@ class MirrAISDPipeline:
                             sigmaX=3.8,
                             sigmaY=6.6,
                         ).astype(np.float32)
+                        center_residual_cleanup_mask_for_post = np.clip(
+                            center_residual_cleanup_mask.astype(np.float32),
+                            0.0,
+                            1.0,
+                        )
                         final_rgb = self._cleanup_region_with_cloth_restore(
                             source_rgb=img_rgb,
                             current_rgb=final_rgb,
@@ -3468,6 +3481,11 @@ class MirrAISDPipeline:
                         * 255
                     )
                     final_source_cloth_rescue_px = int((final_source_cloth_rescue_u8 > 0).sum())
+                    final_source_cloth_rescue_mask_for_post = np.clip(
+                        final_source_cloth_rescue_mask.astype(np.float32),
+                        0.0,
+                        1.0,
+                    )
                     if final_source_cloth_rescue_px >= 120:
                         final_rgb = self._cleanup_region_with_cloth_restore(
                             source_rgb=img_rgb,
@@ -3490,6 +3508,139 @@ class MirrAISDPipeline:
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] final source cloth rescue failed (ignored): {e}")
+                if (
+                    hair_length == "short"
+                    and subject_gender_mode != "male"
+                    and cloth_restore_mask_for_post is not None
+                    and cloth_restore_mask_for_post.shape == final_bgr.shape[:2]
+                ):
+                    try:
+                        final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
+                        final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                        female_short_direct_cloth_restore_mask = np.maximum(
+                            short_lower_garment_cleanup_mask_for_post,
+                            final_source_cloth_rescue_mask_for_post,
+                        ).astype(np.float32)
+                        female_short_direct_cloth_restore_mask = np.maximum(
+                            female_short_direct_cloth_restore_mask,
+                            np.clip(center_residual_cleanup_mask_for_post * 0.92, 0.0, 1.0),
+                        ).astype(np.float32)
+                        female_short_direct_cloth_restore_u8 = (
+                            (
+                                np.clip(female_short_direct_cloth_restore_mask.astype(np.float32), 0.0, 1.0) > 0.06
+                            ).astype(np.uint8)
+                            * 255
+                        )
+                        if int((female_short_direct_cloth_restore_u8 > 0).sum()) >= 120:
+                            x1, y1, x2, y2 = face_bbox
+                            face_w = max(int(x2 - x1), 1)
+                            face_h = max(int(y2 - y1), 1)
+                            cx = int(0.5 * (x1 + x2))
+                            torso_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                            gate_top = max(0, int(cutoff_y_for_post + face_h * 0.04))
+                            gate_bottom = min(H, int(cutoff_y_for_post + face_h * 1.48))
+                            gate_left = max(0, int(x1 - face_w * 1.28))
+                            gate_right = min(W, int(x2 + face_w * 1.28))
+                            if gate_top < gate_bottom and gate_left < gate_right:
+                                torso_gate_u8[gate_top:gate_bottom, gate_left:gate_right] = 255
+                            cloth_gate_u8 = cv2.dilate(
+                                (
+                                    np.clip(cloth_restore_mask_for_post.astype(np.float32), 0.0, 1.0) > 0.04
+                                ).astype(np.uint8)
+                                * 255,
+                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+                                iterations=1,
+                            )
+                            female_short_direct_cloth_restore_u8 = cv2.bitwise_and(
+                                female_short_direct_cloth_restore_u8,
+                                torso_gate_u8,
+                            )
+                            female_short_direct_cloth_restore_u8 = cv2.bitwise_and(
+                                female_short_direct_cloth_restore_u8,
+                                cloth_gate_u8,
+                            )
+                            if (
+                                center_chest_strand_removal_mask is not None
+                                and center_chest_strand_removal_mask.shape == final_bgr.shape[:2]
+                            ):
+                                center_support_u8 = cv2.dilate(
+                                    (
+                                        np.clip(center_chest_strand_removal_mask.astype(np.float32), 0.0, 1.0) > 0.05
+                                    ).astype(np.uint8)
+                                    * 255,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 37)),
+                                    iterations=1,
+                                )
+                                center_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                                center_half_w = max(26, int(face_w * 0.30))
+                                center_left = max(0, cx - center_half_w)
+                                center_right = min(W, cx + center_half_w)
+                                center_top = max(0, int(cutoff_y_for_post + face_h * 0.04))
+                                center_bottom = min(H, int(cutoff_y_for_post + face_h * 1.40))
+                                if center_top < center_bottom and center_left < center_right:
+                                    center_gate_u8[center_top:center_bottom, center_left:center_right] = 255
+                                    center_support_u8 = cv2.bitwise_and(center_support_u8, center_gate_u8)
+                                    center_support_u8 = cv2.bitwise_and(center_support_u8, cloth_gate_u8)
+                                    female_short_direct_cloth_restore_u8 = cv2.bitwise_or(
+                                        female_short_direct_cloth_restore_u8,
+                                        center_support_u8,
+                                    )
+                            if final_hair_mask is not None and final_hair_mask.shape == final_bgr.shape[:2]:
+                                final_hair_u8 = cv2.dilate(
+                                    (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.14).astype(np.uint8) * 255,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 23)),
+                                    iterations=1,
+                                )
+                                female_short_direct_cloth_restore_u8 = cv2.bitwise_and(
+                                    female_short_direct_cloth_restore_u8,
+                                    cv2.bitwise_not(final_hair_u8),
+                                )
+                            female_short_direct_cloth_restore_u8 = cv2.morphologyEx(
+                                female_short_direct_cloth_restore_u8,
+                                cv2.MORPH_CLOSE,
+                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+                            )
+                            female_short_direct_cloth_restore_u8 = cv2.dilate(
+                                female_short_direct_cloth_restore_u8,
+                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+                                iterations=1,
+                            )
+                            female_short_direct_cloth_restore_px = int(
+                                (female_short_direct_cloth_restore_u8 > 0).sum()
+                            )
+                            if female_short_direct_cloth_restore_px >= 120:
+                                female_short_direct_cloth_restore_mask = cv2.GaussianBlur(
+                                    female_short_direct_cloth_restore_u8.astype(np.float32) / 255.0,
+                                    (0, 0),
+                                    sigmaX=4.2,
+                                    sigmaY=6.2,
+                                ).astype(np.float32)
+                                final_rgb = self._restore_reference_region(
+                                    final_rgb,
+                                    img_rgb,
+                                    female_short_direct_cloth_restore_mask,
+                                    strength=0.98,
+                                )
+                                final_rgb = self._blend_neighbor_cloth_tone(
+                                    final_rgb,
+                                    female_short_direct_cloth_restore_mask,
+                                    cloth_mask=cloth_restore_mask_for_post,
+                                    reference_rgb=img_rgb,
+                                )
+                                final_rgb = self._cv2_refine_cloth_region(
+                                    final_rgb,
+                                    female_short_direct_cloth_restore_mask,
+                                    reference_rgb=img_rgb,
+                                    reference_mask=cloth_restore_mask_for_post,
+                                )
+                                final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                                if debug_images_common is not None and rank == 0:
+                                    debug_images_common["pipeline_female_short_direct_cloth_restore_mask"] = cv2.cvtColor(
+                                        female_short_direct_cloth_restore_u8,
+                                        cv2.COLOR_GRAY2BGR,
+                                    )
+                    except Exception as e:
+                        logger.warning(f"[SDPipeline] female short direct cloth restore failed (ignored): {e}")
             try:
                 final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                 final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
