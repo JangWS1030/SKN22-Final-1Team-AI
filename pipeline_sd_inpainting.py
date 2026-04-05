@@ -2388,7 +2388,8 @@ class MirrAISDPipeline:
             _store_rgb("cv2_background_cleaned_rgb", img_rgb_cleaned)
             _store_mask("pipeline_short_generation_mask", gen_mask)
 
-            hair_mask_for_sd = gen_mask.astype(np.float32)
+            composite_hair_mask = gen_mask.astype(np.float32)
+            hair_mask_for_sd = composite_hair_mask.copy()
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == (H, W):
                 hair_mask_for_sd = np.maximum(
                     hair_mask_for_sd,
@@ -2403,6 +2404,7 @@ class MirrAISDPipeline:
         else:
             # long 헤어는 기존 단일 패스 유지
             hair_mask_for_sd = hair_mask
+            composite_hair_mask = hair_mask_for_sd.astype(np.float32)
             img_rgb_for_sd   = img_rgb
             img_rgb_cleaned  = img_rgb
             if float(bangs_restore_for_sd.sum()) > 0.0:
@@ -2576,28 +2578,26 @@ class MirrAISDPipeline:
                 int(seed),
             )
             gen_preview_bgr = cv2.cvtColor(np.array(gen_pil), cv2.COLOR_RGB2BGR)
-            composite_mask = hair_mask_for_sd
-            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == hair_mask_for_sd.shape:
-                composite_mask = np.maximum(
-                    composite_mask.astype(np.float32),
-                    effective_upper_clothes_overwrite_mask.astype(np.float32),
-                ).astype(np.float32)
-            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape:
-                composite_mask = np.maximum(
-                    composite_mask.astype(np.float32),
-                    effective_upper_clothes_overwrite_core_mask.astype(np.float32),
-                ).astype(np.float32)
+            composite_mask = composite_hair_mask.astype(np.float32)
             garment_composite_mask = None
-            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == hair_mask_for_sd.shape:
-                garment_composite_mask = effective_upper_clothes_overwrite_mask.astype(np.float32)
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape:
-                if garment_composite_mask is None:
+                if float(effective_upper_clothes_overwrite_core_mask.sum()) > 0.0:
                     garment_composite_mask = effective_upper_clothes_overwrite_core_mask.astype(np.float32)
-                else:
-                    garment_composite_mask = np.maximum(
-                        garment_composite_mask.astype(np.float32),
-                        effective_upper_clothes_overwrite_core_mask.astype(np.float32),
-                    ).astype(np.float32)
+            if (
+                garment_composite_mask is None
+                and use_upper_clothes_overwrite
+                and effective_upper_clothes_overwrite_mask.shape == hair_mask_for_sd.shape
+                and source_garment_prepass_mask.shape == hair_mask_for_sd.shape
+            ):
+                garment_composite_mask = np.minimum(
+                    effective_upper_clothes_overwrite_mask.astype(np.float32),
+                    np.clip(source_garment_prepass_mask.astype(np.float32) * 1.08, 0.0, 1.0),
+                ).astype(np.float32)
+            if garment_composite_mask is not None:
+                composite_mask = np.maximum(
+                    composite_mask.astype(np.float32),
+                    garment_composite_mask.astype(np.float32),
+                ).astype(np.float32)
             composited_bgr = self._composite(
                 composite_base_bgr, composite_base_rgb,
                 gen_pil, composite_mask, scale, pad, (W, H),
