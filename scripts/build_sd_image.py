@@ -22,7 +22,7 @@ def default_image_repo() -> str:
     username = (os.environ.get("DOCKER_USERNAME") or "").strip()
     if username:
         return f"{username}/sd"
-    return "sikersiker/sd"
+    return "byoungj/sd"
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image-repo",
         default=default_image_repo(),
-        help="Docker image repository, e.g. sikersiker/sd",
+        help="Docker image repository, e.g. byoungj/sd",
     )
     parser.add_argument(
         "--tag",

@@ -293,8 +293,8 @@ def main() -> None:
         [
             "주요 실행 명령",
             "python scripts/download_public_hair_datasets.py --include-optional",
-            "docker run --rm -e PYTHONPATH=/workspace/repo -v <repo>:/workspace/repo --workdir /workspace/repo --entrypoint python sikersiker/sd:llm-refined-trends-20260327-094231 scripts/preprocess_external_hair_generation.py --source-root dataset_build/raw/public_hair_sources/hf/face_sketches_refined --out-root dataset_build/processed/face_sketches_refined_generation --source-name face_sketches_refined --device cpu",
-            "docker run --rm -e PYTHONPATH=/workspace/repo -v <repo>:/workspace/repo --workdir /workspace/repo --entrypoint python sikersiker/sd:llm-refined-trends-20260327-094231 scripts/preprocess_external_hair_generation.py --source-root dataset_build/raw/public_hair_sources/hf/male_asian_hairstyles --out-root dataset_build/processed/male_asian_hairstyles_generation --source-name male_asian_hairstyles --device cpu",
+            "docker run --rm -e PYTHONPATH=/workspace/repo -v <repo>:/workspace/repo --workdir /workspace/repo --entrypoint python byoungj/sd:llm-refined-trends-20260327-094231 scripts/preprocess_external_hair_generation.py --source-root dataset_build/raw/public_hair_sources/hf/face_sketches_refined --out-root dataset_build/processed/face_sketches_refined_generation --source-name face_sketches_refined --device cpu",
+            "docker run --rm -e PYTHONPATH=/workspace/repo -v <repo>:/workspace/repo --workdir /workspace/repo --entrypoint python byoungj/sd:llm-refined-trends-20260327-094231 scripts/preprocess_external_hair_generation.py --source-root dataset_build/raw/public_hair_sources/hf/male_asian_hairstyles --out-root dataset_build/processed/male_asian_hairstyles_generation --source-name male_asian_hairstyles --device cpu",
             "python scripts/build_longtail_training_subsets.py",
         ]
     )
