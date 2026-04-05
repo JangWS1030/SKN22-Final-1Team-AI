@@ -3312,7 +3312,7 @@ class MirrAISDPipeline:
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short side lane refine failed (ignored): {e}")
-            use_short_torso_garment_repaint = hair_length == "short"
+            use_short_torso_garment_repaint = hair_length == "short" and not use_upper_clothes_overwrite
             if (
                 hair_length in ("short", "medium")
                 and (hair_length != "short" or not disable_short_postprocess_experiment)
