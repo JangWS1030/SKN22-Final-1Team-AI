@@ -990,6 +990,7 @@ class MirrAISDPipeline:
         below_bob_generation_block_for_post: Optional[np.ndarray] = None
         below_bob_cloth_restore_for_post: Optional[np.ndarray] = None
         shoulder_hair_forbid_for_post: Optional[np.ndarray] = None
+        residual_side_hair_lane_force_keep_for_post = np.zeros((H, W), dtype=np.float32)
         composite_bangs_release_mask = np.zeros((H, W), dtype=np.float32)
         center_chest_strand_mask = np.zeros((H, W), dtype=np.float32)
         center_chest_strand_removal_mask = np.zeros((H, W), dtype=np.float32)
@@ -1095,7 +1096,29 @@ class MirrAISDPipeline:
                         shoulder_hair_forbid_for_post.astype(np.float32),
                         shoulder_anchor_forbid.astype(np.float32),
                     ).astype(np.float32)
+            residual_side_hair_lane_force_keep_for_post = self._build_residual_side_hair_lane_force_keep_mask(
+                source_torso_hair_mask=source_torso_hair_mask,
+                face_bbox=face_bbox,
+                cutoff_y=cutoff_y,
+                protect_mask=protect_mask_for_sd,
+            )
+            if (
+                shoulder_hair_forbid_for_post is not None
+                and shoulder_hair_forbid_for_post.shape == (H, W)
+                and residual_side_hair_lane_force_keep_for_post.shape == (H, W)
+                and float(residual_side_hair_lane_force_keep_for_post.sum()) > 0.0
+            ):
+                shoulder_hair_forbid_for_post = np.clip(
+                    shoulder_hair_forbid_for_post.astype(np.float32)
+                    - residual_side_hair_lane_force_keep_for_post.astype(np.float32) * 1.35,
+                    0.0,
+                    1.0,
+                ).astype(np.float32)
             _store_mask("pipeline_shoulder_hair_forbid_mask", shoulder_hair_forbid_for_post)
+            _store_mask(
+                "pipeline_residual_side_hair_lane_force_keep_mask",
+                residual_side_hair_lane_force_keep_for_post,
+            )
 
             # v4 쪽이 더 안정적이었던 핵심:
             # 1) cutoff 아래 long hair를 먼저 실제 hair 기반으로 비운 뒤
@@ -1478,6 +1501,14 @@ class MirrAISDPipeline:
                         )
 
                     removal_mask = filtered_removal_u8.astype(np.float32) / 255.0
+            if (
+                residual_side_hair_lane_force_keep_for_post.shape == (H, W)
+                and float(residual_side_hair_lane_force_keep_for_post.sum()) > 0.0
+            ):
+                removal_mask = np.maximum(
+                    removal_mask.astype(np.float32),
+                    residual_side_hair_lane_force_keep_for_post.astype(np.float32),
+                ).astype(np.float32)
             removal_mask_for_post = removal_mask.copy()
 
             _store_mask("pipeline_lower_tail_removal_extension_mask", lower_tail_removal_extension)
@@ -1692,6 +1723,19 @@ class MirrAISDPipeline:
                         1.0,
                     )
                 gen_mask = np.maximum(gen_mask.astype(np.float32), core_restore_mask).astype(np.float32)
+            if (
+                residual_side_hair_lane_force_keep_for_post.shape == (H, W)
+                and float(residual_side_hair_lane_force_keep_for_post.sum()) > 0.0
+            ):
+                lane_restore_alpha = 0.94 if hair_length == "short" else 0.82
+                gen_mask = np.maximum(
+                    gen_mask.astype(np.float32),
+                    np.clip(
+                        residual_side_hair_lane_force_keep_for_post.astype(np.float32) * lane_restore_alpha,
+                        0.0,
+                        1.0,
+                    ),
+                ).astype(np.float32)
 
             _store_mask("pipeline_short_removal_mask", removal_mask_for_post)
             _store_mask("pipeline_short_generation_seed_mask", short_generation_seed_mask_for_debug)
@@ -5409,6 +5453,122 @@ class MirrAISDPipeline:
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
         )
         return bridge_u8.astype(np.float32) / 255.0
+
+    def _build_residual_side_hair_lane_force_keep_mask(
+        self,
+        *,
+        source_torso_hair_mask: Optional[np.ndarray],
+        face_bbox: Tuple[int, int, int, int],
+        cutoff_y: int,
+        protect_mask: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        base_shape = None
+        for mask in (source_torso_hair_mask, protect_mask):
+            if isinstance(mask, np.ndarray):
+                base_shape = mask.shape[:2]
+                break
+        if base_shape is None:
+            return np.zeros((1, 1), dtype=np.float32)
+
+        H, W = base_shape
+        if source_torso_hair_mask is None or source_torso_hair_mask.shape != (H, W):
+            return np.zeros((H, W), dtype=np.float32)
+        if protect_mask is not None and protect_mask.shape != (H, W):
+            protect_mask = None
+
+        x1, y1, x2, y2 = [int(v) for v in face_bbox]
+        face_w = max(int(x2 - x1), 1)
+        face_h = max(int(y2 - y1), 1)
+        face_cx = int(0.5 * (x1 + x2))
+
+        hair_u8 = (
+            np.clip(source_torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08
+        ).astype(np.uint8) * 255
+        if int((hair_u8 > 0).sum()) < max(36, int(face_w * face_h * 0.00018)):
+            return np.zeros((H, W), dtype=np.float32)
+
+        lane_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+        gate_top = max(0, max(int(cutoff_y), int(y2 + face_h * 0.02)))
+        gate_bottom = min(H, int(y2 + face_h * 1.34))
+        left_outer = max(0, int(x1 - face_w * 0.42))
+        left_inner = max(left_outer + 1, int(face_cx - face_w * 0.12))
+        right_inner = min(W - 1, int(face_cx + face_w * 0.12))
+        right_outer = min(W, int(x2 + face_w * 0.42))
+        if gate_top >= gate_bottom or left_outer >= left_inner or right_inner >= right_outer:
+            return np.zeros((H, W), dtype=np.float32)
+        lane_gate_u8[gate_top:gate_bottom, left_outer:left_inner] = 255
+        lane_gate_u8[gate_top:gate_bottom, right_inner:right_outer] = 255
+
+        candidate_u8 = cv2.bitwise_and(hair_u8, lane_gate_u8)
+        if int((candidate_u8 > 0).sum()) == 0:
+            return np.zeros((H, W), dtype=np.float32)
+
+        candidate_u8 = cv2.morphologyEx(
+            candidate_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+        )
+
+        keep_u8 = np.zeros((H, W), dtype=np.uint8)
+        min_area = max(26, int(face_w * face_h * 0.00018))
+        min_height = max(42, int(face_h * 0.26))
+        max_width = max(112, int(face_w * 0.32))
+        min_bottom = min(H, int(y2 + face_h * 0.34))
+        max_top = min(H, int(y2 + face_h * 0.78))
+        side_offset = max(18, int(face_w * 0.16))
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            (candidate_u8 > 0).astype(np.uint8),
+            8,
+        )
+        for label in range(1, num_labels):
+            x = int(stats[label, cv2.CC_STAT_LEFT])
+            y = int(stats[label, cv2.CC_STAT_TOP])
+            w = int(stats[label, cv2.CC_STAT_WIDTH])
+            h = int(stats[label, cv2.CC_STAT_HEIGHT])
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            bottom = y + h
+            comp_cx = float(centroids[label][0])
+            if area < min_area or h < min_height or w > max_width:
+                continue
+            if bottom < min_bottom or y > max_top:
+                continue
+            if abs(comp_cx - float(face_cx)) < side_offset:
+                continue
+
+            component_u8 = np.zeros((H, W), dtype=np.uint8)
+            component_u8[labels == label] = 255
+            lane_pixels = int(np.logical_and(component_u8 > 0, lane_gate_u8 > 0).sum())
+            if lane_pixels < max(14, int(area * 0.42)):
+                continue
+            keep_u8 = cv2.bitwise_or(keep_u8, component_u8)
+
+        if int((keep_u8 > 0).sum()) == 0:
+            return np.zeros((H, W), dtype=np.float32)
+
+        keep_u8 = cv2.dilate(
+            keep_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+            iterations=1,
+        )
+        keep_u8 = cv2.bitwise_and(keep_u8, lane_gate_u8)
+
+        if protect_mask is not None:
+            protect_u8 = (
+                np.clip(protect_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            protect_u8 = cv2.dilate(
+                protect_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 15)),
+                iterations=1,
+            )
+            keep_u8 = cv2.bitwise_and(keep_u8, cv2.bitwise_not(protect_u8))
+
+        keep_u8 = cv2.morphologyEx(
+            keep_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+        return keep_u8.astype(np.float32) / 255.0
 
     def _estimate_head_generation_box(
         self,
