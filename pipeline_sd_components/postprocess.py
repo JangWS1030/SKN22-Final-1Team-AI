@@ -6733,17 +6733,19 @@ def _composite(
     scale: float,
     pad: Tuple[int, int],            # (pad_left, pad_top)
     original_size: Tuple[int, int],  # (W, H)
+    garment_mask: Optional[np.ndarray] = None,
     protect_mask: Optional[np.ndarray] = None,  # H×W float32: 이 영역은 alpha=0 강제 (얼굴 보호)
     protect_release_mask: Optional[np.ndarray] = None,
     hair_length: str = "long",
 ) -> np.ndarray:
     """
     SD 생성 이미지를 원본에 합성.
-    - hair mask 영역: SD 생성 결과
+    - hair / garment regenerate 영역: SD 생성 결과
     - 그 외 (+ protect_mask): 원본 (얼굴/배경 유지)
     """
     W, H = original_size
     hair_mask = self._resize_mask_to_shape(hair_mask, (H, W))
+    garment_mask = self._resize_mask_to_shape(garment_mask, (H, W))
     protect_mask = self._resize_mask_to_shape(protect_mask, (H, W))
     protect_release_mask = self._resize_mask_to_shape(protect_release_mask, (H, W))
     pad_l, pad_t = pad
@@ -6763,12 +6765,24 @@ def _composite(
         sigma = 4.2
     elif hair_length == "medium":
         sigma = 4.8
-    alpha = cv2.GaussianBlur(hair_mask, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    hair_alpha = cv2.GaussianBlur(hair_mask, (0, 0), sigmaX=sigma, sigmaY=sigma)
     if hair_length == "short":
-        alpha = np.clip((alpha - 0.10) / 0.90, 0.0, 1.0)
+        hair_alpha = np.clip((hair_alpha - 0.10) / 0.90, 0.0, 1.0)
     elif hair_length == "medium":
-        alpha = np.clip((alpha - 0.07) / 0.93, 0.0, 1.0)
-    alpha = np.clip(alpha, 0.0, 1.0)
+        hair_alpha = np.clip((hair_alpha - 0.07) / 0.93, 0.0, 1.0)
+    hair_alpha = np.clip(hair_alpha, 0.0, 1.0)
+
+    garment_alpha = np.zeros((H, W), dtype=np.float32)
+    if garment_mask is not None:
+        garment_alpha = cv2.GaussianBlur(
+            np.clip(garment_mask.astype(np.float32), 0.0, 1.0),
+            (0, 0),
+            sigmaX=3.2,
+            sigmaY=3.8,
+        )
+        garment_alpha = np.clip((garment_alpha - 0.04) / 0.96, 0.0, 1.0)
+
+    alpha = np.maximum(hair_alpha, garment_alpha)
 
     # 얼굴/귀/눈 등 보호 영역: alpha를 0으로 강제
     # → Gaussian blur가 얼굴 경계로 번지더라도 원본 픽셀 100% 유지

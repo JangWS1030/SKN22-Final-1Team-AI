@@ -199,6 +199,8 @@ class SDInpaintConfig:
     upper_clothes_expand_px: int = 22
     hair_overlap_expand_px: int = 18
     controlnet_use_masked_edges: bool = True
+    upper_clothes_overwrite_min_px: int = 180
+    overwrite_cloth_overlap_ratio_limit: float = 0.68
     upper_clothes_overwrite_alpha: float = 0.92
     short_upper_clothes_overwrite_alpha: float = 0.72
     medium_upper_clothes_overwrite_alpha: float = 0.82
@@ -731,10 +733,7 @@ class MirrAISDPipeline:
         effective_upper_clothes_overwrite_core_mask = np.zeros((H, W), dtype=np.float32)
         upper_clothes_overwrite_anchor_mask = np.zeros((H, W), dtype=np.float32)
         upper_clothes_overwrite_px = 0
-        use_upper_clothes_overwrite = bool(
-            self.config.enable_upper_clothes_overwrite
-            and hair_length in ("short", "medium")
-        )
+        use_upper_clothes_overwrite = bool(self.config.enable_upper_clothes_overwrite)
         overwrite_alpha = float(np.clip(self.config.upper_clothes_overwrite_alpha, 0.0, 1.0))
         if hair_length == "short":
             overwrite_alpha = min(
@@ -806,7 +805,7 @@ class MirrAISDPipeline:
                 (np.clip(upper_clothes_overwrite_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
             )
             upper_clothes_overwrite_px = int((upper_clothes_overwrite_u8 > 0).sum())
-            if upper_clothes_overwrite_px >= 180:
+            if upper_clothes_overwrite_px >= int(self.config.upper_clothes_overwrite_min_px):
                 cloth_generation_guard = np.clip(
                     cloth_generation_guard.astype(np.float32)
                     - np.clip(
@@ -2443,7 +2442,7 @@ class MirrAISDPipeline:
         # short/medium에서는 기존 long-hair 윤곽도 억제해 ControlNet이
         # 원본 긴머리 edge를 새 단발 형상으로 따라가지 않게 한다.
         canny_suppress = None
-        if hair_length in ("short", "medium"):
+        if hair_length in ("short", "medium") or use_upper_clothes_overwrite:
             canny_suppress = hair_mask_for_removal.astype(np.float32)
             if (
                 use_upper_clothes_overwrite
@@ -2588,9 +2587,21 @@ class MirrAISDPipeline:
                     composite_mask.astype(np.float32),
                     effective_upper_clothes_overwrite_core_mask.astype(np.float32),
                 ).astype(np.float32)
+            garment_composite_mask = None
+            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == hair_mask_for_sd.shape:
+                garment_composite_mask = effective_upper_clothes_overwrite_mask.astype(np.float32)
+            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape:
+                if garment_composite_mask is None:
+                    garment_composite_mask = effective_upper_clothes_overwrite_core_mask.astype(np.float32)
+                else:
+                    garment_composite_mask = np.maximum(
+                        garment_composite_mask.astype(np.float32),
+                        effective_upper_clothes_overwrite_core_mask.astype(np.float32),
+                    ).astype(np.float32)
             composited_bgr = self._composite(
                 composite_base_bgr, composite_base_rgb,
                 gen_pil, composite_mask, scale, pad, (W, H),
+                garment_mask=garment_composite_mask,
                 protect_mask=protect_mask_for_sd,   # 얼굴 영역 alpha 침범 방지
                 protect_release_mask=composite_bangs_release_mask if float(composite_bangs_release_mask.sum()) > 0.0 else None,
                 hair_length=hair_length,
@@ -6264,11 +6275,22 @@ class MirrAISDPipeline:
         overlap = float(((cloth_f > 0.5) & (hair_mask > 0.5)).sum())
         overlap_ratio = overlap / max(hair_area, 1.0)
 
-        if cloth_ratio > 0.118 or overlap_ratio > 0.34:
+        cloth_ratio_limit = 0.118
+        overlap_ratio_limit = 0.34
+        if getattr(self.config, "enable_upper_clothes_overwrite", False):
+            cloth_ratio_limit = max(cloth_ratio_limit, 0.16)
+            overlap_ratio_limit = max(
+                overlap_ratio_limit,
+                float(getattr(self.config, "overwrite_cloth_overlap_ratio_limit", 0.68)),
+            )
+
+        if cloth_ratio > cloth_ratio_limit or overlap_ratio > overlap_ratio_limit:
             logger.info(
-                "[SDPipeline] cloth mask disabled: ratio=%.4f overlap_ratio=%.4f",
+                "[SDPipeline] cloth mask disabled: ratio=%.4f overlap_ratio=%.4f limits=(%.4f, %.4f)",
                 cloth_ratio,
                 overlap_ratio,
+                cloth_ratio_limit,
+                overlap_ratio_limit,
             )
             return np.zeros((H, W), dtype=np.float32)
 
