@@ -990,7 +990,7 @@ class MirrAISDPipeline:
         below_bob_generation_block_for_post: Optional[np.ndarray] = None
         below_bob_cloth_restore_for_post: Optional[np.ndarray] = None
         shoulder_hair_forbid_for_post: Optional[np.ndarray] = None
-        residual_side_hair_lane_force_keep_for_post = np.zeros((H, W), dtype=np.float32)
+        residual_side_hair_lane_removal_for_post = np.zeros((H, W), dtype=np.float32)
         composite_bangs_release_mask = np.zeros((H, W), dtype=np.float32)
         center_chest_strand_mask = np.zeros((H, W), dtype=np.float32)
         center_chest_strand_removal_mask = np.zeros((H, W), dtype=np.float32)
@@ -1096,28 +1096,16 @@ class MirrAISDPipeline:
                         shoulder_hair_forbid_for_post.astype(np.float32),
                         shoulder_anchor_forbid.astype(np.float32),
                     ).astype(np.float32)
-            residual_side_hair_lane_force_keep_for_post = self._build_residual_side_hair_lane_force_keep_mask(
+            residual_side_hair_lane_removal_for_post = self._build_residual_side_hair_lane_removal_mask(
                 source_torso_hair_mask=source_torso_hair_mask,
                 face_bbox=face_bbox,
                 cutoff_y=cutoff_y,
                 protect_mask=protect_mask_for_sd,
             )
-            if (
-                shoulder_hair_forbid_for_post is not None
-                and shoulder_hair_forbid_for_post.shape == (H, W)
-                and residual_side_hair_lane_force_keep_for_post.shape == (H, W)
-                and float(residual_side_hair_lane_force_keep_for_post.sum()) > 0.0
-            ):
-                shoulder_hair_forbid_for_post = np.clip(
-                    shoulder_hair_forbid_for_post.astype(np.float32)
-                    - residual_side_hair_lane_force_keep_for_post.astype(np.float32) * 1.35,
-                    0.0,
-                    1.0,
-                ).astype(np.float32)
             _store_mask("pipeline_shoulder_hair_forbid_mask", shoulder_hair_forbid_for_post)
             _store_mask(
-                "pipeline_residual_side_hair_lane_force_keep_mask",
-                residual_side_hair_lane_force_keep_for_post,
+                "pipeline_residual_side_hair_lane_removal_mask",
+                residual_side_hair_lane_removal_for_post,
             )
 
             # v4 쪽이 더 안정적이었던 핵심:
@@ -1502,12 +1490,12 @@ class MirrAISDPipeline:
 
                     removal_mask = filtered_removal_u8.astype(np.float32) / 255.0
             if (
-                residual_side_hair_lane_force_keep_for_post.shape == (H, W)
-                and float(residual_side_hair_lane_force_keep_for_post.sum()) > 0.0
+                residual_side_hair_lane_removal_for_post.shape == (H, W)
+                and float(residual_side_hair_lane_removal_for_post.sum()) > 0.0
             ):
                 removal_mask = np.maximum(
                     removal_mask.astype(np.float32),
-                    residual_side_hair_lane_force_keep_for_post.astype(np.float32),
+                    residual_side_hair_lane_removal_for_post.astype(np.float32),
                 ).astype(np.float32)
             removal_mask_for_post = removal_mask.copy()
 
@@ -1723,20 +1711,6 @@ class MirrAISDPipeline:
                         1.0,
                     )
                 gen_mask = np.maximum(gen_mask.astype(np.float32), core_restore_mask).astype(np.float32)
-            if (
-                residual_side_hair_lane_force_keep_for_post.shape == (H, W)
-                and float(residual_side_hair_lane_force_keep_for_post.sum()) > 0.0
-            ):
-                lane_restore_alpha = 0.94 if hair_length == "short" else 0.82
-                gen_mask = np.maximum(
-                    gen_mask.astype(np.float32),
-                    np.clip(
-                        residual_side_hair_lane_force_keep_for_post.astype(np.float32) * lane_restore_alpha,
-                        0.0,
-                        1.0,
-                    ),
-                ).astype(np.float32)
-
             _store_mask("pipeline_short_removal_mask", removal_mask_for_post)
             _store_mask("pipeline_short_generation_seed_mask", short_generation_seed_mask_for_debug)
             _store_mask("pipeline_short_generation_mask", gen_mask)
@@ -5454,7 +5428,7 @@ class MirrAISDPipeline:
         )
         return bridge_u8.astype(np.float32) / 255.0
 
-    def _build_residual_side_hair_lane_force_keep_mask(
+    def _build_residual_side_hair_lane_removal_mask(
         self,
         *,
         source_torso_hair_mask: Optional[np.ndarray],
