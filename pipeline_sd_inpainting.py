@@ -1676,6 +1676,15 @@ class MirrAISDPipeline:
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
                     iterations=1,
                 )
+            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == (H, W):
+                overwrite_restore_mask = effective_upper_clothes_overwrite_mask.astype(np.float32)
+                if protect_mask_for_sd.shape == (H, W):
+                    overwrite_restore_mask = np.clip(
+                        overwrite_restore_mask - protect_mask_for_sd.astype(np.float32),
+                        0.0,
+                        1.0,
+                    )
+                gen_mask = np.maximum(gen_mask.astype(np.float32), overwrite_restore_mask).astype(np.float32)
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == (H, W):
                 core_restore_mask = effective_upper_clothes_overwrite_core_mask.astype(np.float32)
                 if protect_mask_for_sd.shape == (H, W):
@@ -4290,23 +4299,26 @@ class MirrAISDPipeline:
                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 23)),
             )
 
-        support_gate_u8 = amodal_base_u8.copy()
-        if int((support_gate_u8 > 0).sum()) < 80:
-            support_gate_u8 = cv2.bitwise_or(torso_u8, cloth_u8)
+        support_gate_u8 = cv2.bitwise_or(amodal_base_u8, torso_u8)
+        if int((support_gate_u8 > 0).sum()) < 80 and shoulder_anchor_mask is not None:
+            anchor_support_u8 = (
+                np.clip(shoulder_anchor_mask.astype(np.float32), 0.0, 1.0) > 0.08
+            ).astype(np.uint8) * 255
+            support_gate_u8 = cv2.bitwise_or(
+                support_gate_u8,
+                cv2.bitwise_and(anchor_support_u8, corridor_u8),
+            )
 
-        cloth_support_u8 = np.zeros((H, W), dtype=np.uint8)
-        if int((cloth_u8 > 0).sum()) > 0:
-            if int((support_gate_u8 > 0).sum()) > 0:
-                cloth_support_u8 = cv2.bitwise_and(
-                    cloth_u8,
-                    cv2.dilate(
-                        support_gate_u8,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 35)),
-                        iterations=1,
-                    ),
-                )
-            else:
-                cloth_support_u8 = cloth_u8.copy()
+        cloth_hint_u8 = np.zeros((H, W), dtype=np.uint8)
+        if int((cloth_u8 > 0).sum()) > 0 and int((support_gate_u8 > 0).sum()) > 0:
+            cloth_hint_u8 = cv2.bitwise_and(
+                cloth_u8,
+                cv2.dilate(
+                    support_gate_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 31)),
+                    iterations=1,
+                ),
+            )
 
         overlap_seed_u8 = np.zeros((H, W), dtype=np.uint8)
         if source_cloth_overlap_mask is not None:
@@ -4339,8 +4351,8 @@ class MirrAISDPipeline:
         overlap_seed_u8 = cv2.bitwise_and(overlap_seed_u8, corridor_u8)
 
         front_window_u8 = np.zeros((H, W), dtype=np.uint8)
-        front_seed_u8 = cv2.bitwise_or(cloth_support_u8, overlap_seed_u8)
-        front_seed_u8 = cv2.bitwise_or(front_seed_u8, torso_u8)
+        front_seed_u8 = cv2.bitwise_or(support_gate_u8, overlap_seed_u8)
+        front_seed_u8 = cv2.bitwise_or(front_seed_u8, cloth_hint_u8)
         anchor_u8 = np.zeros((H, W), dtype=np.uint8)
         if shoulder_anchor_mask is not None:
             anchor_u8 = (
@@ -4403,10 +4415,24 @@ class MirrAISDPipeline:
             )
             front_window_u8 = cv2.bitwise_and(front_window_u8, corridor_u8)
 
-        overwrite_u8 = cv2.bitwise_or(amodal_base_u8, cloth_support_u8)
-        overwrite_u8 = cv2.bitwise_or(overwrite_u8, torso_u8)
-        overwrite_u8 = cv2.bitwise_or(overwrite_u8, overlap_seed_u8)
+        front_fill_gate_u8 = cv2.bitwise_or(support_gate_u8, anchor_u8)
+        if int((front_fill_gate_u8 > 0).sum()) < 80:
+            front_fill_gate_u8 = front_seed_u8.copy()
+        overwrite_u8 = cv2.bitwise_or(front_fill_gate_u8, overlap_seed_u8)
+        overwrite_u8 = cv2.bitwise_or(overwrite_u8, cloth_hint_u8)
         overwrite_u8 = cv2.bitwise_and(overwrite_u8, corridor_u8)
+        if int((front_window_u8 > 0).sum()) > 0:
+            overwrite_u8 = cv2.bitwise_or(
+                overwrite_u8,
+                cv2.bitwise_and(
+                    front_window_u8,
+                    cv2.dilate(
+                        front_fill_gate_u8,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 49)),
+                        iterations=1,
+                    ),
+                ),
+            )
         overwrite_u8 = cv2.morphologyEx(
             overwrite_u8,
             cv2.MORPH_CLOSE,
@@ -4420,6 +4446,7 @@ class MirrAISDPipeline:
         if int((front_window_u8 > 0).sum()) > 0:
             overwrite_u8 = cv2.bitwise_and(overwrite_u8, front_window_u8)
             overwrite_u8 = cv2.bitwise_or(overwrite_u8, cv2.bitwise_and(overlap_seed_u8, front_window_u8))
+            overwrite_u8 = cv2.bitwise_or(overwrite_u8, cv2.bitwise_and(front_fill_gate_u8, front_window_u8))
             overwrite_u8 = cv2.morphologyEx(
                 overwrite_u8,
                 cv2.MORPH_CLOSE,
