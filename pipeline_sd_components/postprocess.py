@@ -1486,6 +1486,124 @@ def _build_short_cloth_only_second_pass_mask(
     )
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
+def _build_source_conditioned_cloth_base(
+    self,
+    *,
+    current_rgb: np.ndarray,
+    source_rgb: np.ndarray,
+    fill_mask: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    hair_length: str = "",
+) -> np.ndarray:
+    H, W = current_rgb.shape[:2]
+    if source_rgb.shape[:2] != (H, W) or fill_mask.shape != (H, W):
+        return current_rgb
+
+    cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return current_rgb
+
+    cloth_fill_mask = np.clip(
+        fill_mask.astype(np.float32)
+        * (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.float32),
+        0.0,
+        1.0,
+    )
+    cloth_fill_u8 = (cloth_fill_mask > 0.08).astype(np.uint8) * 255
+    if int((cloth_fill_u8 > 0).sum()) < 24:
+        return current_rgb
+
+    reference_fill_u8 = cv2.dilate(
+        cloth_fill_u8,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (11, 17) if str(hair_length or "").strip().lower() == "short" else (15, 25),
+        ),
+        iterations=1,
+    )
+    wide_cloth_u8 = cv2.dilate(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+        iterations=1,
+    )
+    reference_fill_u8 = cv2.bitwise_and(reference_fill_u8, wide_cloth_u8)
+    if int((reference_fill_u8 > 0).sum()) < 32:
+        return current_rgb
+
+    reference_fill_mask = reference_fill_u8.astype(np.float32) / 255.0
+    reference_fill_rgb = self._restore_cloth_overlap_from_source(
+        source_rgb=source_rgb,
+        current_rgb=source_rgb,
+        restore_mask=reference_fill_mask,
+        final_hair_mask=None,
+        tone_reference_rgb=source_rgb,
+        tone_reference_mask=cloth_mask,
+    )
+
+    source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    source_sat = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+    visible_cloth_u8 = cv2.bitwise_and(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        cv2.bitwise_not(
+            cv2.dilate(
+                cloth_fill_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19)),
+                iterations=1,
+            )
+        ),
+    )
+    if int((visible_cloth_u8 > 0).sum()) >= 80:
+        plain_gray = float(np.median(source_gray[visible_cloth_u8 > 0]))
+        plain_sat = float(np.median(source_sat[visible_cloth_u8 > 0]))
+        if plain_gray >= 168.0 and plain_sat <= 84.0:
+            plain_fill_rgb = source_rgb.copy()
+            plain_fill_color = np.median(source_rgb[visible_cloth_u8 > 0], axis=0).astype(np.uint8)
+            plain_fill_rgb[reference_fill_u8 > 0] = plain_fill_color
+            plain_fill_rgb = self._restore_reference_region(
+                reference_fill_rgb,
+                plain_fill_rgb,
+                reference_fill_mask,
+                strength=0.98,
+            )
+            reference_fill_rgb = self._blend_neighbor_cloth_tone(
+                plain_fill_rgb,
+                reference_fill_mask,
+                cloth_mask=cloth_mask,
+                reference_rgb=source_rgb,
+            )
+            reference_fill_rgb = self._cv2_refine_cloth_region(
+                reference_fill_rgb,
+                reference_fill_mask,
+                reference_rgb=source_rgb,
+                reference_mask=cloth_mask,
+            )
+
+    conditioned = self._restore_reference_region(
+        current_rgb,
+        reference_fill_rgb,
+        cloth_fill_mask,
+        strength=0.985 if str(hair_length or "").strip().lower() == "short" else 0.95,
+    )
+    conditioned = self._overlay_reference_cloth_fill(
+        conditioned,
+        reference_fill_rgb,
+        cloth_fill_mask,
+        cloth_mask=cloth_mask,
+    )
+    conditioned = self._blend_neighbor_cloth_tone(
+        conditioned,
+        cloth_fill_mask,
+        cloth_mask=cloth_mask,
+        reference_rgb=reference_fill_rgb,
+    )
+    conditioned = self._cv2_refine_cloth_region(
+        conditioned,
+        cloth_fill_mask,
+        reference_rgb=reference_fill_rgb,
+        reference_mask=cloth_mask,
+    )
+    return conditioned
+
 def _stabilize_under_jaw_cloth_fill(
     self,
     current_rgb: np.ndarray,
@@ -7921,6 +8039,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._build_post_cloth_refine_mask = _build_post_cloth_refine_mask
     cls._build_under_jaw_cloth_refine_mask = _build_under_jaw_cloth_refine_mask
     cls._build_short_cloth_only_second_pass_mask = _build_short_cloth_only_second_pass_mask
+    cls._build_source_conditioned_cloth_base = _build_source_conditioned_cloth_base
     cls._stabilize_under_jaw_cloth_fill = _stabilize_under_jaw_cloth_fill
     cls._build_generation_protect_mask = _build_generation_protect_mask
     cls._build_removal_protect_mask = _build_removal_protect_mask

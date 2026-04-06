@@ -4526,8 +4526,17 @@ class MirrAISDPipeline:
                     short_under_jaw_second_pass_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                     under_jaw_cloth_refine_px = int((under_jaw_cloth_refine_u8 > 0).sum())
                     if under_jaw_cloth_refine_px >= 140:
+                        under_jaw_base_rgb = final_rgb
+                        if hair_length == "short":
+                            under_jaw_base_rgb = self._build_source_conditioned_cloth_base(
+                                current_rgb=final_rgb,
+                                source_rgb=img_rgb,
+                                fill_mask=under_jaw_cloth_refine_mask,
+                                cloth_mask=cloth_reference_mask,
+                                hair_length=hair_length,
+                            )
                         final_rgb = self._sd_refine_removed_region(
-                            base_rgb=final_rgb,
+                            base_rgb=under_jaw_base_rgb,
                             removal_mask=under_jaw_cloth_refine_mask,
                             face_bbox=face_bbox,
                             face_crop_pil=face_crop_pil,
@@ -4578,8 +4587,15 @@ class MirrAISDPipeline:
                             )
                             short_under_jaw_second_pass_px = int((short_under_jaw_second_pass_u8 > 0).sum())
                             if short_under_jaw_second_pass_px >= 48:
+                                short_under_jaw_second_pass_base_rgb = self._build_source_conditioned_cloth_base(
+                                    current_rgb=final_rgb,
+                                    source_rgb=img_rgb,
+                                    fill_mask=short_under_jaw_second_pass_mask,
+                                    cloth_mask=cloth_reference_mask,
+                                    hair_length=hair_length,
+                                )
                                 final_rgb = self._sd_refine_removed_region(
-                                    base_rgb=final_rgb,
+                                    base_rgb=short_under_jaw_second_pass_base_rgb,
                                     removal_mask=short_under_jaw_second_pass_mask,
                                     face_bbox=face_bbox,
                                     face_crop_pil=face_crop_pil,
