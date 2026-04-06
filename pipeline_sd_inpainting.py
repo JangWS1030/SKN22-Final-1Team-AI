@@ -439,6 +439,309 @@ class MirrAISDPipeline:
                 return
             debug_images_common[name] = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2BGR)
 
+        def _make_rect(
+            x1: float,
+            y1: float,
+            x2: float,
+            y2: float,
+            *,
+            image_shape: Optional[Tuple[int, int]] = None,
+        ) -> Optional[Tuple[int, int, int, int]]:
+            target_h, target_w = image_shape if image_shape is not None else (H, W)
+            rx1 = max(0, min(target_w, int(round(x1))))
+            ry1 = max(0, min(target_h, int(round(y1))))
+            rx2 = max(0, min(target_w, int(round(x2))))
+            ry2 = max(0, min(target_h, int(round(y2))))
+            if rx2 <= rx1 or ry2 <= ry1:
+                return None
+            return (rx1, ry1, rx2, ry2)
+
+        def _rect_area(rect: Optional[Tuple[int, int, int, int]]) -> int:
+            if rect is None:
+                return 0
+            x1, y1, x2, y2 = rect
+            return max(0, x2 - x1) * max(0, y2 - y1)
+
+        def _build_diagnostic_rois(
+            bbox: Tuple[int, int, int, int],
+            *,
+            image_shape: Optional[Tuple[int, int]] = None,
+        ) -> Dict[str, Optional[Tuple[int, int, int, int]]]:
+            target_h, target_w = image_shape if image_shape is not None else (H, W)
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+            face_w = max(x2 - x1, 1)
+            face_h = max(y2 - y1, 1)
+            center_x = 0.5 * (x1 + x2)
+            rois: Dict[str, Optional[Tuple[int, int, int, int]]] = {
+                "torso_front": _make_rect(
+                    x1 - face_w * 0.98,
+                    y2 - face_h * 0.04,
+                    x2 + face_w * 0.98,
+                    y2 + face_h * 1.92,
+                    image_shape=(target_h, target_w),
+                ),
+                "chest_center": _make_rect(
+                    center_x - face_w * 0.34,
+                    y2 + face_h * 0.18,
+                    center_x + face_w * 0.34,
+                    y2 + face_h * 1.06,
+                    image_shape=(target_h, target_w),
+                ),
+                "left_side": _make_rect(
+                    x1 - face_w * 0.92,
+                    y2 + face_h * 0.08,
+                    x1 + face_w * 0.20,
+                    y2 + face_h * 1.24,
+                    image_shape=(target_h, target_w),
+                ),
+                "right_side": _make_rect(
+                    x2 - face_w * 0.20,
+                    y2 + face_h * 0.08,
+                    x2 + face_w * 0.92,
+                    y2 + face_h * 1.24,
+                    image_shape=(target_h, target_w),
+                ),
+                "neckline": _make_rect(
+                    center_x - face_w * 0.46,
+                    y2 - face_h * 0.10,
+                    center_x + face_w * 0.46,
+                    y2 + face_h * 0.44,
+                    image_shape=(target_h, target_w),
+                ),
+            }
+            rois["full_image"] = _make_rect(0, 0, target_w, target_h, image_shape=(target_h, target_w))
+            return rois
+
+        def _extract_bbox_from_mask(mask: Optional[np.ndarray], threshold: float = 0.08) -> Optional[List[int]]:
+            if mask is None:
+                return None
+            mask_rs = self._resize_mask_to_shape(mask, (H, W))
+            if mask_rs is None:
+                return None
+            mask_bin = np.clip(mask_rs.astype(np.float32), 0.0, 1.0) > threshold
+            if not bool(mask_bin.any()):
+                return None
+            ys, xs = np.where(mask_bin)
+            return [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+
+        def _mask_stats(
+            name: str,
+            mask: Optional[np.ndarray],
+            torso_rect: Optional[Tuple[int, int, int, int]],
+        ) -> None:
+            if debug_data_common is None or mask is None:
+                return
+            mask_rs = self._resize_mask_to_shape(mask, (H, W))
+            if mask_rs is None:
+                return
+            mask_f = np.clip(mask_rs.astype(np.float32), 0.0, 1.0)
+            mask_bin = mask_f > 0.08
+            nonzero_count = int(mask_bin.sum())
+            image_area = max(float(H * W), 1.0)
+            torso_nonzero = 0
+            torso_ratio = 0.0
+            torso_area = _rect_area(torso_rect)
+            if torso_rect is not None and torso_area > 0:
+                tx1, ty1, tx2, ty2 = torso_rect
+                torso_region = mask_bin[ty1:ty2, tx1:tx2]
+                torso_nonzero = int(torso_region.sum())
+                torso_ratio = float(torso_nonzero) / max(float(torso_area), 1.0)
+            stats = {
+                "sum": float(mask_f.sum()),
+                "nonzero_pixel_count": nonzero_count,
+                "bbox": _extract_bbox_from_mask(mask_f),
+                "torso_roi_nonzero_pixel_count": torso_nonzero,
+                "torso_roi_occupancy": torso_ratio,
+                "torso_roi_area": torso_area,
+                "image_area_ratio": float(nonzero_count) / image_area,
+            }
+            diag = debug_data_common.setdefault("diagnostics", {})
+            mask_stats = diag.setdefault("mask_stats", {})
+            mask_stats[name] = stats
+            logger.info(
+                "[SDPipeline][diag][mask] %s sum=%.2f nonzero=%d bbox=%s torso_occ=%.4f area_ratio=%.4f",
+                name,
+                stats["sum"],
+                stats["nonzero_pixel_count"],
+                stats["bbox"],
+                stats["torso_roi_occupancy"],
+                stats["image_area_ratio"],
+            )
+
+        def _overlay_mask_rgb(
+            base_rgb: np.ndarray,
+            mask: Optional[np.ndarray],
+            color: Tuple[int, int, int],
+            *,
+            alpha: float = 0.46,
+        ) -> np.ndarray:
+            out = base_rgb.astype(np.float32).copy()
+            if mask is None:
+                return base_rgb.copy()
+            mask_rs = self._resize_mask_to_shape(mask, base_rgb.shape[:2])
+            if mask_rs is None:
+                return base_rgb.copy()
+            mask_f = np.clip(mask_rs.astype(np.float32), 0.0, 1.0)[..., np.newaxis]
+            color_arr = np.array(color, dtype=np.float32).reshape(1, 1, 3)
+            out = out * (1.0 - mask_f * alpha) + color_arr * (mask_f * alpha)
+            return np.clip(out, 0, 255).astype(np.uint8)
+
+        def _overlay_edges_rgb(
+            base_rgb: np.ndarray,
+            edge_img: Optional[np.ndarray],
+            color: Tuple[int, int, int],
+            *,
+            alpha: float = 0.74,
+        ) -> np.ndarray:
+            if edge_img is None:
+                return base_rgb.copy()
+            if edge_img.ndim == 3:
+                gray = cv2.cvtColor(edge_img, cv2.COLOR_RGB2GRAY)
+            else:
+                gray = edge_img
+            edge_f = (gray.astype(np.float32) / 255.0)[..., np.newaxis]
+            out = base_rgb.astype(np.float32).copy()
+            color_arr = np.array(color, dtype=np.float32).reshape(1, 1, 3)
+            out = out * (1.0 - edge_f * alpha) + color_arr * (edge_f * alpha)
+            return np.clip(out, 0, 255).astype(np.uint8)
+
+        def _store_roi_crops(stage_name: str, rgb_img: Optional[np.ndarray]) -> None:
+            if debug_images_common is None or rgb_img is None:
+                return
+            image_h, image_w = rgb_img.shape[:2]
+            roi_rects = _build_diagnostic_rois(face_bbox, image_shape=(image_h, image_w))
+            for roi_name, rect in roi_rects.items():
+                if roi_name == "full_image" or rect is None:
+                    continue
+                x1, y1, x2, y2 = rect
+                crop = rgb_img[y1:y2, x1:x2]
+                if crop.size == 0:
+                    continue
+                debug_images_common[f"diagnostic_{stage_name}_{roi_name}"] = cv2.cvtColor(
+                    crop,
+                    cv2.COLOR_RGB2BGR,
+                )
+
+        def _project_generated_to_original(
+            gen_pil: Image.Image,
+            current_scale: float,
+            current_pad: Tuple[int, int],
+            original_size: Tuple[int, int],
+        ) -> np.ndarray:
+            out_w, out_h = original_size
+            pad_l, pad_t = current_pad
+            new_w = int(out_w * current_scale)
+            new_h = int(out_h * current_scale)
+            gen_np = np.array(gen_pil)
+            gen_cropped = gen_np[pad_t:pad_t + new_h, pad_l:pad_l + new_w]
+            return cv2.resize(gen_cropped, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+
+        def _mean_abs_diff(
+            rgb_a: Optional[np.ndarray],
+            rgb_b: Optional[np.ndarray],
+            rect: Optional[Tuple[int, int, int, int]] = None,
+        ) -> float:
+            if rgb_a is None or rgb_b is None:
+                return 0.0
+            if rgb_a.shape != rgb_b.shape:
+                return 0.0
+            arr_a = rgb_a.astype(np.float32)
+            arr_b = rgb_b.astype(np.float32)
+            if rect is not None:
+                x1, y1, x2, y2 = rect
+                arr_a = arr_a[y1:y2, x1:x2]
+                arr_b = arr_b[y1:y2, x1:x2]
+            if arr_a.size == 0 or arr_b.size == 0:
+                return 0.0
+            return float(np.abs(arr_a - arr_b).mean())
+
+        def _source_similarity_ratio(
+            source_rgb: Optional[np.ndarray],
+            target_rgb: Optional[np.ndarray],
+            rect: Optional[Tuple[int, int, int, int]] = None,
+            *,
+            threshold: float = 12.0,
+        ) -> float:
+            if source_rgb is None or target_rgb is None:
+                return 0.0
+            if source_rgb.shape != target_rgb.shape:
+                return 0.0
+            src = source_rgb.astype(np.float32)
+            tgt = target_rgb.astype(np.float32)
+            if rect is not None:
+                x1, y1, x2, y2 = rect
+                src = src[y1:y2, x1:x2]
+                tgt = tgt[y1:y2, x1:x2]
+            if src.size == 0 or tgt.size == 0:
+                return 0.0
+            per_pixel_diff = np.abs(src - tgt).mean(axis=2)
+            return float((per_pixel_diff <= threshold).mean())
+
+        def _build_boundary_band(mask: Optional[np.ndarray], shape: Tuple[int, int]) -> np.ndarray:
+            mask_rs = self._resize_mask_to_shape(mask, shape)
+            if mask_rs is None:
+                return np.zeros(shape, dtype=np.uint8)
+            mask_bin = (np.clip(mask_rs.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
+            if int(mask_bin.sum()) == 0:
+                return np.zeros(shape, dtype=np.uint8)
+            band_outer = cv2.dilate(
+                mask_bin,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+                iterations=1,
+            )
+            band_inner = cv2.erode(
+                mask_bin,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+                iterations=1,
+            )
+            return cv2.subtract(band_outer, band_inner).astype(np.uint8) * 255
+
+        def _edge_stats(
+            name: str,
+            edge_img: Optional[np.ndarray],
+            hair_roi_mask: Optional[np.ndarray],
+            roi_rects: Dict[str, Optional[Tuple[int, int, int, int]]],
+        ) -> None:
+            if debug_data_common is None or edge_img is None:
+                return
+            if edge_img.ndim == 3:
+                gray = cv2.cvtColor(edge_img, cv2.COLOR_RGB2GRAY)
+            else:
+                gray = edge_img
+            edge_f = gray.astype(np.float32)
+            edge_nonzero = gray > 0
+            hair_mask_rs = self._resize_mask_to_shape(hair_roi_mask, gray.shape[:2])
+            hair_bin = (
+                np.clip(hair_mask_rs.astype(np.float32), 0.0, 1.0) > 0.08
+                if hair_mask_rs is not None
+                else np.zeros(gray.shape[:2], dtype=bool)
+            )
+            stats: Dict[str, Any] = {
+                "total_edge_sum": float(edge_f.sum()),
+                "total_edge_nonzero_count": int(edge_nonzero.sum()),
+                "hair_roi_edge_sum": float(edge_f[hair_bin].sum()) if bool(hair_bin.any()) else 0.0,
+                "hair_roi_edge_nonzero_count": int(edge_nonzero[hair_bin].sum()) if bool(hair_bin.any()) else 0,
+            }
+            for roi_name, rect in roi_rects.items():
+                if roi_name == "full_image" or rect is None:
+                    continue
+                x1, y1, x2, y2 = rect
+                roi = edge_f[y1:y2, x1:x2]
+                roi_nz = edge_nonzero[y1:y2, x1:x2]
+                stats[f"{roi_name}_edge_sum"] = float(roi.sum()) if roi.size else 0.0
+                stats[f"{roi_name}_edge_nonzero_count"] = int(roi_nz.sum()) if roi_nz.size else 0
+            diag = debug_data_common.setdefault("diagnostics", {})
+            conditioning_stats = diag.setdefault("conditioning_stats", {})
+            conditioning_stats[name] = stats
+            logger.info(
+                "[SDPipeline][diag][edge] %s hair=%.2f chest=%.2f left=%.2f right=%.2f",
+                name,
+                stats.get("hair_roi_edge_sum", 0.0),
+                stats.get("chest_center_edge_sum", 0.0),
+                stats.get("left_side_edge_sum", 0.0),
+                stats.get("right_side_edge_sum", 0.0),
+            )
+
         if debug_images_common is not None:
             debug_images_common["pipeline_input_image"] = image_bgr.copy()
 
@@ -465,6 +768,14 @@ class MirrAISDPipeline:
                         k: v for k, v in standardized_meta.items() if k != "image_rgb"
                     }
         logger.info(f"[SDPipeline] 얼굴 검출: {face_bbox}")
+        diagnostic_rois = _build_diagnostic_rois(face_bbox)
+        if debug_data_common is not None:
+            debug_data_common.setdefault("diagnostics", {})
+            debug_data_common["diagnostics"]["rois"] = {
+                key: list(value) if value is not None else None
+                for key, value in diagnostic_rois.items()
+                if key != "full_image"
+            }
         landmark_obs = self._detect_landmark_data(img_rgb, face_bbox)
         landmark_face_mask = landmark_obs.get("face_mask")
 
@@ -2479,6 +2790,55 @@ class MirrAISDPipeline:
 
         _store_mask("sd_inpaint_mask", hair_mask_for_sd)
         _store_rgb("sd_input_rgb", img_rgb_for_sd)
+        if debug_data_common is not None:
+            torso_rect = diagnostic_rois.get("torso_front")
+            _mask_stats("guard_release", cloth_generation_guard_release_mask, torso_rect)
+            _mask_stats("cloth_guard", cloth_generation_guard_mask, torso_rect)
+            _mask_stats("overwrite_mask", upper_clothes_overwrite_mask, torso_rect)
+            _mask_stats("overwrite_effective", effective_upper_clothes_overwrite_mask, torso_rect)
+            _mask_stats("overwrite_core", effective_upper_clothes_overwrite_core_mask, torso_rect)
+            _mask_stats("garment_prepass", source_garment_prepass_mask, torso_rect)
+            _mask_stats("short_repaint_mask", short_upper_body_repaint_mask, torso_rect)
+            _mask_stats("final_inpaint_mask", hair_mask_for_sd, torso_rect)
+            diag = debug_data_common.setdefault("diagnostics", {})
+            mask_stats = diag.setdefault("mask_stats", {})
+            guard_release_sum = float(mask_stats.get("guard_release", {}).get("sum", 0.0))
+            cloth_guard_sum = float(mask_stats.get("cloth_guard", {}).get("sum", 0.0))
+            overwrite_effective_sum = float(mask_stats.get("overwrite_effective", {}).get("sum", 0.0))
+            overwrite_core_sum = float(mask_stats.get("overwrite_core", {}).get("sum", 0.0))
+            final_inpaint_sum = float(mask_stats.get("final_inpaint_mask", {}).get("sum", 0.0))
+            torso_roi_area = float(mask_stats.get("final_inpaint_mask", {}).get("torso_roi_area", 0.0))
+            diag["mask_ratios"] = {
+                "cloth_guard_to_guard_release": (
+                    cloth_guard_sum / guard_release_sum if guard_release_sum > 1e-6 else 0.0
+                ),
+                "overwrite_core_to_effective": (
+                    overwrite_core_sum / overwrite_effective_sum if overwrite_effective_sum > 1e-6 else 0.0
+                ),
+                "final_inpaint_sum_to_torso_roi_area": (
+                    final_inpaint_sum / torso_roi_area if torso_roi_area > 1e-6 else 0.0
+                ),
+            }
+            logger.info(
+                "[SDPipeline][diag][mask-ratio] cloth_guard/release=%.4f overwrite_core/effective=%.4f final_inpaint/torso=%.4f",
+                diag["mask_ratios"]["cloth_guard_to_guard_release"],
+                diag["mask_ratios"]["overwrite_core_to_effective"],
+                diag["mask_ratios"]["final_inpaint_sum_to_torso_roi_area"],
+            )
+        if debug_images_common is not None:
+            debug_images_common["pipeline_source_with_final_inpaint_mask_overlay"] = cv2.cvtColor(
+                _overlay_mask_rgb(img_rgb_for_sd, hair_mask_for_sd, (255, 64, 64), alpha=0.48),
+                cv2.COLOR_RGB2BGR,
+            )
+            debug_images_common["pipeline_source_with_cloth_guard_overlay"] = cv2.cvtColor(
+                _overlay_mask_rgb(img_rgb_for_sd, cloth_generation_guard_mask, (64, 120, 255), alpha=0.46),
+                cv2.COLOR_RGB2BGR,
+            )
+            debug_images_common["pipeline_source_with_guard_release_overlay"] = cv2.cvtColor(
+                _overlay_mask_rgb(img_rgb_for_sd, cloth_generation_guard_release_mask, (64, 220, 96), alpha=0.40),
+                cv2.COLOR_RGB2BGR,
+            )
+            _store_roi_crops("source", img_rgb_for_sd)
 
         # ── Step 4: SD 입력 준비 ─────────────────────────────────────────────
         img_pil = Image.fromarray(img_rgb_cleaned)
@@ -2522,9 +2882,11 @@ class MirrAISDPipeline:
                         canny_suppress,
                         self._dilate_mask_with_px(lower_tail_support_mask.astype(np.float32), 21),
                     )
+        sd_input_debug: Optional[Dict[str, np.ndarray]] = {} if return_intermediates else None
         img_512, mask_512, canny_512, scale, pad = self._prepare_sd_inputs(
             img_rgb_for_sd, hair_mask_for_sd,
             canny_suppress_mask=canny_suppress,
+            debug_outputs=sd_input_debug,
         )
         if debug_images_common is not None:
             debug_images_common["sd_input_512"] = cv2.cvtColor(
@@ -2536,9 +2898,91 @@ class MirrAISDPipeline:
             debug_images_common["controlnet_canny_512"] = cv2.cvtColor(
                 np.array(canny_512), cv2.COLOR_RGB2BGR
             )
+            if isinstance(sd_input_debug, dict):
+                if isinstance(sd_input_debug.get("source_canny_raw"), np.ndarray):
+                    debug_images_common["controlnet_canny_source_raw"] = cv2.cvtColor(
+                        sd_input_debug["source_canny_raw"],
+                        cv2.COLOR_GRAY2BGR,
+                    )
+                if isinstance(sd_input_debug.get("source_canny_suppressed"), np.ndarray):
+                    debug_images_common["controlnet_canny_source_suppressed"] = cv2.cvtColor(
+                        sd_input_debug["source_canny_suppressed"],
+                        cv2.COLOR_GRAY2BGR,
+                    )
+                    debug_images_common["pipeline_source_with_canny_overlay"] = cv2.cvtColor(
+                        _overlay_edges_rgb(
+                            img_rgb_for_sd,
+                            sd_input_debug["source_canny_suppressed"],
+                            (255, 230, 0),
+                            alpha=0.82,
+                        ),
+                        cv2.COLOR_RGB2BGR,
+                    )
+                if isinstance(sd_input_debug.get("source_canny_suppress_mask"), np.ndarray):
+                    debug_images_common["controlnet_canny_suppress_mask_source"] = cv2.cvtColor(
+                        sd_input_debug["source_canny_suppress_mask"],
+                        cv2.COLOR_GRAY2BGR,
+                    )
+                if isinstance(sd_input_debug.get("control_canny_raw_512"), np.ndarray):
+                    debug_images_common["controlnet_canny_raw_512"] = cv2.cvtColor(
+                        sd_input_debug["control_canny_raw_512"],
+                        cv2.COLOR_GRAY2BGR,
+                    )
+                if isinstance(sd_input_debug.get("control_canny_suppress_mask_512"), np.ndarray):
+                    debug_images_common["controlnet_canny_suppress_mask_512"] = cv2.cvtColor(
+                        sd_input_debug["control_canny_suppress_mask_512"],
+                        cv2.COLOR_GRAY2BGR,
+                    )
+        if isinstance(sd_input_debug, dict):
+            _edge_stats(
+                "source_canny_raw",
+                sd_input_debug.get("source_canny_raw"),
+                hair_mask_for_removal,
+                diagnostic_rois,
+            )
+            _edge_stats(
+                "source_canny_suppressed",
+                sd_input_debug.get("source_canny_suppressed"),
+                hair_mask_for_removal,
+                diagnostic_rois,
+            )
+            if debug_data_common is not None:
+                conditioning = debug_data_common.setdefault("diagnostics", {}).setdefault("conditioning_ratios", {})
+                raw_stats = debug_data_common["diagnostics"].get("conditioning_stats", {}).get("source_canny_raw", {})
+                suppressed_stats = debug_data_common["diagnostics"].get("conditioning_stats", {}).get(
+                    "source_canny_suppressed", {}
+                )
+                conditioning["hair_edge_retention_ratio"] = (
+                    float(suppressed_stats.get("hair_roi_edge_sum", 0.0))
+                    / max(float(raw_stats.get("hair_roi_edge_sum", 0.0)), 1e-6)
+                )
+                conditioning["chest_edge_retention_ratio"] = (
+                    float(suppressed_stats.get("chest_center_edge_sum", 0.0))
+                    / max(float(raw_stats.get("chest_center_edge_sum", 0.0)), 1e-6)
+                )
+                conditioning["left_side_edge_retention_ratio"] = (
+                    float(suppressed_stats.get("left_side_edge_sum", 0.0))
+                    / max(float(raw_stats.get("left_side_edge_sum", 0.0)), 1e-6)
+                )
+                conditioning["right_side_edge_retention_ratio"] = (
+                    float(suppressed_stats.get("right_side_edge_sum", 0.0))
+                    / max(float(raw_stats.get("right_side_edge_sum", 0.0)), 1e-6)
+                )
+                logger.info(
+                    "[SDPipeline][diag][edge-ratio] hair=%.4f chest=%.4f left=%.4f right=%.4f",
+                    conditioning["hair_edge_retention_ratio"],
+                    conditioning["chest_edge_retention_ratio"],
+                    conditioning["left_side_edge_retention_ratio"],
+                    conditioning["right_side_edge_retention_ratio"],
+                )
 
         # ── Step 5: 얼굴 crop (IP-Adapter) ───────────────────────────────────
         face_crop_pil = self._crop_face(img_pil, face_bbox)
+        if debug_images_common is not None:
+            debug_images_common["ip_adapter_face_crop"] = cv2.cvtColor(
+                np.array(face_crop_pil),
+                cv2.COLOR_RGB2BGR,
+            )
 
         source_garment_prompt_hints: Dict[str, Any] = {}
         source_garment_prompt_support_mask = np.zeros((H, W), dtype=np.float32)
@@ -2602,6 +3046,8 @@ class MirrAISDPipeline:
         # 전략 2는 원본 위에 short 생성물을 합성한 뒤, cutoff 아래 잔여 긴머리만 정리한다.
         composite_base_rgb = img_rgb_cleaned
         composite_base_bgr = cv2.cvtColor(composite_base_rgb, cv2.COLOR_RGB2BGR)
+        if debug_images_common is not None:
+            debug_images_common["pipeline_composite_base_rgb"] = composite_base_bgr.copy()
         male_medium_source_profile: Optional[Dict[str, float]] = None
         if hair_length == "medium" and subject_gender_mode == "male":
             male_medium_source_profile = self._estimate_hair_shape_profile(
@@ -2619,6 +3065,7 @@ class MirrAISDPipeline:
                 int(seed),
             )
             gen_preview_bgr = cv2.cvtColor(np.array(gen_pil), cv2.COLOR_RGB2BGR)
+            generated_resized_rgb = _project_generated_to_original(gen_pil, scale, pad, (W, H))
             composite_mask = composite_hair_mask.astype(np.float32)
             garment_composite_mask = None
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape:
@@ -2647,6 +3094,7 @@ class MirrAISDPipeline:
                 protect_release_mask=composite_bangs_release_mask if float(composite_bangs_release_mask.sum()) > 0.0 else None,
                 hair_length=hair_length,
             )
+            composite_pre_cleanup_bgr = composited_bgr.copy()
 
             if (
                 hair_length in ("short", "medium")
@@ -2751,6 +3199,14 @@ class MirrAISDPipeline:
                 "seed": seed,
                 "image_bgr": composited_bgr,
                 "preview_bgr": gen_preview_bgr,
+                "generated_resized_rgb": generated_resized_rgb,
+                "composite_pre_cleanup_bgr": composite_pre_cleanup_bgr,
+                "composite_mask": composite_mask.astype(np.float32),
+                "garment_composite_mask": (
+                    garment_composite_mask.astype(np.float32)
+                    if isinstance(garment_composite_mask, np.ndarray)
+                    else None
+                ),
                 "color_distance": color_distance,
                 "color_score": color_score,
                 "tail_penalty": tail_penalty,
@@ -2822,6 +3278,31 @@ class MirrAISDPipeline:
         for rank, cand in enumerate(candidates[:requested_top_k]):
             if debug_images_common is not None and rank == 0:
                 debug_images_common["sd_generated_rank0_512"] = cand["preview_bgr"]
+                if isinstance(cand.get("generated_resized_rgb"), np.ndarray):
+                    debug_images_common["pipeline_generated_rank0_resized_rgb"] = cv2.cvtColor(
+                        cand["generated_resized_rgb"],
+                        cv2.COLOR_RGB2BGR,
+                    )
+                    _store_roi_crops("generated_resized", cand["generated_resized_rgb"])
+                if isinstance(cand.get("composite_pre_cleanup_bgr"), np.ndarray):
+                    debug_images_common["pipeline_composite_rank0_pre_cleanup"] = cand["composite_pre_cleanup_bgr"].copy()
+                    _store_roi_crops(
+                        "composite_pre_cleanup",
+                        cv2.cvtColor(cand["composite_pre_cleanup_bgr"], cv2.COLOR_BGR2RGB),
+                    )
+                if isinstance(cand.get("composite_mask"), np.ndarray):
+                    debug_images_common["pipeline_composite_mask_rank0"] = cv2.cvtColor(
+                        ((np.clip(cand["composite_mask"].astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255),
+                        cv2.COLOR_GRAY2BGR,
+                    )
+                if isinstance(cand.get("garment_composite_mask"), np.ndarray):
+                    debug_images_common["pipeline_garment_composite_mask_rank0"] = cv2.cvtColor(
+                        (
+                            (np.clip(cand["garment_composite_mask"].astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
+                            * 255
+                        ),
+                        cv2.COLOR_GRAY2BGR,
+                    )
             final_bgr = cand["image_bgr"]
             if (
                 self.config.enable_post_cloth_refine
@@ -3795,6 +4276,9 @@ class MirrAISDPipeline:
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                 except Exception as e:
                     logger.warning(f"[SDPipeline] controlnet garment repaint failed (ignored): {e}")
+            if debug_images_common is not None and rank == 0:
+                debug_images_common["pipeline_cleanup_rank0_pre_eye_restore"] = final_bgr.copy()
+                _store_roi_crops("cleanup_post", cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB))
             try:
                 final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                 final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
@@ -3829,6 +4313,77 @@ class MirrAISDPipeline:
                         )
             except Exception as e:
                 logger.warning(f"[SDPipeline] eye region restore failed (ignored): {e}")
+            if debug_images_common is not None and rank == 0:
+                debug_images_common["pipeline_final_result_rank0"] = final_bgr.copy()
+                _store_roi_crops("final_result", cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB))
+            if debug_data_common is not None and rank == 0:
+                final_rgb_for_diag = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
+                generated_resized_rgb = cand.get("generated_resized_rgb")
+                composite_pre_cleanup_bgr = cand.get("composite_pre_cleanup_bgr")
+                composite_pre_cleanup_rgb = (
+                    cv2.cvtColor(composite_pre_cleanup_bgr, cv2.COLOR_BGR2RGB)
+                    if isinstance(composite_pre_cleanup_bgr, np.ndarray)
+                    else None
+                )
+                composite_mask_for_diag = cand.get("composite_mask")
+                boundary_band = _build_boundary_band(composite_mask_for_diag, (H, W))
+                if debug_images_common is not None:
+                    debug_images_common["pipeline_composite_boundary_band"] = cv2.cvtColor(
+                        boundary_band,
+                        cv2.COLOR_GRAY2BGR,
+                    )
+                diag = debug_data_common.setdefault("diagnostics", {})
+                stage_diffs = diag.setdefault("stage_diffs", {})
+                stage_diffs["generated_resized_vs_final_mean_abs_diff"] = _mean_abs_diff(
+                    generated_resized_rgb,
+                    final_rgb_for_diag,
+                )
+                stage_diffs["composite_pre_cleanup_vs_final_mean_abs_diff"] = _mean_abs_diff(
+                    composite_pre_cleanup_rgb,
+                    final_rgb_for_diag,
+                )
+                for roi_name in ("chest_center", "left_side", "right_side", "neckline"):
+                    rect = diagnostic_rois.get(roi_name)
+                    stage_diffs[f"{roi_name}_generated_resized_vs_final_mean_abs_diff"] = _mean_abs_diff(
+                        generated_resized_rgb,
+                        final_rgb_for_diag,
+                        rect,
+                    )
+                    stage_diffs[f"{roi_name}_composite_pre_cleanup_vs_final_mean_abs_diff"] = _mean_abs_diff(
+                        composite_pre_cleanup_rgb,
+                        final_rgb_for_diag,
+                        rect,
+                    )
+                    stage_diffs[f"{roi_name}_source_similarity_ratio_in_final"] = _source_similarity_ratio(
+                        composite_base_rgb,
+                        final_rgb_for_diag,
+                        rect,
+                    )
+                boundary_mask = boundary_band > 0
+                if bool(boundary_mask.any()) and isinstance(generated_resized_rgb, np.ndarray):
+                    gen_final_diff = np.abs(
+                        generated_resized_rgb.astype(np.float32) - final_rgb_for_diag.astype(np.float32)
+                    ).mean(axis=2)
+                    src_final_diff = np.abs(
+                        composite_base_rgb.astype(np.float32) - final_rgb_for_diag.astype(np.float32)
+                    ).mean(axis=2)
+                    stage_diffs["composite_boundary_generated_vs_final_mean_abs_diff"] = float(
+                        gen_final_diff[boundary_mask].mean()
+                    )
+                    stage_diffs["composite_boundary_source_vs_final_mean_abs_diff"] = float(
+                        src_final_diff[boundary_mask].mean()
+                    )
+                    stage_diffs["composite_boundary_source_similarity_ratio"] = float(
+                        (src_final_diff[boundary_mask] <= 12.0).mean()
+                    )
+                logger.info(
+                    "[SDPipeline][diag][stage] gen->final=%.2f comp->final=%.2f chest(gen)=%.2f left(comp)=%.2f right(comp)=%.2f",
+                    stage_diffs.get("generated_resized_vs_final_mean_abs_diff", 0.0),
+                    stage_diffs.get("composite_pre_cleanup_vs_final_mean_abs_diff", 0.0),
+                    stage_diffs.get("chest_center_generated_resized_vs_final_mean_abs_diff", 0.0),
+                    stage_diffs.get("left_side_composite_pre_cleanup_vs_final_mean_abs_diff", 0.0),
+                    stage_diffs.get("right_side_composite_pre_cleanup_vs_final_mean_abs_diff", 0.0),
+                )
             results.append(SDInpaintResult(
                 image=final_bgr,
                 image_pil=Image.fromarray(cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)),
@@ -7544,6 +8099,7 @@ class MirrAISDPipeline:
         hair_mask: np.ndarray,   # H×W float32
         mask_edge_suppression: float = 1.0,  # 0.0=엣지 보존, 1.0=마스크 내부 엣지 완전 제거
         canny_suppress_mask: Optional[np.ndarray] = None,  # H×W float32 — 이 영역의 canny edge도 제거
+        debug_outputs: Optional[Dict[str, np.ndarray]] = None,
     ) -> Tuple[Image.Image, Image.Image, Image.Image, float, Tuple[int, int]]:
         """
         Letter-box resize → 512×512.
@@ -7578,8 +8134,11 @@ class MirrAISDPipeline:
         # ── Canny edge
         # 기본(헤어 생성): 마스크 내부 엣지 강하게 제거
         # 배경 복원(fill): 일부 엣지를 남겨 texture/구조 연속성 확보
+        source_gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+        source_canny_raw = cv2.Canny(source_gray, self.config.canny_low, self.config.canny_high)
         gray = cv2.cvtColor(canvas, cv2.COLOR_RGB2GRAY)
         canny = cv2.Canny(gray, self.config.canny_low, self.config.canny_high)
+        canny_raw_512 = canny.copy()
         suppress = float(np.clip(mask_edge_suppression, 0.0, 1.0))
         hair_hard = (msk_canvas > 0.5).astype(np.float32)
 
@@ -7603,7 +8162,24 @@ class MirrAISDPipeline:
             )
 
         canny_f = canny.astype(np.float32) * (1.0 - hair_hard * suppress)
+        source_hair_hard = cv2.resize(
+            hair_hard[pad_t:pad_t + new_h, pad_l:pad_l + new_w],
+            (W, H),
+            interpolation=cv2.INTER_AREA,
+        )
+        source_hair_hard = np.clip(source_hair_hard.astype(np.float32), 0.0, 1.0)
+        source_canny_suppressed = source_canny_raw.astype(np.float32) * (1.0 - source_hair_hard * suppress)
         canny_rgb = cv2.cvtColor(canny_f.astype(np.uint8), cv2.COLOR_GRAY2RGB)
+
+        if debug_outputs is not None:
+            debug_outputs["source_canny_raw"] = source_canny_raw.astype(np.uint8)
+            debug_outputs["source_canny_suppressed"] = source_canny_suppressed.astype(np.uint8)
+            debug_outputs["source_canny_suppress_mask"] = (np.clip(source_hair_hard, 0.0, 1.0) * 255).astype(np.uint8)
+            debug_outputs["control_canny_raw_512"] = canny_raw_512.astype(np.uint8)
+            debug_outputs["control_canny_suppressed_512"] = canny_f.astype(np.uint8)
+            debug_outputs["control_canny_suppress_mask_512"] = (
+                np.clip(hair_hard, 0.0, 1.0) * 255
+            ).astype(np.uint8)
 
         img_512   = Image.fromarray(canvas)
         mask_512  = Image.fromarray((msk_canvas * 255).astype(np.uint8), mode="L")
