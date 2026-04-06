@@ -4523,6 +4523,7 @@ class MirrAISDPipeline:
                         (np.clip(under_jaw_cloth_refine_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
                         * 255
                     )
+                    short_under_jaw_second_pass_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                     under_jaw_cloth_refine_px = int((under_jaw_cloth_refine_u8 > 0).sum())
                     if under_jaw_cloth_refine_px >= 140:
                         final_rgb = self._sd_refine_removed_region(
@@ -4556,12 +4557,69 @@ class MirrAISDPipeline:
                             cloth_reference_mask,
                             hair_length=hair_length,
                         )
+                        if hair_length == "short":
+                            final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                            short_under_jaw_second_pass_mask = self._build_short_cloth_only_second_pass_mask(
+                                current_rgb=final_rgb,
+                                source_rgb=img_rgb,
+                                cloth_mask=cloth_reference_mask,
+                                face_bbox=face_bbox,
+                                cutoff_y=cutoff_y_for_post,
+                                hair_length=hair_length,
+                                protect_mask=protect_mask_for_sd,
+                                final_hair_mask=final_hair_mask,
+                                seed_mask=under_jaw_cloth_refine_mask,
+                            )
+                            short_under_jaw_second_pass_u8 = (
+                                (
+                                    np.clip(short_under_jaw_second_pass_mask.astype(np.float32), 0.0, 1.0) > 0.08
+                                ).astype(np.uint8)
+                                * 255
+                            )
+                            short_under_jaw_second_pass_px = int((short_under_jaw_second_pass_u8 > 0).sum())
+                            if short_under_jaw_second_pass_px >= 48:
+                                final_rgb = self._sd_refine_removed_region(
+                                    base_rgb=final_rgb,
+                                    removal_mask=short_under_jaw_second_pass_mask,
+                                    face_bbox=face_bbox,
+                                    face_crop_pil=face_crop_pil,
+                                    protect_mask=protect_mask_for_sd,
+                                    cloth_mask=cloth_reference_mask,
+                                    hair_length=hair_length,
+                                    seed=int(cand["seed"]) + 1889,
+                                    reference_rgb=img_rgb,
+                                    refine_mode="cloth_only_second_pass",
+                                )
+                                final_rgb = self._blend_neighbor_cloth_tone(
+                                    final_rgb,
+                                    short_under_jaw_second_pass_mask,
+                                    cloth_mask=cloth_reference_mask,
+                                    reference_rgb=img_rgb,
+                                )
+                                final_rgb = self._cv2_refine_cloth_region(
+                                    final_rgb,
+                                    short_under_jaw_second_pass_mask,
+                                    reference_rgb=img_rgb,
+                                    reference_mask=cloth_reference_mask,
+                                )
+                                final_rgb = self._stabilize_under_jaw_cloth_fill(
+                                    final_rgb,
+                                    img_rgb,
+                                    short_under_jaw_second_pass_mask,
+                                    cloth_reference_mask,
+                                    hair_length=hair_length,
+                                )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_under_jaw_cloth_refine_mask"] = cv2.cvtColor(
                             under_jaw_cloth_refine_u8,
                             cv2.COLOR_GRAY2BGR,
                         )
+                        if int((short_under_jaw_second_pass_u8 > 0).sum()) >= 24:
+                            debug_images_common["pipeline_short_under_jaw_second_pass_mask"] = cv2.cvtColor(
+                                short_under_jaw_second_pass_u8,
+                                cv2.COLOR_GRAY2BGR,
+                            )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] under-jaw cloth refine failed (ignored): {e}")
             try:
