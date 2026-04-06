@@ -4736,7 +4736,7 @@ class MirrAISDPipeline:
                                                             (crop_h, crop_w),
                                                             dtype=np.uint8,
                                                         )
-                                                        rescue_lane_top = max(0, int(crop_h * 0.22))
+                                                        rescue_lane_top = max(0, int(crop_h * 0.14))
                                                         rescue_lane_bottom = crop_h
                                                         rescue_lane_left = max(0, int(crop_w * 0.04))
                                                         rescue_lane_right = crop_w
@@ -4764,16 +4764,30 @@ class MirrAISDPipeline:
                                                                 crop_reference_rgb,
                                                                 cv2.COLOR_RGB2HSV,
                                                             )[:, :, 1].astype(np.float32)
+                                                            crop_diff = np.mean(
+                                                                np.abs(
+                                                                    crop_rgb.astype(np.float32)
+                                                                    - crop_reference_rgb.astype(np.float32)
+                                                                ),
+                                                                axis=2,
+                                                            ).astype(np.float32)
                                                             crop_bright_rescue_u8 = (
                                                                 (
                                                                     (
                                                                         (
-                                                                            (crop_gray > np.maximum(188.0, ref_gray + 10.0))
-                                                                            & (crop_sat + 10.0 < ref_sat)
+                                                                            (crop_gray > np.maximum(178.0, ref_gray + 4.0))
+                                                                            & (
+                                                                                (crop_diff > 7.0)
+                                                                                | (crop_sat + 6.0 < ref_sat + 2.0)
+                                                                            )
                                                                         )
                                                                         | (
-                                                                            (crop_gray > np.maximum(202.0, ref_gray + 8.0))
-                                                                            & (ref_gray + 4.0 < crop_gray)
+                                                                            (crop_gray > np.maximum(194.0, ref_gray + 2.0))
+                                                                            & (crop_diff > 4.0)
+                                                                        )
+                                                                        | (
+                                                                            (crop_gray > 206.0)
+                                                                            & (crop_sat < 132.0)
                                                                         )
                                                                     ).astype(np.uint8)
                                                                 )
@@ -4848,7 +4862,7 @@ class MirrAISDPipeline:
                                                                 ),
                                                                 iterations=1,
                                                             )
-                                                            if int((crop_bright_rescue_u8 > 0).sum()) >= 48:
+                                                            if int((crop_bright_rescue_u8 > 0).sum()) >= 28:
                                                                 crop_bright_rescue_mask = cv2.GaussianBlur(
                                                                     crop_bright_rescue_u8.astype(np.float32) / 255.0,
                                                                     (0, 0),
@@ -4859,7 +4873,7 @@ class MirrAISDPipeline:
                                                                     crop_rgb,
                                                                     crop_reference_rgb,
                                                                     crop_bright_rescue_mask,
-                                                                    strength=0.995,
+                                                                    strength=1.0,
                                                                 )
                                                                 crop_rgb = self._overlay_reference_cloth_fill(
                                                                     crop_rgb,
@@ -4932,7 +4946,7 @@ class MirrAISDPipeline:
                                             strict_shoulder_restore_u8,
                                             cv2.COLOR_GRAY2BGR,
                                         )
-                                    if int((strict_shoulder_bright_rescue_u8 > 0).sum()) >= 48:
+                                    if int((strict_shoulder_bright_rescue_u8 > 0).sum()) >= 28:
                                         debug_images_common["pipeline_short_strict_shoulder_bright_rescue_mask"] = cv2.cvtColor(
                                             strict_shoulder_bright_rescue_u8,
                                             cv2.COLOR_GRAY2BGR,
