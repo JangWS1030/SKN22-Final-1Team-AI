@@ -1263,6 +1263,8 @@ def _build_short_below_bob_torso_mask(
     torso_candidate_mask: Optional[np.ndarray] = None,
     completed_torso_fill_mask: Optional[np.ndarray] = None,
     shoulder_anchor_mask: Optional[np.ndarray] = None,
+    debug_info: Optional[Dict[str, Any]] = None,
+    debug_masks: Optional[Dict[str, np.ndarray]] = None,
 ) -> np.ndarray:
     base_shape = None
     for mask in (
@@ -1326,8 +1328,25 @@ def _build_short_below_bob_torso_mask(
         torso_u8 = cv2.bitwise_or(torso_u8, amodal_support_u8)
 
     if int((torso_u8 > 0).sum()) < 80:
+        if debug_info is not None:
+            debug_info.update({
+                "amodal_support_px": int((amodal_support_u8 > 0).sum()),
+                "seed_pretrim_px": int((torso_u8 > 0).sum()),
+                "seed_posttrim_px": 0,
+                "trim_removed_px": 0,
+                "use_amodal_support": bool(use_amodal_support),
+                "cutoff_y": int(cutoff_y),
+                "bob_floor": int(bob_floor),
+                "bottom": int(bottom),
+                "center_half": int(center_half),
+                "reason": "seed_pretrim_too_small",
+            })
+        if debug_masks is not None:
+            debug_masks["amodal_support"] = amodal_support_u8.astype(np.float32) / 255.0
+            debug_masks["seed_pretrim"] = torso_u8.astype(np.float32) / 255.0
         return np.zeros((H, W), dtype=np.float32)
 
+    seed_pretrim_u8 = torso_u8.copy()
     torso_u8 = cv2.morphologyEx(
         torso_u8,
         cv2.MORPH_CLOSE,
@@ -1344,6 +1363,25 @@ def _build_short_below_bob_torso_mask(
         cutoff_y=cutoff_y,
         min_keep_px=80,
     )
+    if debug_info is not None:
+        seed_pretrim_px = int((seed_pretrim_u8 > 0).sum())
+        seed_posttrim_px = int((torso_u8 > 0).sum())
+        debug_info.update({
+            "amodal_support_px": int((amodal_support_u8 > 0).sum()),
+            "seed_pretrim_px": seed_pretrim_px,
+            "seed_posttrim_px": seed_posttrim_px,
+            "trim_removed_px": max(0, seed_pretrim_px - seed_posttrim_px),
+            "use_amodal_support": bool(use_amodal_support),
+            "cutoff_y": int(cutoff_y),
+            "bob_floor": int(bob_floor),
+            "bottom": int(bottom),
+            "center_half": int(center_half),
+            "reason": "active" if seed_posttrim_px >= 80 else "trimmed_to_empty",
+        })
+    if debug_masks is not None:
+        debug_masks["amodal_support"] = amodal_support_u8.astype(np.float32) / 255.0
+        debug_masks["seed_pretrim"] = seed_pretrim_u8.astype(np.float32) / 255.0
+        debug_masks["seed_posttrim"] = torso_u8.astype(np.float32) / 255.0
     if int((torso_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -2343,6 +2381,8 @@ def _cleanup_region_with_cloth_restore(
     ignore_final_hair_for_cloth_restore: bool = False,
     cleanup_dark_tail: bool = True,
     prefer_plain_cloth_fill: bool = False,
+    debug_trace: Optional[List[Tuple[str, np.ndarray]]] = None,
+    debug_info: Optional[Dict[str, Any]] = None,
 ) -> np.ndarray:
     H, W = current_rgb.shape[:2]
     if source_rgb.shape[:2] != (H, W) or cleanup_mask.shape != (H, W):
@@ -2353,8 +2393,12 @@ def _cleanup_region_with_cloth_restore(
         return current_rgb
 
     cleaned = self._lama_inpaint(current_rgb, mask_u8)
+    if debug_trace is not None:
+        debug_trace.append(("lama_inpaint", cleaned.copy()))
     if cleanup_dark_tail:
         cleaned = self._cv2_cleanup_dark_tail_blob(cleaned, mask_u8)
+        if debug_trace is not None:
+            debug_trace.append(("dark_tail_cleanup", cleaned.copy()))
 
     if cloth_mask is None or cloth_mask.shape != (H, W):
         return cleaned
@@ -2407,12 +2451,26 @@ def _cleanup_region_with_cloth_restore(
     plain_sat = 255.0
     use_plain_cloth_force = False
     plain_fill_rgb: Optional[np.ndarray] = None
+    if debug_info is not None:
+        debug_info.update({
+            "cleanup_mask_px": int((mask_u8 > 0).sum()),
+            "cloth_cleanup_px": int((cloth_cleanup_u8 > 0).sum()),
+            "reference_fill_px": int((reference_fill_u8 > 0).sum()),
+            "cleanup_dark_tail": bool(cleanup_dark_tail),
+            "prefer_plain_cloth_fill": bool(prefer_plain_cloth_fill),
+        })
     if int((visible_cloth_u8 > 0).sum()) >= 80:
         plain_gray = float(np.median(source_gray[visible_cloth_u8 > 0]))
         plain_sat = float(np.median(source_sat[visible_cloth_u8 > 0]))
         use_plain_cloth_force = plain_gray >= 168.0 and plain_sat <= 84.0
         if prefer_plain_cloth_fill:
             use_plain_cloth_force = True
+    if debug_info is not None:
+        debug_info.update({
+            "plain_gray": float(plain_gray),
+            "plain_sat": float(plain_sat),
+            "use_plain_cloth_force": bool(use_plain_cloth_force),
+        })
     if use_plain_cloth_force:
         plain_fill_rgb = source_rgb.copy()
         plain_fill_color = np.median(source_rgb[visible_cloth_u8 > 0], axis=0).astype(np.uint8)
@@ -2435,6 +2493,8 @@ def _cleanup_region_with_cloth_restore(
             reference_rgb=source_rgb,
             reference_mask=cloth_mask,
         )
+        if debug_trace is not None:
+            debug_trace.append(("plain_fill_reference", reference_fill_rgb.copy()))
     if prefer_plain_cloth_fill and (plain_fill_rgb is not None or reference_fill_rgb is not None):
         cleaned = self._restore_reference_region(
             cleaned,
@@ -2442,6 +2502,8 @@ def _cleanup_region_with_cloth_restore(
             cloth_cleanup_mask,
             strength=0.985,
         )
+        if debug_trace is not None:
+            debug_trace.append(("plain_fill_restore", cleaned.copy()))
     else:
         cleaned = self._restore_cloth_overlap_from_source(
             source_rgb=source_rgb,
@@ -2451,6 +2513,8 @@ def _cleanup_region_with_cloth_restore(
             tone_reference_rgb=source_rgb,
             tone_reference_mask=cloth_mask,
         )
+        if debug_trace is not None:
+            debug_trace.append(("source_overlap_restore", cleaned.copy()))
     if use_plain_cloth_force:
         cleaned_gray = cv2.cvtColor(cleaned, cv2.COLOR_RGB2GRAY).astype(np.float32)
         cleaned_sat = cv2.cvtColor(cleaned, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
@@ -2472,24 +2536,32 @@ def _cleanup_region_with_cloth_restore(
                 cloth_cleanup_mask,
                 strength=float(np.clip(0.88 + cleanup_dark_ratio * 0.24, 0.88, 0.98)),
             )
+            if debug_trace is not None:
+                debug_trace.append(("dark_residual_restore", cleaned.copy()))
     cleaned = self._overlay_reference_cloth_fill(
         cleaned,
         reference_fill_rgb,
         cloth_cleanup_mask,
         cloth_mask=cloth_mask,
     )
+    if debug_trace is not None:
+        debug_trace.append(("overlay_reference_fill", cleaned.copy()))
     cleaned = self._blend_neighbor_cloth_tone(
         cleaned,
         cloth_cleanup_mask,
         cloth_mask=cloth_mask,
         reference_rgb=reference_fill_rgb,
     )
+    if debug_trace is not None:
+        debug_trace.append(("blend_neighbor_tone", cleaned.copy()))
     cleaned = self._cv2_refine_cloth_region(
         cleaned,
         cloth_cleanup_mask,
         reference_rgb=reference_fill_rgb,
         reference_mask=cloth_mask,
     )
+    if debug_trace is not None:
+        debug_trace.append(("cv2_refine_cloth_region", cleaned.copy()))
     if use_plain_cloth_force:
         cleaned_gray = cv2.cvtColor(cleaned, cv2.COLOR_RGB2GRAY).astype(np.float32)
         cleaned_sat = cv2.cvtColor(cleaned, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
@@ -2531,6 +2603,8 @@ def _cleanup_region_with_cloth_restore(
         cloth_cleanup_mask,
         cloth_mask=cloth_mask,
     )
+    if debug_trace is not None:
+        debug_trace.append(("overlay_reference_fill_final", cleaned.copy()))
     return cleaned
 
 def _build_final_source_cloth_rescue_mask(
@@ -3338,6 +3412,8 @@ def _build_side_column_cloth_restore_mask(
     cutoff_y: int,
     hair_length: str,
     final_hair_mask: Optional[np.ndarray] = None,
+    debug_info: Optional[Dict[str, Any]] = None,
+    debug_masks: Optional[Dict[str, np.ndarray]] = None,
 ) -> np.ndarray:
     H, W = img_rgb.shape[:2]
     if cloth_mask is None or candidate_mask is None:
@@ -3370,13 +3446,13 @@ def _build_side_column_cloth_restore_mask(
         return np.zeros((H, W), dtype=np.float32)
 
     short_outer_strip_u8 = corridor_u8
+    center_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
+    neckline_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
     if hair_length == "short":
-        center_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
-        neckline_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
         short_outer_strip_u8 = np.zeros((H, W), dtype=np.uint8)
         inner_keepout_half = max(
             40,
-            int(face_w * float(getattr(self.config, "short_side_column_inner_keepout_ratio", 0.42))),
+            int(face_w * float(getattr(self.config, "short_side_column_inner_keepout_ratio", 0.46))),
         )
         neckline_keepout_half = max(inner_keepout_half + 18, int(face_w * 0.66))
         keepout_top = max(top, int(cutoff_y + face_h * 0.10))
@@ -3389,7 +3465,7 @@ def _build_side_column_cloth_restore_mask(
             zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(center_keepout_u8))
         neckline_keepout_bottom = min(
             bottom,
-            int(cutoff_y + face_h * float(getattr(self.config, "short_side_column_neckline_keepout_ratio", 0.34))),
+            int(cutoff_y + face_h * float(getattr(self.config, "short_side_column_neckline_keepout_ratio", 0.38))),
         )
         if top < neckline_keepout_bottom:
             neckline_keepout_u8[
@@ -3399,16 +3475,24 @@ def _build_side_column_cloth_restore_mask(
             zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(neckline_keepout_u8))
         outer_gap_half = max(
             inner_keepout_half,
-            int(face_w * float(getattr(self.config, "short_side_column_outer_strip_gap_ratio", 0.46))),
+            int(face_w * float(getattr(self.config, "short_side_column_outer_strip_gap_ratio", 0.52))),
+        )
+        outer_strip_width = max(
+            20,
+            int(face_w * float(getattr(self.config, "short_side_column_outer_strip_width_scale", 0.96))),
         )
         strip_top = max(top, int(cutoff_y + face_h * 0.16))
         if strip_top < bottom:
-            left_inner = max(left + 1, int(cx - outer_gap_half))
-            right_inner = min(right - 1, int(cx + outer_gap_half))
-            if left < left_inner:
-                short_outer_strip_u8[strip_top:bottom, left:left_inner] = 255
-            if right_inner < right:
-                short_outer_strip_u8[strip_top:bottom, right_inner:right] = 255
+            left_outer = max(left, int(x1 - face_w * 0.92))
+            left_inner = min(right, left_outer + outer_strip_width)
+            left_gap = max(left_inner, int(cx - outer_gap_half))
+            right_outer = min(right, int(x2 + face_w * 0.92))
+            right_inner = max(left, right_outer - outer_strip_width)
+            right_gap = min(right_inner, int(cx + outer_gap_half))
+            if left_outer < left_inner and left_outer < left_gap:
+                short_outer_strip_u8[strip_top:bottom, left_outer:min(left_inner, left_gap)] = 255
+            if right_gap < right_outer and right_inner < right_outer:
+                short_outer_strip_u8[strip_top:bottom, max(right_inner, right_gap):right_outer] = 255
             zone_u8 = cv2.bitwise_and(zone_u8, short_outer_strip_u8)
 
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
@@ -3526,6 +3610,27 @@ def _build_side_column_cloth_restore_mask(
     if int((keep_u8 > 0).sum()) < 60:
         return np.zeros((H, W), dtype=np.float32)
 
+    if debug_info is not None:
+        debug_info.update({
+            "zone_px": int((zone_u8 > 0).sum()),
+            "keep_px": int((keep_u8 > 0).sum()),
+            "corridor_top": int(top),
+            "corridor_bottom": int(bottom),
+            "corridor_left": int(left),
+            "corridor_right": int(right),
+            "center_keepout_px": int((center_keepout_u8 > 0).sum()),
+            "neckline_keepout_px": int((neckline_keepout_u8 > 0).sum()),
+            "outer_strip_px": int((short_outer_strip_u8 > 0).sum()),
+            "gaussian_sigma_x": 4.0,
+            "gaussian_sigma_y": 6.0,
+        })
+    if debug_masks is not None:
+        debug_masks["zone"] = zone_u8.astype(np.float32) / 255.0
+        debug_masks["center_keepout"] = center_keepout_u8.astype(np.float32) / 255.0
+        debug_masks["neckline_keepout"] = neckline_keepout_u8.astype(np.float32) / 255.0
+        debug_masks["outer_strip"] = short_outer_strip_u8.astype(np.float32) / 255.0
+        debug_masks["keep"] = keep_u8.astype(np.float32) / 255.0
+
     return cv2.GaussianBlur(
         keep_u8.astype(np.float32) / 255.0,
         (0, 0),
@@ -3589,7 +3694,7 @@ def _build_direct_short_column_restore_mask(
     outer_strip_u8 = np.zeros((H, W), dtype=np.uint8)
     inner_keepout_half = max(
         40,
-        int(face_w * float(getattr(self.config, "short_side_column_inner_keepout_ratio", 0.42))),
+        int(face_w * float(getattr(self.config, "short_side_column_inner_keepout_ratio", 0.46))),
     )
     neckline_keepout_half = max(inner_keepout_half + 18, int(face_w * 0.66))
     keepout_top = max(top, int(cutoff_y + face_h * 0.10))
@@ -3602,7 +3707,7 @@ def _build_direct_short_column_restore_mask(
         zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(center_keepout_u8))
     neckline_keepout_bottom = min(
         bottom,
-        int(cutoff_y + face_h * float(getattr(self.config, "short_side_column_neckline_keepout_ratio", 0.34))),
+        int(cutoff_y + face_h * float(getattr(self.config, "short_side_column_neckline_keepout_ratio", 0.38))),
     )
     if top < neckline_keepout_bottom:
         neckline_keepout_u8[
@@ -3612,16 +3717,24 @@ def _build_direct_short_column_restore_mask(
         zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(neckline_keepout_u8))
     outer_gap_half = max(
         inner_keepout_half,
-        int(face_w * float(getattr(self.config, "short_side_column_outer_strip_gap_ratio", 0.46))),
+        int(face_w * float(getattr(self.config, "short_side_column_outer_strip_gap_ratio", 0.52))),
+    )
+    outer_strip_width = max(
+        20,
+        int(face_w * float(getattr(self.config, "short_side_column_outer_strip_width_scale", 0.96))),
     )
     strip_top = max(top, int(cutoff_y + face_h * 0.16))
     if strip_top < bottom:
-        left_inner = max(left + 1, int(cx - outer_gap_half))
-        right_inner = min(right - 1, int(cx + outer_gap_half))
-        if left < left_inner:
-            outer_strip_u8[strip_top:bottom, left:left_inner] = 255
-        if right_inner < right:
-            outer_strip_u8[strip_top:bottom, right_inner:right] = 255
+        left_outer = max(left, int(x1 - face_w * 0.92))
+        left_inner = min(right, left_outer + outer_strip_width)
+        left_gap = max(left_inner, int(cx - outer_gap_half))
+        right_outer = min(right, int(x2 + face_w * 0.92))
+        right_inner = max(left, right_outer - outer_strip_width)
+        right_gap = min(right_inner, int(cx + outer_gap_half))
+        if left_outer < left_inner and left_outer < left_gap:
+            outer_strip_u8[strip_top:bottom, left_outer:min(left_inner, left_gap)] = 255
+        if right_gap < right_outer and right_inner < right_outer:
+            outer_strip_u8[strip_top:bottom, max(right_inner, right_gap):right_outer] = 255
         zone_u8 = cv2.bitwise_and(zone_u8, outer_strip_u8)
     if int((zone_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
@@ -4445,6 +4558,8 @@ def _build_final_hair_lane_cleanup_mask(
     face_bbox: Tuple[int, int, int, int],
     cutoff_y: int,
     hair_length: str,
+    debug_info: Optional[Dict[str, Any]] = None,
+    debug_masks: Optional[Dict[str, np.ndarray]] = None,
 ) -> np.ndarray:
     if hair_length not in ("short", "medium"):
         shape = final_hair_mask.shape[:2] if isinstance(final_hair_mask, np.ndarray) else (0, 0)
@@ -4483,6 +4598,52 @@ def _build_final_hair_lane_cleanup_mask(
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[top:bottom, left:right] = 255
     zone_u8 = cv2.bitwise_and(zone_u8, corridor_u8)
+    if int((zone_u8 > 0).sum()) < 24:
+        return np.zeros((H, W), dtype=np.float32)
+
+    center_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
+    neckline_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
+    outer_strip_u8 = corridor_u8.copy()
+    if hair_length == "short":
+        center_keepout_half = max(
+            28,
+            int(face_w * float(getattr(self.config, "final_hair_lane_center_keepout_ratio", 0.20))),
+        )
+        neckline_keepout_half = max(center_keepout_half + 12, int(face_w * 0.42))
+        center_keepout_top = max(top, int(cutoff_y + face_h * 0.18))
+        center_keepout_bottom = min(bottom, int(cutoff_y + face_h * 1.08))
+        if center_keepout_top < center_keepout_bottom:
+            center_keepout_u8[
+                center_keepout_top:center_keepout_bottom,
+                max(left, int(cx - center_keepout_half)):min(right, int(cx + center_keepout_half)),
+            ] = 255
+            zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(center_keepout_u8))
+        neckline_keepout_bottom = min(
+            bottom,
+            int(cutoff_y + face_h * float(getattr(self.config, "final_hair_lane_neckline_keepout_ratio", 0.30))),
+        )
+        if top < neckline_keepout_bottom:
+            neckline_keepout_u8[
+                top:neckline_keepout_bottom,
+                max(left, int(cx - neckline_keepout_half)):min(right, int(cx + neckline_keepout_half)),
+            ] = 255
+            zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(neckline_keepout_u8))
+        outer_gap_half = max(
+            center_keepout_half + 8,
+            int(face_w * float(getattr(self.config, "final_hair_lane_outer_strip_gap_ratio", 0.30))),
+        )
+        outer_strip_u8 = np.zeros((H, W), dtype=np.uint8)
+        strip_top = max(top, int(cutoff_y + face_h * 0.22))
+        if strip_top < bottom:
+            left_outer = max(left, int(x1 - face_w * 0.86))
+            left_inner = min(right, int(cx - outer_gap_half))
+            right_inner = max(left, int(cx + outer_gap_half))
+            right_outer = min(right, int(x2 + face_w * 0.86))
+            if left_outer < left_inner:
+                outer_strip_u8[strip_top:bottom, left_outer:left_inner] = 255
+            if right_inner < right_outer:
+                outer_strip_u8[strip_top:bottom, right_inner:right_outer] = 255
+            zone_u8 = cv2.bitwise_and(zone_u8, outer_strip_u8)
     if int((zone_u8 > 0).sum()) < 24:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -4530,6 +4691,28 @@ def _build_final_hair_lane_cleanup_mask(
         iterations=1,
     )
     keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
+    if hair_length == "short" and int((outer_strip_u8 > 0).sum()) > 0:
+        keep_u8 = cv2.bitwise_and(keep_u8, outer_strip_u8)
+    if debug_info is not None:
+        debug_info.update({
+            "zone_px": int((zone_u8 > 0).sum()),
+            "keep_px": int((keep_u8 > 0).sum()),
+            "corridor_top": int(top),
+            "corridor_bottom": int(bottom),
+            "corridor_left": int(left),
+            "corridor_right": int(right),
+            "center_keepout_px": int((center_keepout_u8 > 0).sum()),
+            "neckline_keepout_px": int((neckline_keepout_u8 > 0).sum()),
+            "outer_strip_px": int((outer_strip_u8 > 0).sum()),
+            "gaussian_sigma_x": 2.2,
+            "gaussian_sigma_y": 3.4,
+        })
+    if debug_masks is not None:
+        debug_masks["zone"] = zone_u8.astype(np.float32) / 255.0
+        debug_masks["center_keepout"] = center_keepout_u8.astype(np.float32) / 255.0
+        debug_masks["neckline_keepout"] = neckline_keepout_u8.astype(np.float32) / 255.0
+        debug_masks["outer_strip"] = outer_strip_u8.astype(np.float32) / 255.0
+        debug_masks["keep"] = keep_u8.astype(np.float32) / 255.0
     return cv2.GaussianBlur(
         keep_u8.astype(np.float32) / 255.0,
         (0, 0),

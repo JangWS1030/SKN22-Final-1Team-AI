@@ -211,6 +211,10 @@ class SDInpaintConfig:
     short_side_column_neckline_keepout_ratio: float = 0.34
     short_side_column_outer_strip_gap_ratio: float = 0.46
     short_side_column_restore_plain_fill: bool = False
+    short_side_column_outer_strip_width_scale: float = 0.96
+    final_hair_lane_center_keepout_ratio: float = 0.20
+    final_hair_lane_neckline_keepout_ratio: float = 0.30
+    final_hair_lane_outer_strip_gap_ratio: float = 0.30
 
     # 씨드 리스트 — None 이면 요청마다 랜덤 생성 (권장), 고정값 지정도 가능
     seeds: Optional[List[int]] = None
@@ -1163,6 +1167,8 @@ class MirrAISDPipeline:
                 )
         if hair_length == "short":
             try:
+                overwrite_core_seed_debug: Dict[str, Any] = {}
+                overwrite_core_seed_debug_masks: Dict[str, np.ndarray] = {}
                 _, _, _, _, short_repaint_cutoff_y = self._estimate_head_generation_box(
                     image_shape=(H, W),
                     face_bbox=face_bbox,
@@ -1179,6 +1185,8 @@ class MirrAISDPipeline:
                     torso_candidate_mask=subject_torso_candidate_mask,
                     completed_torso_fill_mask=completed_torso_fill_mask,
                     shoulder_anchor_mask=upper_clothes_overwrite_anchor_mask,
+                    debug_info=overwrite_core_seed_debug,
+                    debug_masks=overwrite_core_seed_debug_masks,
                 )
                 if short_upper_body_repaint_seed_mask.shape == (H, W):
                     upper_clothes_overwrite_core_mask = np.maximum(
@@ -1239,6 +1247,12 @@ class MirrAISDPipeline:
                         float(cloth_generation_guard_release_mask.sum()),
                         overwrite_prepass_alpha,
                     )
+                if debug_data_common is not None:
+                    diag = debug_data_common.setdefault("diagnostics", {})
+                    diag["overwrite_core_seed_debug"] = overwrite_core_seed_debug
+                if debug_images_common is not None:
+                    for name, mask in overwrite_core_seed_debug_masks.items():
+                        _store_mask(f"pipeline_overwrite_core_seed_{name}_mask", mask)
             except Exception as e:
                 logger.warning(f"[SDPipeline] short upper-body repaint preparation failed (ignored): {e}")
         if use_upper_clothes_overwrite:
@@ -2828,6 +2842,8 @@ class MirrAISDPipeline:
             _mask_stats("garment_prepass", source_garment_prepass_mask, torso_rect)
             _mask_stats("short_repaint_mask", short_upper_body_repaint_mask, torso_rect)
             _mask_stats("final_inpaint_mask", hair_mask_for_sd, torso_rect)
+            for name, mask in (locals().get("overwrite_core_seed_debug_masks") or {}).items():
+                _mask_stats(f"overwrite_core_seed_{name}", mask, torso_rect)
             diag = debug_data_common.setdefault("diagnostics", {})
             mask_stats = diag.setdefault("mask_stats", {})
             guard_release_sum = float(mask_stats.get("guard_release", {}).get("sum", 0.0))
@@ -2869,6 +2885,8 @@ class MirrAISDPipeline:
                 "protect_overlap_px": protect_overlap_px,
                 "short_repaint_px": int(short_upper_body_repaint_px),
                 "reason": core_reason,
+                "seed_builder_reason": (locals().get("overwrite_core_seed_debug") or {}).get("reason"),
+                "seed_trim_removed_px": (locals().get("overwrite_core_seed_debug") or {}).get("trim_removed_px"),
             }
             logger.info(
                 "[SDPipeline][diag][mask-ratio] cloth_guard/release=%.4f overwrite_core/effective=%.4f final_inpaint/torso=%.4f",
@@ -3941,6 +3959,8 @@ class MirrAISDPipeline:
                     side_column_restore_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    side_column_debug_info: Dict[str, Any] = {}
+                    side_column_debug_masks: Dict[str, np.ndarray] = {}
                     side_column_candidate_mask = np.zeros((H, W), dtype=np.float32)
                     if removal_mask_for_post is not None and removal_mask_for_post.shape == (H, W):
                         side_column_candidate_mask = np.maximum(
@@ -3973,6 +3993,8 @@ class MirrAISDPipeline:
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
                         final_hair_mask=final_hair_mask,
+                        debug_info=side_column_debug_info,
+                        debug_masks=side_column_debug_masks,
                     )
                     direct_side_column_restore_mask = self._build_direct_short_column_restore_mask(
                         removal_mask=removal_mask_for_post,
@@ -4004,6 +4026,8 @@ class MirrAISDPipeline:
                                 refine_mode="cloth",
                             )
                         if hair_length == "short":
+                            side_column_cleanup_trace: List[Tuple[str, np.ndarray]] = []
+                            side_column_cleanup_debug: Dict[str, Any] = {}
                             final_rgb = self._cleanup_region_with_cloth_restore(
                                 source_rgb=img_rgb,
                                 current_rgb=final_rgb,
@@ -4015,6 +4039,8 @@ class MirrAISDPipeline:
                                 prefer_plain_cloth_fill=bool(
                                     getattr(self.config, "short_side_column_restore_plain_fill", False)
                                 ),
+                                debug_trace=side_column_cleanup_trace,
+                                debug_info=side_column_cleanup_debug,
                             )
                         else:
                             final_rgb = self._restore_cloth_overlap_from_source(
@@ -4038,7 +4064,25 @@ class MirrAISDPipeline:
                             ),
                             cv2.COLOR_GRAY2BGR,
                         )
+                        for name, mask in side_column_debug_masks.items():
+                            _store_mask(f"pipeline_side_column_cloth_restore_{name}_mask", mask)
                     if debug_data_common is not None and rank == 0 and side_column_restore_applied:
+                        diag = debug_data_common.setdefault("diagnostics", {})
+                        diag["side_column_cloth_restore_debug"] = side_column_debug_info
+                        for name, mask in side_column_debug_masks.items():
+                            _mask_stats(
+                                f"side_column_cloth_restore_{name}",
+                                mask,
+                                diagnostic_rois.get("torso_front"),
+                                bucket="cleanup_mask_stats",
+                            )
+                        if hair_length == "short":
+                            diag["side_column_cloth_restore_cleanup_debug"] = side_column_cleanup_debug
+                            for substage_name, substage_rgb in side_column_cleanup_trace:
+                                _record_rank0_cleanup_stage(
+                                    f"side_column_cloth_restore_{substage_name}",
+                                    cv2.cvtColor(substage_rgb, cv2.COLOR_RGB2BGR),
+                                )
                         _record_rank0_cleanup_stage(
                             "side_column_cloth_restore",
                             final_bgr,
@@ -4204,6 +4248,8 @@ class MirrAISDPipeline:
                     final_hair_lane_cleanup_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    final_hair_lane_debug_info: Dict[str, Any] = {}
+                    final_hair_lane_debug_masks: Dict[str, np.ndarray] = {}
                     final_hair_lane_mask = self._build_final_hair_lane_cleanup_mask(
                         final_hair_mask=final_hair_mask,
                         cloth_mask=cloth_mask_dilated,
@@ -4211,6 +4257,8 @@ class MirrAISDPipeline:
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
+                        debug_info=final_hair_lane_debug_info,
+                        debug_masks=final_hair_lane_debug_masks,
                     )
                     final_hair_lane_u8 = (
                         (np.clip(final_hair_lane_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
@@ -4218,13 +4266,28 @@ class MirrAISDPipeline:
                     final_hair_lane_px = int((final_hair_lane_u8 > 0).sum())
                     if final_hair_lane_px >= 40:
                         final_rgb = self._lama_inpaint(final_rgb, final_hair_lane_u8)
+                        if debug_data_common is not None and rank == 0:
+                            _record_rank0_cleanup_stage(
+                                "final_hair_lane_cleanup_lama",
+                                cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR),
+                            )
                         final_rgb = self._cv2_cleanup_dark_tail_blob(final_rgb, final_hair_lane_u8)
+                        if debug_data_common is not None and rank == 0:
+                            _record_rank0_cleanup_stage(
+                                "final_hair_lane_cleanup_dark_tail",
+                                cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR),
+                            )
                         final_rgb = self._cv2_refine_cloth_region(
                             final_rgb,
                             final_hair_lane_mask,
                             reference_rgb=img_rgb,
                             reference_mask=cloth_mask_dilated,
                         )
+                        if debug_data_common is not None and rank == 0:
+                            _record_rank0_cleanup_stage(
+                                "final_hair_lane_cleanup_cloth_refine",
+                                cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR),
+                            )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                         final_hair_lane_cleanup_applied = True
                     if debug_images_common is not None and rank == 0:
@@ -4232,7 +4295,18 @@ class MirrAISDPipeline:
                             final_hair_lane_u8,
                             cv2.COLOR_GRAY2BGR,
                         )
+                        for name, mask in final_hair_lane_debug_masks.items():
+                            _store_mask(f"pipeline_final_hair_lane_cleanup_{name}_mask", mask)
                     if debug_data_common is not None and rank == 0 and final_hair_lane_cleanup_applied:
+                        diag = debug_data_common.setdefault("diagnostics", {})
+                        diag["final_hair_lane_cleanup_debug"] = final_hair_lane_debug_info
+                        for name, mask in final_hair_lane_debug_masks.items():
+                            _mask_stats(
+                                f"final_hair_lane_cleanup_{name}",
+                                mask,
+                                diagnostic_rois.get("torso_front"),
+                                bucket="cleanup_mask_stats",
+                            )
                         _record_rank0_cleanup_stage(
                             "final_hair_lane_cleanup",
                             final_bgr,
