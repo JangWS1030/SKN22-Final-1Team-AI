@@ -3142,6 +3142,29 @@ class MirrAISDPipeline:
                 hair_length=hair_length,
             )
             composite_pre_cleanup_bgr = composited_bgr.copy()
+            candidate_cleanup_trace: List[Dict[str, Any]] = []
+            candidate_prev_rgb = cv2.cvtColor(composite_pre_cleanup_bgr, cv2.COLOR_BGR2RGB)
+            post_final_cutoff_cleanup_bgr: Optional[np.ndarray] = None
+            post_remove_residual_below_cutoff_bgr: Optional[np.ndarray] = None
+
+            def _record_candidate_cleanup_stage(stage_name: str, current_bgr: np.ndarray) -> None:
+                nonlocal candidate_prev_rgb
+                current_rgb = cv2.cvtColor(current_bgr, cv2.COLOR_BGR2RGB)
+                entry: Dict[str, Any] = {
+                    "stage_name": stage_name,
+                    "prev_mean_abs_diff": _mean_abs_diff(candidate_prev_rgb, current_rgb),
+                    "source_similarity_ratio": _source_similarity_ratio(composite_base_rgb, current_rgb),
+                }
+                for roi_name in ("chest_center", "left_side", "right_side", "neckline", "torso_front"):
+                    rect = diagnostic_rois.get(roi_name)
+                    entry[f"{roi_name}_prev_mean_abs_diff"] = _mean_abs_diff(candidate_prev_rgb, current_rgb, rect)
+                    entry[f"{roi_name}_source_similarity_ratio"] = _source_similarity_ratio(
+                        composite_base_rgb,
+                        current_rgb,
+                        rect,
+                    )
+                candidate_cleanup_trace.append(entry)
+                candidate_prev_rgb = current_rgb
 
             if (
                 hair_length in ("short", "medium")
@@ -3161,6 +3184,8 @@ class MirrAISDPipeline:
                         hair_length=hair_length,
                         center_anchor_mask=center_chest_strand_removal_mask,
                     )
+                    post_final_cutoff_cleanup_bgr = cv2.cvtColor(post_rgb, cv2.COLOR_RGB2BGR)
+                    _record_candidate_cleanup_stage("final_cutoff_cleanup", post_final_cutoff_cleanup_bgr)
                     post_rgb = self._remove_residual_hair_below_cutoff(
                         post_rgb,
                         face_bbox=face_bbox,
@@ -3173,6 +3198,11 @@ class MirrAISDPipeline:
                         center_anchor_mask=center_chest_strand_removal_mask,
                     )
                     composited_bgr = cv2.cvtColor(post_rgb, cv2.COLOR_RGB2BGR)
+                    post_remove_residual_below_cutoff_bgr = composited_bgr.copy()
+                    _record_candidate_cleanup_stage(
+                        "remove_residual_hair_below_cutoff",
+                        post_remove_residual_below_cutoff_bgr,
+                    )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short/medium 잔여물 cleanup 실패(무시): {e}")
 
@@ -3185,6 +3215,7 @@ class MirrAISDPipeline:
                         face_bbox=face_bbox,
                     )
                     composited_bgr = cv2.cvtColor(post_rgb, cv2.COLOR_RGB2BGR)
+                    _record_candidate_cleanup_stage("preserve_original_hair_tone", composited_bgr)
                 except Exception as e:
                     logger.warning(f"[SDPipeline] 원본 컬러 유지 보정 실패(무시): {e}")
 
@@ -3248,6 +3279,9 @@ class MirrAISDPipeline:
                 "preview_bgr": gen_preview_bgr,
                 "generated_resized_rgb": generated_resized_rgb,
                 "composite_pre_cleanup_bgr": composite_pre_cleanup_bgr,
+                "post_final_cutoff_cleanup_bgr": post_final_cutoff_cleanup_bgr,
+                "post_remove_residual_below_cutoff_bgr": post_remove_residual_below_cutoff_bgr,
+                "candidate_cleanup_trace": candidate_cleanup_trace,
                 "composite_mask": composite_mask.astype(np.float32),
                 "garment_composite_mask": (
                     garment_composite_mask.astype(np.float32)
@@ -3337,6 +3371,22 @@ class MirrAISDPipeline:
                         "composite_pre_cleanup",
                         cv2.cvtColor(cand["composite_pre_cleanup_bgr"], cv2.COLOR_BGR2RGB),
                     )
+                if isinstance(cand.get("post_final_cutoff_cleanup_bgr"), np.ndarray):
+                    debug_images_common["pipeline_post_final_cutoff_cleanup_rank0"] = cand[
+                        "post_final_cutoff_cleanup_bgr"
+                    ].copy()
+                    _store_roi_crops(
+                        "post_final_cutoff_cleanup",
+                        cv2.cvtColor(cand["post_final_cutoff_cleanup_bgr"], cv2.COLOR_BGR2RGB),
+                    )
+                if isinstance(cand.get("post_remove_residual_below_cutoff_bgr"), np.ndarray):
+                    debug_images_common["pipeline_post_remove_residual_below_cutoff_rank0"] = cand[
+                        "post_remove_residual_below_cutoff_bgr"
+                    ].copy()
+                    _store_roi_crops(
+                        "post_remove_residual_below_cutoff",
+                        cv2.cvtColor(cand["post_remove_residual_below_cutoff_bgr"], cv2.COLOR_BGR2RGB),
+                    )
                 if isinstance(cand.get("composite_mask"), np.ndarray):
                     debug_images_common["pipeline_composite_mask_rank0"] = cv2.cvtColor(
                         ((np.clip(cand["composite_mask"].astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255),
@@ -3360,6 +3410,7 @@ class MirrAISDPipeline:
             )
             if debug_data_common is not None and rank == 0:
                 diag = debug_data_common.setdefault("diagnostics", {})
+                diag["candidate_cleanup_trace"] = cand.get("candidate_cleanup_trace") or []
                 rank0_cleanup_stage_trace = []
                 diag["cleanup_stage_trace"] = rank0_cleanup_stage_trace
                 rank0_prev_stage_rgb = (
@@ -4723,6 +4774,32 @@ class MirrAISDPipeline:
                         strongest_source_reintro.get("source_similarity_delta", 0.0)
                     )
                     diag["cleanup_stage_summary"] = cleanup_summary
+                candidate_cleanup_trace = cand.get("candidate_cleanup_trace") or []
+                if candidate_cleanup_trace:
+                    candidate_summary: Dict[str, Any] = {}
+                    for roi_name, threshold in (
+                        ("chest_center", 8.0),
+                        ("left_side", 6.0),
+                        ("right_side", 6.0),
+                    ):
+                        key = f"{roi_name}_prev_mean_abs_diff"
+                        strongest_stage = max(
+                            candidate_cleanup_trace,
+                            key=lambda entry: float(entry.get(key, 0.0)),
+                        )
+                        candidate_summary[f"{roi_name}_largest_delta_stage"] = strongest_stage.get("stage_name")
+                        candidate_summary[f"{roi_name}_largest_delta_value"] = float(strongest_stage.get(key, 0.0))
+                        first_material = next(
+                            (
+                                entry for entry in candidate_cleanup_trace
+                                if float(entry.get(key, 0.0)) >= threshold
+                            ),
+                            None,
+                        )
+                        candidate_summary[f"{roi_name}_first_material_stage"] = (
+                            first_material.get("stage_name") if first_material is not None else None
+                        )
+                    diag["candidate_cleanup_summary"] = candidate_summary
                 logger.info(
                     "[SDPipeline][diag][stage] gen->final=%.2f comp->final=%.2f chest(gen)=%.2f left(comp)=%.2f right(comp)=%.2f",
                     stage_diffs.get("generated_resized_vs_final_mean_abs_diff", 0.0),
