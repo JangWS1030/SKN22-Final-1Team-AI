@@ -446,8 +446,8 @@ class MirrAISDPipeline:
             m_u8 = (m * 255).astype(np.uint8)
             bgr = cv2.cvtColor(m_u8, cv2.COLOR_GRAY2BGR)
             
-            # Safe resize for payload reliability
-            max_dim = 1024
+            # Very aggressive resize for payload reliability
+            max_dim = 320
             h, w = bgr.shape[:2]
             if max(h, w) > max_dim:
                 scale = max_dim / max(h, w)
@@ -459,8 +459,8 @@ class MirrAISDPipeline:
                 return
             bgr = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2BGR)
             
-            # Safe resize for payload reliability
-            max_dim = 1024
+            # Very aggressive resize for payload reliability
+            max_dim = 320
             h, w = bgr.shape[:2]
             if max(h, w) > max_dim:
                 scale = max_dim / max(h, w)

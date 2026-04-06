@@ -162,6 +162,11 @@ def main() -> int:
             raise SystemExit("Health check response did not contain status=ok")
         return 0
 
+    if not output.get("results"):
+        print(f"[main] WARNING: 'results' is missing in output. Full output keys: {list(output.keys())}")
+        if "error" in output:
+            print(f"[main] ERROR in output: {output['error']}")
+
     saved = save_results(output, args.output_dir)
     print(json.dumps({"saved_images": [str(path) for path in saved]}, ensure_ascii=False, indent=2))
     return 0
