@@ -6351,6 +6351,7 @@ def _remove_residual_hair_below_cutoff(
     lateral_preserve: Optional[np.ndarray] = None,
     hair_length: str = "short",
     center_anchor_mask: Optional[np.ndarray] = None,
+    debug_outputs: Optional[Dict[str, np.ndarray]] = None,
 ) -> np.ndarray:
     """
     short/medium 변환 후 cutoff 아래에 남은 머리카락을 재검출해 정리.
@@ -6507,6 +6508,12 @@ def _remove_residual_hair_below_cutoff(
             )
             residual_u8 = cv2.bitwise_and(residual_u8, cv2.bitwise_not(lateral_u8))
 
+    if debug_outputs is not None:
+        debug_outputs["residual_below_cutoff_mask"] = residual_u8.astype(np.float32) / 255.0
+        debug_outputs["residual_below_cutoff_near_mask"] = residual_near_u8.astype(np.float32) / 255.0
+        debug_outputs["residual_below_cutoff_dark_tail_mask"] = dark_tail_u8.astype(np.float32) / 255.0
+        debug_outputs["residual_below_cutoff_front_cleanup_mask"] = front_cleanup_u8.astype(np.float32) / 255.0
+
     if int((residual_u8 > 0).sum()) < 60:
         return img_rgb
 
@@ -6528,6 +6535,7 @@ def _final_cutoff_cleanup(
     lateral_preserve: Optional[np.ndarray] = None,
     hair_length: str = "short",
     center_anchor_mask: Optional[np.ndarray] = None,
+    debug_outputs: Optional[Dict[str, np.ndarray]] = None,
 ) -> np.ndarray:
     """
     최종 결과에서 cutoff 아래 long-hair 제거 마스크 영역을 한 번 더 정리.
@@ -6705,6 +6713,13 @@ def _final_cutoff_cleanup(
                 iterations=1,
             )
             force_u8 = cv2.bitwise_and(force_u8, cv2.bitwise_not(lateral_u8))
+
+    if debug_outputs is not None:
+        debug_outputs["final_cutoff_force_mask"] = force_u8.astype(np.float32) / 255.0
+        debug_outputs["final_cutoff_corridor_mask"] = corridor.astype(np.float32) / 255.0
+        debug_outputs["final_cutoff_hair_intersection_mask"] = hair_inter_u8.astype(np.float32) / 255.0
+        debug_outputs["final_cutoff_dark_tail_mask"] = dark_tail_u8.astype(np.float32) / 255.0
+        debug_outputs["final_cutoff_front_cleanup_mask"] = front_cleanup_u8.astype(np.float32) / 255.0
 
     min_cleanup_px = 28 if hair_length == "short" else 40
     if int((force_u8 > 0).sum()) < min_cleanup_px:

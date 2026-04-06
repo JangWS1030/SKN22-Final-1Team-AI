@@ -3146,6 +3146,8 @@ class MirrAISDPipeline:
             candidate_prev_rgb = cv2.cvtColor(composite_pre_cleanup_bgr, cv2.COLOR_BGR2RGB)
             post_final_cutoff_cleanup_bgr: Optional[np.ndarray] = None
             post_remove_residual_below_cutoff_bgr: Optional[np.ndarray] = None
+            final_cutoff_debug_masks: Dict[str, np.ndarray] = {}
+            residual_cleanup_debug_masks: Dict[str, np.ndarray] = {}
 
             def _record_candidate_cleanup_stage(stage_name: str, current_bgr: np.ndarray) -> None:
                 nonlocal candidate_prev_rgb
@@ -3183,6 +3185,11 @@ class MirrAISDPipeline:
                         lateral_preserve=lateral_neck_preserve_for_post,
                         hair_length=hair_length,
                         center_anchor_mask=center_chest_strand_removal_mask,
+                        debug_outputs=(
+                            final_cutoff_debug_masks
+                            if debug_images_common is not None and rank == 0
+                            else None
+                        ),
                     )
                     post_final_cutoff_cleanup_bgr = cv2.cvtColor(post_rgb, cv2.COLOR_RGB2BGR)
                     _record_candidate_cleanup_stage("final_cutoff_cleanup", post_final_cutoff_cleanup_bgr)
@@ -3196,6 +3203,11 @@ class MirrAISDPipeline:
                         lateral_preserve=lateral_neck_preserve_for_post,
                         hair_length=hair_length,
                         center_anchor_mask=center_chest_strand_removal_mask,
+                        debug_outputs=(
+                            residual_cleanup_debug_masks
+                            if debug_images_common is not None and rank == 0
+                            else None
+                        ),
                     )
                     composited_bgr = cv2.cvtColor(post_rgb, cv2.COLOR_RGB2BGR)
                     post_remove_residual_below_cutoff_bgr = composited_bgr.copy()
@@ -3281,6 +3293,8 @@ class MirrAISDPipeline:
                 "composite_pre_cleanup_bgr": composite_pre_cleanup_bgr,
                 "post_final_cutoff_cleanup_bgr": post_final_cutoff_cleanup_bgr,
                 "post_remove_residual_below_cutoff_bgr": post_remove_residual_below_cutoff_bgr,
+                "final_cutoff_debug_masks": final_cutoff_debug_masks,
+                "residual_cleanup_debug_masks": residual_cleanup_debug_masks,
                 "candidate_cleanup_trace": candidate_cleanup_trace,
                 "composite_mask": composite_mask.astype(np.float32),
                 "garment_composite_mask": (
@@ -3387,6 +3401,10 @@ class MirrAISDPipeline:
                         "post_remove_residual_below_cutoff",
                         cv2.cvtColor(cand["post_remove_residual_below_cutoff_bgr"], cv2.COLOR_BGR2RGB),
                     )
+                for name, mask in (cand.get("final_cutoff_debug_masks") or {}).items():
+                    _store_mask(f"pipeline_{name}", mask)
+                for name, mask in (cand.get("residual_cleanup_debug_masks") or {}).items():
+                    _store_mask(f"pipeline_{name}", mask)
                 if isinstance(cand.get("composite_mask"), np.ndarray):
                     debug_images_common["pipeline_composite_mask_rank0"] = cv2.cvtColor(
                         ((np.clip(cand["composite_mask"].astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255),
@@ -3411,6 +3429,11 @@ class MirrAISDPipeline:
             if debug_data_common is not None and rank == 0:
                 diag = debug_data_common.setdefault("diagnostics", {})
                 diag["candidate_cleanup_trace"] = cand.get("candidate_cleanup_trace") or []
+                torso_rect = diagnostic_rois.get("torso_front")
+                for name, mask in (cand.get("final_cutoff_debug_masks") or {}).items():
+                    _mask_stats(name, mask, torso_rect, bucket="cleanup_mask_stats")
+                for name, mask in (cand.get("residual_cleanup_debug_masks") or {}).items():
+                    _mask_stats(name, mask, torso_rect, bucket="cleanup_mask_stats")
                 rank0_cleanup_stage_trace = []
                 diag["cleanup_stage_trace"] = rank0_cleanup_stage_trace
                 rank0_prev_stage_rgb = (
