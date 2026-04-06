@@ -1363,6 +1363,59 @@ def _build_short_below_bob_torso_mask(
         cutoff_y=cutoff_y,
         min_keep_px=80,
     )
+    if int((torso_u8 > 0).sum()) < 80:
+        fallback_half = max(
+            22,
+            int(face_w * float(getattr(self.config, "overwrite_core_fallback_half_ratio", 0.28))),
+        )
+        fallback_top = max(
+            bob_floor,
+            int(cutoff_y + face_h * float(getattr(self.config, "overwrite_core_fallback_top_ratio", 0.22))),
+        )
+        fallback_bottom = min(
+            bottom,
+            int(cutoff_y + face_h * float(getattr(self.config, "overwrite_core_fallback_bottom_ratio", 0.98))),
+        )
+        fallback_window_u8 = np.zeros((H, W), dtype=np.uint8)
+        if fallback_top < fallback_bottom:
+            fallback_window_u8[
+                fallback_top:fallback_bottom,
+                max(0, cx - fallback_half):min(W, cx + fallback_half),
+            ] = 255
+            fallback_center = (cx, min(H - 1, int(y2 + face_h * 0.64)))
+            fallback_axes = (
+                max(18, int(face_w * 0.26)),
+                max(20, int(face_h * 0.34)),
+            )
+            cv2.ellipse(fallback_window_u8, fallback_center, fallback_axes, 0, 0, 360, 255, -1)
+        fallback_source_u8 = cv2.bitwise_and(seed_pretrim_u8, fallback_window_u8)
+        if use_amodal_support:
+            supported_fallback_u8 = cv2.bitwise_and(amodal_support_u8, fallback_window_u8)
+            if int((supported_fallback_u8 > 0).sum()) >= 80:
+                fallback_source_u8 = cv2.bitwise_or(fallback_source_u8, supported_fallback_u8)
+        fallback_source_u8 = cv2.morphologyEx(
+            fallback_source_u8,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+        )
+        fallback_source_u8 = cv2.morphologyEx(
+            fallback_source_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+        )
+        fallback_source_u8 = cv2.erode(
+            fallback_source_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
+            iterations=1,
+        )
+        fallback_source_u8 = cv2.bitwise_and(fallback_source_u8, fallback_window_u8)
+        if int((fallback_source_u8 > 0).sum()) >= 80:
+            torso_u8 = fallback_source_u8
+            if debug_info is not None:
+                debug_info["reason"] = "fallback_center_anchor"
+                debug_info["fallback_center_anchor_px"] = int((fallback_source_u8 > 0).sum())
+        elif debug_info is not None:
+            debug_info["fallback_center_anchor_px"] = int((fallback_source_u8 > 0).sum())
     if debug_info is not None:
         seed_pretrim_px = int((seed_pretrim_u8 > 0).sum())
         seed_posttrim_px = int((torso_u8 > 0).sum())
@@ -1376,12 +1429,14 @@ def _build_short_below_bob_torso_mask(
             "bob_floor": int(bob_floor),
             "bottom": int(bottom),
             "center_half": int(center_half),
-            "reason": "active" if seed_posttrim_px >= 80 else "trimmed_to_empty",
+            "reason": debug_info.get("reason") or ("active" if seed_posttrim_px >= 80 else "trimmed_to_empty"),
         })
     if debug_masks is not None:
         debug_masks["amodal_support"] = amodal_support_u8.astype(np.float32) / 255.0
         debug_masks["seed_pretrim"] = seed_pretrim_u8.astype(np.float32) / 255.0
         debug_masks["seed_posttrim"] = torso_u8.astype(np.float32) / 255.0
+        if "fallback_source_u8" in locals():
+            debug_masks["fallback_center_anchor"] = fallback_source_u8.astype(np.float32) / 255.0
     if int((torso_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -2381,8 +2436,10 @@ def _cleanup_region_with_cloth_restore(
     ignore_final_hair_for_cloth_restore: bool = False,
     cleanup_dark_tail: bool = True,
     prefer_plain_cloth_fill: bool = False,
+    allow_plain_cloth_force: bool = True,
     debug_trace: Optional[List[Tuple[str, np.ndarray]]] = None,
     debug_info: Optional[Dict[str, Any]] = None,
+    debug_masks: Optional[Dict[str, np.ndarray]] = None,
 ) -> np.ndarray:
     H, W = current_rgb.shape[:2]
     if source_rgb.shape[:2] != (H, W) or cleanup_mask.shape != (H, W):
@@ -2458,11 +2515,17 @@ def _cleanup_region_with_cloth_restore(
             "reference_fill_px": int((reference_fill_u8 > 0).sum()),
             "cleanup_dark_tail": bool(cleanup_dark_tail),
             "prefer_plain_cloth_fill": bool(prefer_plain_cloth_fill),
+            "allow_plain_cloth_force": bool(allow_plain_cloth_force),
         })
+    if debug_masks is not None:
+        debug_masks["cleanup_mask"] = mask_u8.astype(np.float32) / 255.0
+        debug_masks["cloth_cleanup"] = cloth_cleanup_u8.astype(np.float32) / 255.0
+        debug_masks["reference_fill"] = reference_fill_u8.astype(np.float32) / 255.0
+        debug_masks["visible_cloth"] = visible_cloth_u8.astype(np.float32) / 255.0
     if int((visible_cloth_u8 > 0).sum()) >= 80:
         plain_gray = float(np.median(source_gray[visible_cloth_u8 > 0]))
         plain_sat = float(np.median(source_sat[visible_cloth_u8 > 0]))
-        use_plain_cloth_force = plain_gray >= 168.0 and plain_sat <= 84.0
+        use_plain_cloth_force = bool(allow_plain_cloth_force and plain_gray >= 168.0 and plain_sat <= 84.0)
         if prefer_plain_cloth_fill:
             use_plain_cloth_force = True
     if debug_info is not None:
@@ -2495,6 +2558,8 @@ def _cleanup_region_with_cloth_restore(
         )
         if debug_trace is not None:
             debug_trace.append(("plain_fill_reference", reference_fill_rgb.copy()))
+        if debug_masks is not None:
+            debug_masks["plain_fill_reference"] = reference_fill_mask.astype(np.float32)
     if prefer_plain_cloth_fill and (plain_fill_rgb is not None or reference_fill_rgb is not None):
         cleaned = self._restore_reference_region(
             cleaned,

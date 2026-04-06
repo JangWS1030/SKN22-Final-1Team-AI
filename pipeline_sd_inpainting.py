@@ -212,9 +212,13 @@ class SDInpaintConfig:
     short_side_column_outer_strip_gap_ratio: float = 0.46
     short_side_column_restore_plain_fill: bool = False
     short_side_column_outer_strip_width_scale: float = 0.96
+    short_side_column_allow_plain_cloth_force: bool = False
     final_hair_lane_center_keepout_ratio: float = 0.20
     final_hair_lane_neckline_keepout_ratio: float = 0.30
     final_hair_lane_outer_strip_gap_ratio: float = 0.30
+    overwrite_core_fallback_half_ratio: float = 0.28
+    overwrite_core_fallback_top_ratio: float = 0.22
+    overwrite_core_fallback_bottom_ratio: float = 0.98
 
     # 씨드 리스트 — None 이면 요청마다 랜덤 생성 (권장), 고정값 지정도 가능
     seeds: Optional[List[int]] = None
@@ -1317,6 +1321,8 @@ class MirrAISDPipeline:
         _store_mask("pipeline_cloth_generation_guard_mask", cloth_generation_guard)
         _store_mask("pipeline_short_upper_body_repaint_seed_mask", short_upper_body_repaint_seed_mask)
         _store_mask("pipeline_short_upper_body_repaint_mask", short_upper_body_repaint_mask)
+        for name, mask in (locals().get("overwrite_core_seed_debug_masks") or {}).items():
+            _store_mask(f"pipeline_overwrite_core_seed_{name}_mask", mask)
         _store_mask("pipeline_upper_clothes_overwrite_mask", upper_clothes_overwrite_mask)
         _store_mask("pipeline_upper_clothes_overwrite_core_mask", upper_clothes_overwrite_core_mask)
         _store_mask("pipeline_upper_clothes_overwrite_effective_mask", effective_upper_clothes_overwrite_mask)
@@ -2845,6 +2851,8 @@ class MirrAISDPipeline:
             for name, mask in (locals().get("overwrite_core_seed_debug_masks") or {}).items():
                 _mask_stats(f"overwrite_core_seed_{name}", mask, torso_rect)
             diag = debug_data_common.setdefault("diagnostics", {})
+            if isinstance(locals().get("overwrite_core_seed_debug"), dict):
+                diag["overwrite_core_seed_debug"] = dict(locals().get("overwrite_core_seed_debug"))
             mask_stats = diag.setdefault("mask_stats", {})
             guard_release_sum = float(mask_stats.get("guard_release", {}).get("sum", 0.0))
             cloth_guard_sum = float(mask_stats.get("cloth_guard", {}).get("sum", 0.0))
@@ -4028,6 +4036,7 @@ class MirrAISDPipeline:
                         if hair_length == "short":
                             side_column_cleanup_trace: List[Tuple[str, np.ndarray]] = []
                             side_column_cleanup_debug: Dict[str, Any] = {}
+                            side_column_cleanup_masks: Dict[str, np.ndarray] = {}
                             final_rgb = self._cleanup_region_with_cloth_restore(
                                 source_rgb=img_rgb,
                                 current_rgb=final_rgb,
@@ -4039,8 +4048,12 @@ class MirrAISDPipeline:
                                 prefer_plain_cloth_fill=bool(
                                     getattr(self.config, "short_side_column_restore_plain_fill", False)
                                 ),
+                                allow_plain_cloth_force=bool(
+                                    getattr(self.config, "short_side_column_allow_plain_cloth_force", False)
+                                ),
                                 debug_trace=side_column_cleanup_trace,
                                 debug_info=side_column_cleanup_debug,
+                                debug_masks=side_column_cleanup_masks,
                             )
                         else:
                             final_rgb = self._restore_cloth_overlap_from_source(
@@ -4066,6 +4079,9 @@ class MirrAISDPipeline:
                         )
                         for name, mask in side_column_debug_masks.items():
                             _store_mask(f"pipeline_side_column_cloth_restore_{name}_mask", mask)
+                        if hair_length == "short":
+                            for name, mask in side_column_cleanup_masks.items():
+                                _store_mask(f"pipeline_side_column_cloth_restore_cleanup_{name}_mask", mask)
                     if debug_data_common is not None and rank == 0 and side_column_restore_applied:
                         diag = debug_data_common.setdefault("diagnostics", {})
                         diag["side_column_cloth_restore_debug"] = side_column_debug_info
@@ -4078,6 +4094,13 @@ class MirrAISDPipeline:
                             )
                         if hair_length == "short":
                             diag["side_column_cloth_restore_cleanup_debug"] = side_column_cleanup_debug
+                            for name, mask in side_column_cleanup_masks.items():
+                                _mask_stats(
+                                    f"side_column_cloth_restore_cleanup_{name}",
+                                    mask,
+                                    diagnostic_rois.get("torso_front"),
+                                    bucket="cleanup_mask_stats",
+                                )
                             for substage_name, substage_rgb in side_column_cleanup_trace:
                                 _record_rank0_cleanup_stage(
                                     f"side_column_cloth_restore_{substage_name}",
