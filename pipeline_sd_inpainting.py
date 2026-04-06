@@ -2890,6 +2890,22 @@ class MirrAISDPipeline:
                 try:
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
+                    side_restore_cloth_mask = np.clip(
+                        cloth_restore_mask_for_post.astype(np.float32),
+                        0.0,
+                        1.0,
+                    )
+                    if (
+                        hair_length == "short"
+                        and subject_cloth_anchor_for_post is not None
+                        and subject_cloth_anchor_for_post.shape == (H, W)
+                        and float(subject_cloth_anchor_for_post.sum()) > 0.0
+                    ):
+                        anchor_weight = 0.98 if subject_gender_mode != "male" else 0.90
+                        side_restore_cloth_mask = np.maximum(
+                            side_restore_cloth_mask,
+                            np.clip(subject_cloth_anchor_for_post.astype(np.float32), 0.0, 1.0) * anchor_weight,
+                        ).astype(np.float32)
                     side_column_candidate_mask = np.zeros((H, W), dtype=np.float32)
                     if removal_mask_for_post is not None and removal_mask_for_post.shape == (H, W):
                         side_column_candidate_mask = np.maximum(
@@ -2914,9 +2930,19 @@ class MirrAISDPipeline:
                             side_column_candidate_mask,
                             np.clip(below_bob_cloth_restore_for_post.astype(np.float32), 0.0, 1.0),
                         ).astype(np.float32)
+                    if (
+                        hair_length == "short"
+                        and subject_cloth_anchor_for_post is not None
+                        and subject_cloth_anchor_for_post.shape == (H, W)
+                        and float(subject_cloth_anchor_for_post.sum()) > 0.0
+                    ):
+                        side_column_candidate_mask = np.maximum(
+                            side_column_candidate_mask,
+                            np.clip(subject_cloth_anchor_for_post.astype(np.float32), 0.0, 1.0) * 0.92,
+                        ).astype(np.float32)
                     side_column_restore_mask = self._build_side_column_cloth_restore_mask(
                         img_rgb=final_rgb,
-                        cloth_mask=cloth_restore_mask_for_post,
+                        cloth_mask=side_restore_cloth_mask,
                         candidate_mask=side_column_candidate_mask,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
@@ -2926,7 +2952,7 @@ class MirrAISDPipeline:
                     )
                     direct_side_column_restore_mask = self._build_direct_short_column_restore_mask(
                         removal_mask=removal_mask_for_post,
-                        cloth_mask=cloth_restore_mask_for_post,
+                        cloth_mask=side_restore_cloth_mask,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
                         hair_length=hair_length,
@@ -3017,7 +3043,7 @@ class MirrAISDPipeline:
                                 source_rgb=img_rgb,
                                 current_rgb=final_rgb,
                                 cleanup_mask=side_column_restore_mask,
-                                cloth_mask=cloth_restore_mask_for_post,
+                                cloth_mask=side_restore_cloth_mask,
                                 final_hair_mask=final_hair_mask,
                                 ignore_final_hair_for_cloth_restore=True,
                                 cleanup_dark_tail=True,
@@ -3697,6 +3723,15 @@ class MirrAISDPipeline:
                             female_short_cloth_reference_mask = np.maximum(
                                 female_short_cloth_reference_mask,
                                 np.clip(bright_cloth_preserve_for_post.astype(np.float32) * 0.96, 0.0, 1.0),
+                            )
+                        if (
+                            subject_cloth_anchor_for_post is not None
+                            and subject_cloth_anchor_for_post.shape == final_bgr.shape[:2]
+                            and float(subject_cloth_anchor_for_post.sum()) > 0.0
+                        ):
+                            female_short_cloth_reference_mask = np.maximum(
+                                female_short_cloth_reference_mask,
+                                np.clip(subject_cloth_anchor_for_post.astype(np.float32), 0.0, 1.0) * 0.96,
                             )
                         female_short_direct_cloth_restore_mask = np.maximum(
                             short_lower_garment_cleanup_mask_for_post,
