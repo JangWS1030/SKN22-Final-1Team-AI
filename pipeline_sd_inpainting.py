@@ -528,6 +528,8 @@ class MirrAISDPipeline:
             name: str,
             mask: Optional[np.ndarray],
             torso_rect: Optional[Tuple[int, int, int, int]],
+            *,
+            bucket: str = "mask_stats",
         ) -> None:
             if debug_data_common is None or mask is None:
                 return
@@ -546,6 +548,22 @@ class MirrAISDPipeline:
                 torso_region = mask_bin[ty1:ty2, tx1:tx2]
                 torso_nonzero = int(torso_region.sum())
                 torso_ratio = float(torso_nonzero) / max(float(torso_area), 1.0)
+            roi_occupancy: Dict[str, Dict[str, float]] = {}
+            for roi_name, rect in diagnostic_rois.items():
+                if roi_name == "full_image" or rect is None:
+                    continue
+                rx1, ry1, rx2, ry2 = rect
+                roi_area = _rect_area(rect)
+                roi_nonzero = 0
+                roi_ratio = 0.0
+                if roi_area > 0:
+                    roi_nonzero = int(mask_bin[ry1:ry2, rx1:rx2].sum())
+                    roi_ratio = float(roi_nonzero) / max(float(roi_area), 1.0)
+                roi_occupancy[roi_name] = {
+                    "nonzero_pixel_count": roi_nonzero,
+                    "occupancy": roi_ratio,
+                    "area": roi_area,
+                }
             stats = {
                 "sum": float(mask_f.sum()),
                 "nonzero_pixel_count": nonzero_count,
@@ -554,17 +572,22 @@ class MirrAISDPipeline:
                 "torso_roi_occupancy": torso_ratio,
                 "torso_roi_area": torso_area,
                 "image_area_ratio": float(nonzero_count) / image_area,
+                "roi_occupancy": roi_occupancy,
             }
             diag = debug_data_common.setdefault("diagnostics", {})
-            mask_stats = diag.setdefault("mask_stats", {})
+            mask_stats = diag.setdefault(bucket, {})
             mask_stats[name] = stats
             logger.info(
-                "[SDPipeline][diag][mask] %s sum=%.2f nonzero=%d bbox=%s torso_occ=%.4f area_ratio=%.4f",
+                "[SDPipeline][diag][mask][%s] %s sum=%.2f nonzero=%d bbox=%s torso_occ=%.4f chest_occ=%.4f left_occ=%.4f right_occ=%.4f area_ratio=%.4f",
+                bucket,
                 name,
                 stats["sum"],
                 stats["nonzero_pixel_count"],
                 stats["bbox"],
                 stats["torso_roi_occupancy"],
+                stats["roi_occupancy"].get("chest_center", {}).get("occupancy", 0.0),
+                stats["roi_occupancy"].get("left_side", {}).get("occupancy", 0.0),
+                stats["roi_occupancy"].get("right_side", {}).get("occupancy", 0.0),
                 stats["image_area_ratio"],
             )
 
@@ -2796,6 +2819,7 @@ class MirrAISDPipeline:
             _mask_stats("cloth_guard", cloth_generation_guard, torso_rect)
             _mask_stats("overwrite_mask", upper_clothes_overwrite_mask, torso_rect)
             _mask_stats("overwrite_effective", effective_upper_clothes_overwrite_mask, torso_rect)
+            _mask_stats("overwrite_core_seed", short_upper_body_repaint_seed_mask, torso_rect)
             _mask_stats("overwrite_core", effective_upper_clothes_overwrite_core_mask, torso_rect)
             _mask_stats("garment_prepass", source_garment_prepass_mask, torso_rect)
             _mask_stats("short_repaint_mask", short_upper_body_repaint_mask, torso_rect)
@@ -2818,6 +2842,29 @@ class MirrAISDPipeline:
                 "final_inpaint_sum_to_torso_roi_area": (
                     final_inpaint_sum / torso_roi_area if torso_roi_area > 1e-6 else 0.0
                 ),
+            }
+            overwrite_core_seed_px = int((np.clip(short_upper_body_repaint_seed_mask.astype(np.float32), 0.0, 1.0) > 0.08).sum())
+            overwrite_core_px = int((np.clip(upper_clothes_overwrite_core_mask.astype(np.float32), 0.0, 1.0) > 0.08).sum())
+            protect_overlap_px = int(
+                (
+                    (np.clip(short_upper_body_repaint_seed_mask.astype(np.float32), 0.0, 1.0) > 0.08)
+                    & (np.clip(protect_mask_for_sd.astype(np.float32), 0.0, 1.0) > 0.08)
+                ).sum()
+            )
+            core_reason = "active"
+            if overwrite_core_px <= 0:
+                if overwrite_core_seed_px <= 0:
+                    core_reason = "seed_mask_empty"
+                elif protect_overlap_px >= max(1, int(overwrite_core_seed_px * 0.95)):
+                    core_reason = "seed_removed_by_face_protect"
+                else:
+                    core_reason = "core_mask_not_promoted"
+            diag["overwrite_core_debug"] = {
+                "seed_mask_px": overwrite_core_seed_px,
+                "core_mask_px": overwrite_core_px,
+                "protect_overlap_px": protect_overlap_px,
+                "short_repaint_px": int(short_upper_body_repaint_px),
+                "reason": core_reason,
             }
             logger.info(
                 "[SDPipeline][diag][mask-ratio] cloth_guard/release=%.4f overwrite_core/effective=%.4f final_inpaint/torso=%.4f",
@@ -3304,6 +3351,92 @@ class MirrAISDPipeline:
                         cv2.COLOR_GRAY2BGR,
                     )
             final_bgr = cand["image_bgr"]
+            rank0_cleanup_stage_trace: Optional[List[Dict[str, Any]]] = None
+            rank0_prev_stage_rgb: Optional[np.ndarray] = None
+            rank0_composite_pre_cleanup_rgb = (
+                cv2.cvtColor(cand["composite_pre_cleanup_bgr"], cv2.COLOR_BGR2RGB)
+                if isinstance(cand.get("composite_pre_cleanup_bgr"), np.ndarray)
+                else None
+            )
+            if debug_data_common is not None and rank == 0:
+                diag = debug_data_common.setdefault("diagnostics", {})
+                rank0_cleanup_stage_trace = []
+                diag["cleanup_stage_trace"] = rank0_cleanup_stage_trace
+                rank0_prev_stage_rgb = (
+                    rank0_composite_pre_cleanup_rgb.copy()
+                    if isinstance(rank0_composite_pre_cleanup_rgb, np.ndarray)
+                    else cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
+                )
+
+                def _record_rank0_cleanup_stage(
+                    stage_name: str,
+                    image_bgr: np.ndarray,
+                    *,
+                    trigger_mask: Optional[np.ndarray] = None,
+                    mask_label: Optional[str] = None,
+                    force: bool = False,
+                    extra: Optional[Dict[str, Any]] = None,
+                ) -> None:
+                    nonlocal rank0_prev_stage_rgb
+                    if rank0_cleanup_stage_trace is None:
+                        return
+                    current_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+                    prev_rgb = rank0_prev_stage_rgb
+                    prev_mean_abs_diff = _mean_abs_diff(prev_rgb, current_rgb)
+                    if not force and prev_mean_abs_diff <= 0.01 and trigger_mask is None:
+                        rank0_prev_stage_rgb = current_rgb
+                        return
+                    stage_idx = len(rank0_cleanup_stage_trace)
+                    stage_key = f"cleanup_stage_{stage_idx:02d}_{stage_name}"
+                    entry: Dict[str, Any] = {
+                        "stage_name": stage_name,
+                        "stage_key": stage_key,
+                        "prev_mean_abs_diff": prev_mean_abs_diff,
+                        "source_similarity_ratio": _source_similarity_ratio(composite_base_rgb, current_rgb),
+                    }
+                    prev_source_similarity = _source_similarity_ratio(composite_base_rgb, prev_rgb)
+                    entry["source_similarity_delta"] = entry["source_similarity_ratio"] - prev_source_similarity
+                    for roi_name in ("chest_center", "left_side", "right_side", "neckline", "torso_front"):
+                        rect = diagnostic_rois.get(roi_name)
+                        entry[f"{roi_name}_prev_mean_abs_diff"] = _mean_abs_diff(prev_rgb, current_rgb, rect)
+                        current_sim = _source_similarity_ratio(composite_base_rgb, current_rgb, rect)
+                        prev_sim = _source_similarity_ratio(composite_base_rgb, prev_rgb, rect)
+                        entry[f"{roi_name}_source_similarity_ratio"] = current_sim
+                        entry[f"{roi_name}_source_similarity_delta"] = current_sim - prev_sim
+                    if extra:
+                        entry.update(extra)
+                    if trigger_mask is not None:
+                        cleanup_mask_name = mask_label or stage_name
+                        _mask_stats(
+                            cleanup_mask_name,
+                            trigger_mask,
+                            diagnostic_rois.get("torso_front"),
+                            bucket="cleanup_mask_stats",
+                        )
+                        entry["mask_label"] = cleanup_mask_name
+                    if debug_images_common is not None:
+                        debug_images_common[stage_key] = image_bgr.copy()
+                        _store_roi_crops(stage_key, current_rgb)
+                    rank0_cleanup_stage_trace.append(entry)
+                    logger.info(
+                        "[SDPipeline][diag][cleanup-stage] %s prev=%.2f chest=%.2f left=%.2f right=%.2f src_delta=%.4f",
+                        stage_name,
+                        entry["prev_mean_abs_diff"],
+                        entry.get("chest_center_prev_mean_abs_diff", 0.0),
+                        entry.get("left_side_prev_mean_abs_diff", 0.0),
+                        entry.get("right_side_prev_mean_abs_diff", 0.0),
+                        entry.get("source_similarity_delta", 0.0),
+                    )
+                    rank0_prev_stage_rgb = current_rgb
+
+                _record_rank0_cleanup_stage(
+                    "candidate_postprocess_base",
+                    final_bgr,
+                    force=True,
+                    extra={
+                        "reference_stage": "composite_pre_cleanup",
+                    },
+                )
             if (
                 self.config.enable_post_cloth_refine
                 and hair_length in ("short", "medium")
@@ -3312,6 +3445,7 @@ class MirrAISDPipeline:
                 and cutoff_y_for_post is not None
             ):
                 try:
+                    post_cloth_refine_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     cloth_refine_mask = self._build_post_cloth_refine_mask(
@@ -3338,6 +3472,7 @@ class MirrAISDPipeline:
                             refine_mode="cloth",
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        post_cloth_refine_applied = True
                         if debug_images_common is not None and rank == 0:
                             debug_images_common["pipeline_post_cloth_refine_mask"] = cv2.cvtColor(
                                 cloth_refine_u8,
@@ -3351,6 +3486,14 @@ class MirrAISDPipeline:
                             reference_mask=cloth_mask_dilated,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        post_cloth_refine_applied = True
+                    if debug_data_common is not None and rank == 0 and post_cloth_refine_applied:
+                        _record_rank0_cleanup_stage(
+                            "post_cloth_refine",
+                            final_bgr,
+                            trigger_mask=cloth_refine_mask,
+                            mask_label="post_cloth_refine",
+                        )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] post cloth refine 실패(무시): {e}")
             if (
@@ -3360,6 +3503,7 @@ class MirrAISDPipeline:
                 and cutoff_y_for_post is not None
             ):
                 try:
+                    final_artifact_cleanup_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     x1, y1, x2, y2 = face_bbox
@@ -3598,11 +3742,23 @@ class MirrAISDPipeline:
                             reference_mask=cloth_mask_dilated,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        final_artifact_cleanup_applied = True
                         if debug_images_common is not None and rank == 0:
                             debug_images_common["pipeline_final_artifact_cloth_cleanup_mask"] = cv2.cvtColor(
                                 cleanup_u8,
                                 cv2.COLOR_GRAY2BGR,
                             )
+                    if debug_data_common is not None and rank == 0 and final_artifact_cleanup_applied:
+                        _record_rank0_cleanup_stage(
+                            "final_artifact_cloth_cleanup",
+                            final_bgr,
+                            trigger_mask=cleanup_u8.astype(np.float32) / 255.0,
+                            mask_label="final_artifact_cloth_cleanup",
+                            extra={
+                                "micro_cleanup_px": int((micro_cleanup_u8 > 0).sum()),
+                                "dark_tail_px": int((final_dark_tail_u8 > 0).sum()),
+                            },
+                        )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] final artifact cloth cleanup ?ㅽ뙣(臾댁떆): {e}")
             if (
@@ -3613,6 +3769,7 @@ class MirrAISDPipeline:
                 and cutoff_y_for_post is not None
             ):
                 try:
+                    shoulder_refine_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     _, shoulder_y1, _, shoulder_y2 = face_bbox
@@ -3681,10 +3838,19 @@ class MirrAISDPipeline:
                         )
                     if shoulder_refine_px >= 100:
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        shoulder_refine_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_shoulder_cloth_refine_mask"] = cv2.cvtColor(
                             shoulder_cloth_refine_u8,
                             cv2.COLOR_GRAY2BGR,
+                        )
+                    if debug_data_common is not None and rank == 0 and shoulder_refine_applied:
+                        _record_rank0_cleanup_stage(
+                            "shoulder_cloth_refine",
+                            final_bgr,
+                            trigger_mask=shoulder_cloth_refine_mask,
+                            mask_label="shoulder_cloth_refine",
+                            extra={"shoulder_refine_px": shoulder_refine_px},
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] shoulder cloth refine failed (ignored): {e}")
@@ -3694,6 +3860,7 @@ class MirrAISDPipeline:
                 and cutoff_y_for_post is not None
             ):
                 try:
+                    side_column_restore_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     side_column_candidate_mask = np.zeros((H, W), dtype=np.float32)
@@ -3778,6 +3945,7 @@ class MirrAISDPipeline:
                             )
                             final_rgb = self._cv2_refine_cloth_region(final_rgb, side_column_restore_mask)
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        side_column_restore_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_side_column_cloth_restore_mask"] = cv2.cvtColor(
                             side_column_restore_u8,
@@ -3790,6 +3958,14 @@ class MirrAISDPipeline:
                             ),
                             cv2.COLOR_GRAY2BGR,
                         )
+                    if debug_data_common is not None and rank == 0 and side_column_restore_applied:
+                        _record_rank0_cleanup_stage(
+                            "side_column_cloth_restore",
+                            final_bgr,
+                            trigger_mask=side_column_restore_mask,
+                            mask_label="side_column_cloth_restore",
+                            extra={"side_column_px": side_column_px},
+                        )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] side column cloth restore failed (ignored): {e}")
             if (
@@ -3799,6 +3975,7 @@ class MirrAISDPipeline:
                 and cutoff_y_for_post is not None
             ):
                 try:
+                    short_side_lane_refine_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     short_side_lane_refine_mask = self._build_short_final_side_lane_refine_mask(
@@ -3827,10 +4004,19 @@ class MirrAISDPipeline:
                             prefer_plain_cloth_fill=True,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        short_side_lane_refine_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_short_final_side_lane_refine_mask"] = cv2.cvtColor(
                             short_side_lane_refine_u8,
                             cv2.COLOR_GRAY2BGR,
+                        )
+                    if debug_data_common is not None and rank == 0 and short_side_lane_refine_applied:
+                        _record_rank0_cleanup_stage(
+                            "short_final_side_lane_refine",
+                            final_bgr,
+                            trigger_mask=short_side_lane_refine_mask,
+                            mask_label="short_final_side_lane_refine",
+                            extra={"short_side_lane_px": short_side_lane_px},
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short side lane refine failed (ignored): {e}")
@@ -3845,6 +4031,7 @@ class MirrAISDPipeline:
             ):
                 if hair_length == "short":
                     try:
+                        short_lower_tail_cleanup_applied = False
                         final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                         final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                         short_lower_tail_mask = self._build_short_lower_tail_cleanup_mask(
@@ -3870,14 +4057,24 @@ class MirrAISDPipeline:
                                 cleanup_dark_tail=True,
                             )
                             final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                            short_lower_tail_cleanup_applied = True
                         if debug_images_common is not None and rank == 0:
                             debug_images_common["pipeline_short_lower_tail_cleanup_mask"] = cv2.cvtColor(
                                 short_lower_tail_u8,
                                 cv2.COLOR_GRAY2BGR,
                             )
+                        if debug_data_common is not None and rank == 0 and short_lower_tail_cleanup_applied:
+                            _record_rank0_cleanup_stage(
+                                "short_lower_tail_cleanup",
+                                final_bgr,
+                                trigger_mask=short_lower_tail_mask,
+                                mask_label="short_lower_tail_cleanup",
+                                extra={"short_lower_tail_px": short_lower_tail_px},
+                            )
                     except Exception as e:
                         logger.warning(f"[SDPipeline] short lower tail cleanup failed (ignored): {e}")
                 try:
+                    dark_lane_cleanup_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     dark_lane_mask = self._build_dark_lane_cleanup_mask(
                         img_rgb=final_rgb,
@@ -3900,10 +4097,19 @@ class MirrAISDPipeline:
                             reference_mask=cloth_mask_dilated,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        dark_lane_cleanup_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_dark_lane_cleanup_mask"] = cv2.cvtColor(
                             dark_lane_u8,
                             cv2.COLOR_GRAY2BGR,
+                        )
+                    if debug_data_common is not None and rank == 0 and dark_lane_cleanup_applied:
+                        _record_rank0_cleanup_stage(
+                            "dark_lane_cleanup",
+                            final_bgr,
+                            trigger_mask=dark_lane_mask,
+                            mask_label="dark_lane_cleanup",
+                            extra={"dark_lane_px": dark_lane_px},
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] dark lane cleanup failed (ignored): {e}")
@@ -3915,6 +4121,7 @@ class MirrAISDPipeline:
                 and not use_short_torso_garment_repaint
             ):
                 try:
+                    final_hair_lane_cleanup_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     final_hair_lane_mask = self._build_final_hair_lane_cleanup_mask(
@@ -3939,10 +4146,19 @@ class MirrAISDPipeline:
                             reference_mask=cloth_mask_dilated,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        final_hair_lane_cleanup_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_final_hair_lane_cleanup_mask"] = cv2.cvtColor(
                             final_hair_lane_u8,
                             cv2.COLOR_GRAY2BGR,
+                        )
+                    if debug_data_common is not None and rank == 0 and final_hair_lane_cleanup_applied:
+                        _record_rank0_cleanup_stage(
+                            "final_hair_lane_cleanup",
+                            final_bgr,
+                            trigger_mask=final_hair_lane_mask,
+                            mask_label="final_hair_lane_cleanup",
+                            extra={"final_hair_lane_px": final_hair_lane_px},
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] final hair lane cleanup failed (ignored): {e}")
@@ -3954,6 +4170,7 @@ class MirrAISDPipeline:
                 and cutoff_y_for_post is not None
             ):
                 try:
+                    short_bob_tail_cleanup_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     short_bob_tail_mask = self._build_short_bob_tail_suppress_mask(
@@ -3979,10 +4196,19 @@ class MirrAISDPipeline:
                             cleanup_dark_tail=True,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        short_bob_tail_cleanup_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_short_bob_tail_suppress_mask"] = cv2.cvtColor(
                             short_bob_tail_u8,
                             cv2.COLOR_GRAY2BGR,
+                        )
+                    if debug_data_common is not None and rank == 0 and short_bob_tail_cleanup_applied:
+                        _record_rank0_cleanup_stage(
+                            "short_bob_tail_suppress",
+                            final_bgr,
+                            trigger_mask=short_bob_tail_mask,
+                            mask_label="short_bob_tail_suppress",
+                            extra={"short_bob_tail_px": short_bob_tail_px},
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short bob tail suppress failed (ignored): {e}")
@@ -3994,6 +4220,7 @@ class MirrAISDPipeline:
                 and not source_garment_prepass_applied
             ):
                 try:
+                    short_lower_garment_cleanup_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     short_lower_garment_cleanup_mask = self._build_short_lower_garment_cleanup_mask(
@@ -4024,14 +4251,24 @@ class MirrAISDPipeline:
                             prefer_plain_cloth_fill=True,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        short_lower_garment_cleanup_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_short_lower_garment_cleanup_mask"] = cv2.cvtColor(
                             short_lower_garment_cleanup_u8,
                             cv2.COLOR_GRAY2BGR,
                         )
+                    if debug_data_common is not None and rank == 0 and short_lower_garment_cleanup_applied:
+                        _record_rank0_cleanup_stage(
+                            "short_lower_garment_cleanup",
+                            final_bgr,
+                            trigger_mask=short_lower_garment_cleanup_mask,
+                            mask_label="short_lower_garment_cleanup",
+                            extra={"short_lower_garment_px": short_lower_garment_cleanup_px},
+                        )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short lower garment cleanup failed (ignored): {e}")
                 try:
+                    short_lower_cloth_hard_override_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     short_lower_cloth_hard_override_mask = self._build_short_lower_cloth_hard_override_mask(
@@ -4063,10 +4300,19 @@ class MirrAISDPipeline:
                             prefer_plain_cloth_fill=True,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        short_lower_cloth_hard_override_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_short_lower_cloth_hard_override_mask"] = cv2.cvtColor(
                             short_lower_cloth_hard_override_u8,
                             cv2.COLOR_GRAY2BGR,
+                        )
+                    if debug_data_common is not None and rank == 0 and short_lower_cloth_hard_override_applied:
+                        _record_rank0_cleanup_stage(
+                            "short_lower_cloth_hard_override",
+                            final_bgr,
+                            trigger_mask=short_lower_cloth_hard_override_mask,
+                            mask_label="short_lower_cloth_hard_override",
+                            extra={"short_lower_cloth_hard_override_px": short_lower_cloth_hard_override_px},
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short lower cloth hard override failed (ignored): {e}")
@@ -4079,6 +4325,7 @@ class MirrAISDPipeline:
                 and not use_short_torso_garment_repaint
             ):
                 try:
+                    residual_strand_cleanup_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     residual_strand_mask = self._build_residual_strand_cleanup_mask(
@@ -4104,10 +4351,19 @@ class MirrAISDPipeline:
                             reference_mask=cloth_mask_dilated,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        residual_strand_cleanup_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_residual_strand_cleanup_mask"] = cv2.cvtColor(
                             residual_strand_u8,
                             cv2.COLOR_GRAY2BGR,
+                        )
+                    if debug_data_common is not None and rank == 0 and residual_strand_cleanup_applied:
+                        _record_rank0_cleanup_stage(
+                            "residual_strand_cleanup",
+                            final_bgr,
+                            trigger_mask=residual_strand_mask,
+                            mask_label="residual_strand_cleanup",
+                            extra={"residual_strand_px": residual_strand_px},
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] residual strand cleanup failed (ignored): {e}")
@@ -4120,6 +4376,7 @@ class MirrAISDPipeline:
                 and not use_short_torso_garment_repaint
             ):
                 try:
+                    final_source_cloth_rescue_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     final_source_cloth_rescue_mask = self._build_final_source_cloth_rescue_mask(
@@ -4149,10 +4406,19 @@ class MirrAISDPipeline:
                             cleanup_dark_tail=(hair_length == "short"),
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        final_source_cloth_rescue_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_final_source_cloth_rescue_mask"] = cv2.cvtColor(
                             final_source_cloth_rescue_u8,
                             cv2.COLOR_GRAY2BGR,
+                        )
+                    if debug_data_common is not None and rank == 0 and final_source_cloth_rescue_applied:
+                        _record_rank0_cleanup_stage(
+                            "final_source_cloth_rescue",
+                            final_bgr,
+                            trigger_mask=final_source_cloth_rescue_mask,
+                            mask_label="final_source_cloth_rescue",
+                            extra={"final_source_cloth_rescue_px": final_source_cloth_rescue_px},
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] final source cloth rescue failed (ignored): {e}")
@@ -4163,6 +4429,7 @@ class MirrAISDPipeline:
                 and not use_short_torso_garment_repaint
             ):
                 try:
+                    short_subject_cloth_cleanup_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     short_below_bob_torso_mask = self._build_short_below_bob_torso_mask(
@@ -4204,6 +4471,7 @@ class MirrAISDPipeline:
                             cleanup_dark_tail=True,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        short_subject_cloth_cleanup_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_short_below_bob_torso_mask"] = cv2.cvtColor(
                             ((np.clip(short_below_bob_torso_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255),
@@ -4212,6 +4480,14 @@ class MirrAISDPipeline:
                         debug_images_common["pipeline_short_subject_cloth_cleanup_mask"] = cv2.cvtColor(
                             short_subject_cloth_cleanup_u8,
                             cv2.COLOR_GRAY2BGR,
+                        )
+                    if debug_data_common is not None and rank == 0 and short_subject_cloth_cleanup_applied:
+                        _record_rank0_cleanup_stage(
+                            "short_subject_cloth_cleanup",
+                            final_bgr,
+                            trigger_mask=short_subject_cloth_cleanup_mask,
+                            mask_label="short_subject_cloth_cleanup",
+                            extra={"short_subject_cloth_cleanup_px": short_subject_cloth_cleanup_px},
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] short subject cloth cleanup failed (ignored): {e}")
@@ -4222,6 +4498,7 @@ class MirrAISDPipeline:
                 and not source_garment_prepass_applied
             ):
                 try:
+                    garment_repaint_applied = False
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     short_below_bob_torso_mask = self._build_short_below_bob_torso_mask(
@@ -4274,12 +4551,28 @@ class MirrAISDPipeline:
                             refine_mode="garment",
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                        garment_repaint_applied = True
+                    if debug_data_common is not None and rank == 0 and garment_repaint_applied:
+                        _record_rank0_cleanup_stage(
+                            "controlnet_garment_repaint",
+                            final_bgr,
+                            trigger_mask=garment_repaint_mask,
+                            mask_label="controlnet_garment_repaint",
+                            extra={"garment_repaint_px": garment_repaint_px},
+                        )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] controlnet garment repaint failed (ignored): {e}")
             if debug_images_common is not None and rank == 0:
                 debug_images_common["pipeline_cleanup_rank0_pre_eye_restore"] = final_bgr.copy()
                 _store_roi_crops("cleanup_post", cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB))
+            if debug_data_common is not None and rank == 0:
+                _record_rank0_cleanup_stage(
+                    "cleanup_pre_eye_restore",
+                    final_bgr,
+                    force=True,
+                )
             try:
+                eye_restore_applied = False
                 final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                 final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                 eye_restore_mask = self._build_eye_region_restore_mask(
@@ -4306,11 +4599,26 @@ class MirrAISDPipeline:
                         strength=0.96 if hair_length == "long" else 0.92,
                     )
                     final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
+                    eye_restore_applied = True
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_eye_region_restore_mask"] = cv2.cvtColor(
                             ((np.clip(eye_restore_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255),
                             cv2.COLOR_GRAY2BGR,
                         )
+                if debug_data_common is not None and rank == 0 and float(eye_restore_mask.sum()) > 0.0:
+                    _mask_stats(
+                        "eye_region_restore",
+                        eye_restore_mask,
+                        diagnostic_rois.get("torso_front"),
+                        bucket="cleanup_mask_stats",
+                    )
+                if debug_data_common is not None and rank == 0 and eye_restore_applied:
+                    _record_rank0_cleanup_stage(
+                        "eye_region_restore",
+                        final_bgr,
+                        trigger_mask=eye_restore_mask,
+                        mask_label="eye_region_restore",
+                    )
             except Exception as e:
                 logger.warning(f"[SDPipeline] eye region restore failed (ignored): {e}")
             if debug_images_common is not None and rank == 0:
@@ -4332,6 +4640,12 @@ class MirrAISDPipeline:
                         boundary_band,
                         cv2.COLOR_GRAY2BGR,
                     )
+                _mask_stats(
+                    "composite_boundary_band",
+                    boundary_band.astype(np.float32) / 255.0,
+                    diagnostic_rois.get("torso_front"),
+                    bucket="cleanup_mask_stats",
+                )
                 diag = debug_data_common.setdefault("diagnostics", {})
                 stage_diffs = diag.setdefault("stage_diffs", {})
                 stage_diffs["generated_resized_vs_final_mean_abs_diff"] = _mean_abs_diff(
@@ -4376,6 +4690,39 @@ class MirrAISDPipeline:
                     stage_diffs["composite_boundary_source_similarity_ratio"] = float(
                         (src_final_diff[boundary_mask] <= 12.0).mean()
                     )
+                if rank0_cleanup_stage_trace:
+                    cleanup_summary: Dict[str, Any] = {}
+                    for roi_name, threshold in (
+                        ("chest_center", 8.0),
+                        ("left_side", 6.0),
+                        ("right_side", 6.0),
+                    ):
+                        key = f"{roi_name}_prev_mean_abs_diff"
+                        strongest_stage = max(
+                            rank0_cleanup_stage_trace,
+                            key=lambda entry: float(entry.get(key, 0.0)),
+                        )
+                        cleanup_summary[f"{roi_name}_largest_delta_stage"] = strongest_stage.get("stage_name")
+                        cleanup_summary[f"{roi_name}_largest_delta_value"] = float(strongest_stage.get(key, 0.0))
+                        first_material = next(
+                            (
+                                entry for entry in rank0_cleanup_stage_trace
+                                if float(entry.get(key, 0.0)) >= threshold
+                            ),
+                            None,
+                        )
+                        cleanup_summary[f"{roi_name}_first_material_stage"] = (
+                            first_material.get("stage_name") if first_material is not None else None
+                        )
+                    strongest_source_reintro = max(
+                        rank0_cleanup_stage_trace,
+                        key=lambda entry: float(entry.get("source_similarity_delta", 0.0)),
+                    )
+                    cleanup_summary["largest_source_reintro_stage"] = strongest_source_reintro.get("stage_name")
+                    cleanup_summary["largest_source_reintro_delta"] = float(
+                        strongest_source_reintro.get("source_similarity_delta", 0.0)
+                    )
+                    diag["cleanup_stage_summary"] = cleanup_summary
                 logger.info(
                     "[SDPipeline][diag][stage] gen->final=%.2f comp->final=%.2f chest(gen)=%.2f left(comp)=%.2f right(comp)=%.2f",
                     stage_diffs.get("generated_resized_vs_final_mean_abs_diff", 0.0),
