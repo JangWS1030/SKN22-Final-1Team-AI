@@ -2429,6 +2429,7 @@ class MirrAISDPipeline:
                             center_allow_scale=0.19,
                             max_total_scale=0.06,
                         )
+                        # artifact_cleanup (side dark tail)
                         if int((artifact_cleanup_u8 > 0).sum()) >= 80:
                             img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, artifact_cleanup_u8)
                             img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(img_rgb_cleaned, artifact_cleanup_u8)
@@ -2436,22 +2437,25 @@ class MirrAISDPipeline:
                                 f"[SDPipeline] short artifact LaMa/CV2 preclean applied: pixels={int((artifact_cleanup_u8 > 0).sum())}"
                             )
 
-                        if use_upper_clothes_overwrite and int((front_strand_cleanup_u8 > 0).sum()) >= 20:
-                            if debug_images_common is not None:
-                                _store_rgb("lama_before_base", img_rgb_cleaned)
-                            img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, front_strand_cleanup_u8)
-                            if debug_images_common is not None:
-                                _store_rgb("lama_after_base", img_rgb_cleaned)
-                            if debug_data_common is not None:
-                                ys, xs = np.where(front_strand_cleanup_u8 > 0)
-                                bbox = (int(np.min(xs)), int(np.min(ys)), int(np.max(xs)), int(np.max(ys))) if len(xs) > 0 else (0,0,0,0)
-                                debug_data_common["lama_front_strand_bbox"] = bbox
-                                debug_data_common["lama_front_strand_pixels"] = int(len(xs))
-                            logger.info(
-                                f"[SDPipeline] short front-strand LaMa preclean applied: pixels={int((front_strand_cleanup_u8 > 0).sum())}"
-                            )
-                        elif not use_upper_clothes_overwrite and int((front_strand_cleanup_u8 > 0).sum()) >= 20:
-                            img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(img_rgb_cleaned, front_strand_cleanup_u8)
+                        # front_strand_cleanup (chest center)
+                        if int((front_strand_cleanup_u8 > 0).sum()) >= 20:
+                            if use_upper_clothes_overwrite:
+                                if debug_images_common is not None:
+                                    _store_rgb("lama_before_base", img_rgb_cleaned)
+                                img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, front_strand_cleanup_u8)
+                                if debug_images_common is not None:
+                                    _store_rgb("lama_after_base", img_rgb_cleaned)
+                                if debug_data_common is not None:
+                                    ys, xs = np.where(front_strand_cleanup_u8 > 0)
+                                    bbox = (int(np.min(xs)), int(np.min(ys)), int(np.max(xs)), int(np.max(ys))) if len(xs) > 0 else (0,0,0,0)
+                                    debug_data_common["lama_front_strand_bbox"] = bbox
+                                    debug_data_common["lama_front_strand_pixels"] = int(len(xs))
+                                logger.info(
+                                    f"[SDPipeline] short front-strand LaMa preclean applied: pixels={int((front_strand_cleanup_u8 > 0).sum())}"
+                                )
+                            else:
+                                img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(img_rgb_cleaned, front_strand_cleanup_u8)
+                        
                         _store_mask("pipeline_front_strand_cleanup_mask", front_strand_cleanup_mask)
                         _store_mask("pipeline_short_artifact_cleanup_mask", artifact_cleanup_mask)
                     except Exception as e:
