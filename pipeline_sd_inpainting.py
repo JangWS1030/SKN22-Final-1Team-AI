@@ -4652,6 +4652,16 @@ class MirrAISDPipeline:
                             hair_length=hair_length,
                         )
                         if hair_length == "short":
+                            final_rgb = self._apply_short_source_cloth_anchor_restore(
+                                current_rgb=final_rgb,
+                                source_rgb=img_rgb,
+                                fill_mask=under_jaw_generation_mask,
+                                cloth_mask=cloth_reference_mask,
+                                face_bbox=face_bbox,
+                                cutoff_y=cutoff_y_for_post,
+                                neck_preserve_mask=short_cloth_neck_preserve_mask,
+                            )
+                        if hair_length == "short":
                             final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                             short_under_jaw_second_pass_mask = self._build_short_cloth_only_second_pass_mask(
                                 current_rgb=final_rgb,
@@ -4767,6 +4777,15 @@ class MirrAISDPipeline:
                                     short_under_jaw_second_pass_generation_mask,
                                     cloth_reference_mask,
                                     hair_length=hair_length,
+                                )
+                                final_rgb = self._apply_short_source_cloth_anchor_restore(
+                                    current_rgb=final_rgb,
+                                    source_rgb=img_rgb,
+                                    fill_mask=short_under_jaw_second_pass_generation_mask,
+                                    cloth_mask=cloth_reference_mask,
+                                    face_bbox=face_bbox,
+                                    cutoff_y=cutoff_y_for_post,
+                                    neck_preserve_mask=short_cloth_neck_preserve_mask,
                                 )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     if debug_images_common is not None and rank == 0:

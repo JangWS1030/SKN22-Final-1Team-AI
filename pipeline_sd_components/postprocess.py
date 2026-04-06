@@ -1960,6 +1960,158 @@ def _build_source_conditioned_cloth_base(
         )
     return conditioned
 
+def _apply_short_source_cloth_anchor_restore(
+    self,
+    *,
+    current_rgb: np.ndarray,
+    source_rgb: np.ndarray,
+    fill_mask: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+    neck_preserve_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    H, W = current_rgb.shape[:2]
+    if source_rgb.shape[:2] != (H, W) or fill_mask.shape != (H, W):
+        return current_rgb
+
+    cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    neck_preserve_mask = self._resize_mask_to_shape(neck_preserve_mask, (H, W))
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return current_rgb
+
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
+
+    anchor_mask = np.clip(
+        fill_mask.astype(np.float32)
+        * (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.float32),
+        0.0,
+        1.0,
+    )
+    if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
+        anchor_mask = np.clip(
+            anchor_mask - np.clip(neck_preserve_mask.astype(np.float32), 0.0, 1.0) * 0.98,
+            0.0,
+            1.0,
+        )
+
+    anchor_u8 = (anchor_mask > 0.08).astype(np.uint8) * 255
+    if int((anchor_u8 > 0).sum()) < 32:
+        return current_rgb
+
+    gate_u8 = np.zeros((H, W), dtype=np.uint8)
+    top = max(0, int(cutoff_y + face_h * 0.04))
+    bottom = min(H, int(cutoff_y + face_h * 0.98))
+    upper_half_w = max(12, int(face_w * 0.14))
+    lower_half_w = max(18, int(face_w * 0.23))
+    split_y = max(top + 1, int(cutoff_y + face_h * 0.34))
+    if top < split_y:
+        gate_u8[top:split_y, max(0, cx - upper_half_w):min(W, cx + upper_half_w)] = 255
+    if split_y < bottom:
+        gate_u8[split_y:bottom, max(0, cx - lower_half_w):min(W, cx + lower_half_w)] = 255
+    anchor_u8 = cv2.bitwise_and(anchor_u8, gate_u8)
+    if int((anchor_u8 > 0).sum()) < 24:
+        return current_rgb
+
+    anchor_mask = anchor_u8.astype(np.float32) / 255.0
+    reference_restore_u8 = cv2.dilate(
+        anchor_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 25)),
+        iterations=1,
+    )
+    reference_restore_u8 = cv2.bitwise_and(
+        reference_restore_u8,
+        cv2.dilate(
+            (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+            iterations=1,
+        ),
+    )
+    reference_fill_rgb = self._restore_cloth_overlap_from_source(
+        source_rgb=source_rgb,
+        current_rgb=source_rgb,
+        restore_mask=reference_restore_u8.astype(np.float32) / 255.0,
+        final_hair_mask=None,
+        tone_reference_rgb=source_rgb,
+        tone_reference_mask=cloth_mask,
+    )
+
+    yy, xx = np.indices((H, W), dtype=np.float32)
+    top_f = float(max(top, 0))
+    bottom_f = float(max(bottom, top + 1))
+    y_norm = np.clip((yy - top_f) / max(bottom_f - top_f, 1.0), 0.0, 1.0)
+    lift_px = face_h * (0.30 - 0.18 * y_norm)
+    width_gain = 1.18 - 0.20 * y_norm
+    map_x = np.clip(cx + (xx - float(cx)) * width_gain, 0.0, float(W - 1))
+    map_y = np.clip(yy + lift_px, 0.0, float(H - 1))
+    warped_rgb = cv2.remap(
+        reference_fill_rgb,
+        map_x.astype(np.float32),
+        map_y.astype(np.float32),
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT_101,
+    )
+
+    visible_cloth_u8 = cv2.bitwise_and(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        cv2.bitwise_not(
+            cv2.dilate(
+                anchor_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)),
+                iterations=1,
+            )
+        ),
+    )
+    if int((visible_cloth_u8 > 0).sum()) >= 80:
+        source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+        source_sat = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+        plain_gray = float(np.median(source_gray[visible_cloth_u8 > 0]))
+        plain_sat = float(np.median(source_sat[visible_cloth_u8 > 0]))
+        if plain_gray >= 168.0 and plain_sat <= 84.0:
+            plain_fill_color = np.median(source_rgb[visible_cloth_u8 > 0], axis=0).astype(np.uint8)
+            plain_rgb = warped_rgb.copy()
+            plain_rgb[anchor_u8 > 0] = (
+                plain_rgb[anchor_u8 > 0].astype(np.float32) * 0.58
+                + plain_fill_color.astype(np.float32) * 0.42
+            ).astype(np.uint8)
+            warped_rgb = plain_rgb
+
+    restored = self._restore_reference_region(
+        current_rgb,
+        warped_rgb,
+        anchor_mask,
+        strength=0.996,
+    )
+    restored = self._overlay_reference_cloth_fill(
+        restored,
+        warped_rgb,
+        anchor_mask,
+        cloth_mask=cloth_mask,
+    )
+    restored = self._blend_neighbor_cloth_tone(
+        restored,
+        anchor_mask,
+        cloth_mask=cloth_mask,
+        reference_rgb=source_rgb,
+    )
+    restored = self._cv2_refine_cloth_region(
+        restored,
+        anchor_mask,
+        reference_rgb=source_rgb,
+        reference_mask=cloth_mask,
+    )
+    if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
+        restored = self._restore_reference_region(
+            restored,
+            source_rgb,
+            np.clip(neck_preserve_mask.astype(np.float32), 0.0, 1.0),
+            strength=0.995,
+        )
+    return restored
+
 def _stabilize_under_jaw_cloth_fill(
     self,
     current_rgb: np.ndarray,
@@ -8398,6 +8550,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._build_short_cloth_generation_silhouette_mask = _build_short_cloth_generation_silhouette_mask
     cls._build_short_cloth_control_map = _build_short_cloth_control_map
     cls._build_source_conditioned_cloth_base = _build_source_conditioned_cloth_base
+    cls._apply_short_source_cloth_anchor_restore = _apply_short_source_cloth_anchor_restore
     cls._stabilize_under_jaw_cloth_fill = _stabilize_under_jaw_cloth_fill
     cls._build_generation_protect_mask = _build_generation_protect_mask
     cls._build_removal_protect_mask = _build_removal_protect_mask
