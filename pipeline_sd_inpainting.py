@@ -216,7 +216,7 @@ class SDInpaintConfig:
     final_hair_lane_center_keepout_ratio: float = 0.20
     final_hair_lane_neckline_keepout_ratio: float = 0.30
     final_hair_lane_outer_strip_gap_ratio: float = 0.30
-    overwrite_core_fallback_half_ratio: float = 0.28
+    overwrite_core_fallback_half_ratio: float = 0.46
     overwrite_core_fallback_top_ratio: float = 0.22
     overwrite_core_fallback_bottom_ratio: float = 0.98
 
@@ -2415,7 +2415,7 @@ class MirrAISDPipeline:
                         if int((artifact_cleanup_u8 > 0).sum()) >= 80:
                             img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, artifact_cleanup_u8)
                             img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(img_rgb_cleaned, artifact_cleanup_u8)
-                            if int((front_strand_cleanup_u8 > 0).sum()) >= 20:
+                            if not use_upper_clothes_overwrite and int((front_strand_cleanup_u8 > 0).sum()) >= 20:
                                 img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(img_rgb_cleaned, front_strand_cleanup_u8)
                             logger.info(
                                 f"[SDPipeline] short artifact preclean applied: pixels={int((artifact_cleanup_u8 > 0).sum())}"

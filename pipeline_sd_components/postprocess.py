@@ -1016,8 +1016,8 @@ def _build_neckline_preserve_mask(
     x_left = max(0, cx - neck_half)
     x_right = min(W, cx + neck_half)
     y_top = max(0, int(y2 - face_h * 0.01))
-    y_mid = min(H, int(y2 + face_h * (0.11 if hair_length == "short" else 0.16)))
-    y_bottom = min(H, int(y2 + face_h * (0.23 if hair_length == "short" else 0.32)))
+    y_mid = min(H, int(y2 + face_h * (0.05 if hair_length == "short" else 0.08)))
+    y_bottom = min(H, int(y2 + face_h * (0.08 if hair_length == "short" else 0.12)))
 
     if x_left < x_right and y_top < y_bottom:
         neck_poly = np.array(
@@ -1034,11 +1034,11 @@ def _build_neckline_preserve_mask(
         cv2.fillConvexPoly(mask, neck_poly, 255)
         ellipse_center = (
             cx,
-            int(y2 + face_h * (0.07 if hair_length == "short" else 0.10)),
+            int(y2 + face_h * (0.04 if hair_length == "short" else 0.06)),
         )
         ellipse_axes = (
             max(10, int(neck_half * 0.85)),
-            max(8, int(face_h * (0.10 if hair_length == "short" else 0.14))),
+            max(8, int(face_h * (0.06 if hair_length == "short" else 0.08))),
         )
         cv2.ellipse(mask, ellipse_center, ellipse_axes, 0, 0, 360, 255, -1)
 
@@ -1440,7 +1440,7 @@ def _build_short_below_bob_torso_mask(
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
             iterations=1,
         )
-        fallback_source_u8 = cv2.bitwise_and(fallback_source_u8, fallback_window_u8)
+        # 강제 직각 경계를 없애기 위해 마지막 fallback_window_u8 클리핑을 제거/완화합니다.
         if int((fallback_source_u8 > 0).sum()) >= 80:
             torso_u8 = fallback_source_u8
             if debug_info is not None:
@@ -1493,8 +1493,8 @@ def _build_short_below_bob_torso_mask(
     return cv2.GaussianBlur(
         torso_u8.astype(np.float32) / 255.0,
         (0, 0),
-        sigmaX=4.0,
-        sigmaY=6.2,
+        sigmaX=12.0,
+        sigmaY=16.0,
     ).astype(np.float32)
 
 def _build_short_torso_garment_repaint_mask(
