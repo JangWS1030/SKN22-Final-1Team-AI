@@ -3724,49 +3724,6 @@ class MirrAISDPipeline:
                                 female_short_cloth_reference_mask,
                                 np.clip(bright_cloth_preserve_for_post.astype(np.float32) * 0.96, 0.0, 1.0),
                             )
-                        lateral_anchor_reference_mask = np.zeros(
-                            final_bgr.shape[:2],
-                            dtype=np.float32,
-                        )
-                        if (
-                            subject_cloth_anchor_for_post is not None
-                            and subject_cloth_anchor_for_post.shape == final_bgr.shape[:2]
-                            and float(subject_cloth_anchor_for_post.sum()) > 0.0
-                        ):
-                            x1, y1, x2, y2 = face_bbox
-                            face_w = max(int(x2 - x1), 1)
-                            face_h = max(int(y2 - y1), 1)
-                            cx = int(0.5 * (x1 + x2))
-                            lateral_anchor_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
-                            lane_top = max(0, int(cutoff_y_for_post + face_h * 0.04))
-                            lane_bottom = min(H, int(cutoff_y_for_post + face_h * 1.56))
-                            lane_left = max(0, int(x1 - face_w * 1.24))
-                            lane_right = min(W, int(x2 + face_w * 1.24))
-                            center_keepout_half = max(24, int(face_w * 0.22))
-                            left_lane_right = max(lane_left + 1, cx - center_keepout_half)
-                            right_lane_left = min(lane_right - 1, cx + center_keepout_half)
-                            if lane_top < lane_bottom and lane_left < left_lane_right:
-                                lateral_anchor_gate_u8[lane_top:lane_bottom, lane_left:left_lane_right] = 255
-                            if lane_top < lane_bottom and right_lane_left < lane_right:
-                                lateral_anchor_gate_u8[lane_top:lane_bottom, right_lane_left:lane_right] = 255
-                            lateral_anchor_reference_mask = np.clip(
-                                subject_cloth_anchor_for_post.astype(np.float32),
-                                0.0,
-                                1.0,
-                            ) * (lateral_anchor_gate_u8.astype(np.float32) / 255.0)
-                            lateral_anchor_reference_mask = cv2.GaussianBlur(
-                                lateral_anchor_reference_mask.astype(np.float32),
-                                (0, 0),
-                                sigmaX=3.2,
-                                sigmaY=5.4,
-                            ).astype(np.float32)
-                        if (
-                            float(lateral_anchor_reference_mask.sum()) > 0.0
-                        ):
-                            female_short_cloth_reference_mask = np.maximum(
-                                female_short_cloth_reference_mask,
-                                np.clip(lateral_anchor_reference_mask.astype(np.float32), 0.0, 1.0) * 0.96,
-                            )
                         female_short_direct_cloth_restore_mask = np.maximum(
                             short_lower_garment_cleanup_mask_for_post,
                             final_source_cloth_rescue_mask_for_post,
