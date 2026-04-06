@@ -4551,9 +4551,12 @@ class MirrAISDPipeline:
                     short_under_jaw_second_pass_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                     short_under_jaw_generation_silhouette_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                     short_under_jaw_second_pass_silhouette_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                    short_under_jaw_control_map_rgb = np.zeros_like(final_rgb)
+                    short_under_jaw_second_pass_control_map_rgb = np.zeros_like(final_rgb)
                     under_jaw_cloth_refine_px = int((under_jaw_cloth_refine_u8 > 0).sum())
                     if under_jaw_cloth_refine_px >= 140:
                         under_jaw_generation_mask = under_jaw_cloth_refine_mask
+                        short_under_jaw_control_rgb = None
                         if hair_length == "short":
                             short_under_jaw_generation_silhouette_mask = self._build_short_cloth_generation_silhouette_mask(
                                 current_rgb=final_rgb,
@@ -4578,6 +4581,18 @@ class MirrAISDPipeline:
                             )
                             if int((short_under_jaw_generation_silhouette_u8 > 0).sum()) >= 56:
                                 under_jaw_generation_mask = short_under_jaw_generation_silhouette_mask
+                            short_under_jaw_control_rgb = self._build_short_cloth_control_map(
+                                current_rgb=final_rgb,
+                                source_rgb=img_rgb,
+                                cloth_mask=cloth_reference_mask,
+                                face_bbox=face_bbox,
+                                cutoff_y=cutoff_y_for_post,
+                                seed_mask=under_jaw_generation_mask,
+                                neck_preserve_mask=short_cloth_neck_preserve_mask,
+                                protect_mask=cloth_only_protect_mask,
+                            )
+                            if short_under_jaw_control_rgb is not None:
+                                short_under_jaw_control_map_rgb = short_under_jaw_control_rgb.copy()
                         pre_under_jaw_rgb = final_rgb.copy()
                         under_jaw_base_rgb = final_rgb
                         if hair_length == "short":
@@ -4600,6 +4615,7 @@ class MirrAISDPipeline:
                             seed=int(cand["seed"]) + 1871,
                             reference_rgb=img_rgb,
                             refine_mode="under_jaw_cloth",
+                            control_rgb=short_under_jaw_control_rgb,
                         )
                         final_rgb = generated_under_jaw_rgb
                         if hair_length == "short":
@@ -4658,6 +4674,7 @@ class MirrAISDPipeline:
                             short_under_jaw_second_pass_px = int((short_under_jaw_second_pass_u8 > 0).sum())
                             if short_under_jaw_second_pass_px >= 48:
                                 short_under_jaw_second_pass_generation_mask = short_under_jaw_second_pass_mask
+                                short_under_jaw_second_pass_control_rgb = None
                                 short_under_jaw_second_pass_silhouette_mask = self._build_short_cloth_generation_silhouette_mask(
                                     current_rgb=final_rgb,
                                     source_rgb=img_rgb,
@@ -4683,6 +4700,20 @@ class MirrAISDPipeline:
                                     short_under_jaw_second_pass_generation_mask = (
                                         short_under_jaw_second_pass_silhouette_mask
                                     )
+                                short_under_jaw_second_pass_control_rgb = self._build_short_cloth_control_map(
+                                    current_rgb=final_rgb,
+                                    source_rgb=img_rgb,
+                                    cloth_mask=cloth_reference_mask,
+                                    face_bbox=face_bbox,
+                                    cutoff_y=cutoff_y_for_post,
+                                    seed_mask=short_under_jaw_second_pass_generation_mask,
+                                    neck_preserve_mask=short_cloth_neck_preserve_mask,
+                                    protect_mask=cloth_only_protect_mask,
+                                )
+                                if short_under_jaw_second_pass_control_rgb is not None:
+                                    short_under_jaw_second_pass_control_map_rgb = (
+                                        short_under_jaw_second_pass_control_rgb.copy()
+                                    )
                                 pre_second_pass_rgb = final_rgb.copy()
                                 short_under_jaw_second_pass_base_rgb = self._build_source_conditioned_cloth_base(
                                     current_rgb=final_rgb,
@@ -4703,6 +4734,7 @@ class MirrAISDPipeline:
                                     seed=int(cand["seed"]) + 1889,
                                     reference_rgb=img_rgb,
                                     refine_mode="cloth_only_second_pass",
+                                    control_rgb=short_under_jaw_second_pass_control_rgb,
                                 )
                                 final_rgb = self._restore_reference_region(
                                     pre_second_pass_rgb,
@@ -4755,6 +4787,11 @@ class MirrAISDPipeline:
                                 short_under_jaw_generation_silhouette_u8,
                                 cv2.COLOR_GRAY2BGR,
                             )
+                        if int((short_under_jaw_control_map_rgb > 0).sum()) >= 48:
+                            debug_images_common["pipeline_short_under_jaw_control_map"] = cv2.cvtColor(
+                                short_under_jaw_control_map_rgb,
+                                cv2.COLOR_RGB2BGR,
+                            )
                         if int((short_under_jaw_second_pass_u8 > 0).sum()) >= 24:
                             debug_images_common["pipeline_short_under_jaw_second_pass_mask"] = cv2.cvtColor(
                                 short_under_jaw_second_pass_u8,
@@ -4764,6 +4801,11 @@ class MirrAISDPipeline:
                             debug_images_common["pipeline_short_under_jaw_second_pass_silhouette_mask"] = cv2.cvtColor(
                                 short_under_jaw_second_pass_silhouette_u8,
                                 cv2.COLOR_GRAY2BGR,
+                            )
+                        if int((short_under_jaw_second_pass_control_map_rgb > 0).sum()) >= 48:
+                            debug_images_common["pipeline_short_under_jaw_second_pass_control_map"] = cv2.cvtColor(
+                                short_under_jaw_second_pass_control_map_rgb,
+                                cv2.COLOR_RGB2BGR,
                             )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] under-jaw cloth refine failed (ignored): {e}")

@@ -620,6 +620,7 @@ def _sd_refine_removed_region(
     seed: int,
     reference_rgb: Optional[np.ndarray] = None,
     refine_mode: str = "generic",
+    control_rgb: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     긴머리 제거 후 남는 어색한 영역(목/어깨/배경)을 SD로 한 번 더 정리.
@@ -638,6 +639,24 @@ def _sd_refine_removed_region(
         fill_mask,
         mask_edge_suppression=0.45,
     )
+    control_512 = canny_512
+    if control_rgb is not None and control_rgb.shape[:2] == (H, W):
+        control_np = control_rgb
+        if control_np.ndim == 2:
+            control_np = cv2.cvtColor(np.clip(control_np, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2RGB)
+        elif control_np.ndim == 3 and control_np.shape[2] == 3:
+            control_np = np.clip(control_np, 0, 255).astype(np.uint8)
+        else:
+            control_np = None
+        if control_np is not None:
+            pad_l, pad_t = pad
+            new_w = int(W * scale)
+            new_h = int(H * scale)
+            control_rs = cv2.resize(control_np, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            control_canvas = np.zeros((SD_SIZE, SD_SIZE, 3), dtype=np.uint8)
+            control_canvas[pad_t:pad_t + new_h, pad_l:pad_l + new_w] = control_rs
+            if int((control_canvas > 0).sum()) >= 48:
+                control_512 = Image.fromarray(control_canvas)
     prompt_reference_rgb = base_rgb
     if reference_rgb is not None and reference_rgb.shape[:2] == (H, W):
         prompt_reference_rgb = reference_rgb
@@ -768,7 +787,7 @@ def _sd_refine_removed_region(
             negative_prompt=fill_negative,
             image=img_512,
             mask_image=mask_512,
-            control_image=canny_512,
+            control_image=control_512,
             ip_adapter_image=[face_crop_pil],
             height=SD_SIZE,
             width=SD_SIZE,
@@ -1669,6 +1688,144 @@ def _build_short_cloth_generation_silhouette_mask(
         sigmaY=4.0,
     )
     return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+def _build_short_cloth_control_map(
+    self,
+    *,
+    current_rgb: np.ndarray,
+    source_rgb: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+    seed_mask: Optional[np.ndarray] = None,
+    neck_preserve_mask: Optional[np.ndarray] = None,
+    protect_mask: Optional[np.ndarray] = None,
+) -> Optional[np.ndarray]:
+    H, W = current_rgb.shape[:2]
+    if source_rgb.shape[:2] != (H, W):
+        return None
+
+    cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    seed_mask = self._resize_mask_to_shape(seed_mask, (H, W))
+    neck_preserve_mask = self._resize_mask_to_shape(neck_preserve_mask, (H, W))
+    protect_mask = self._resize_mask_to_shape(protect_mask, (H, W))
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return None
+
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
+
+    cloth_u8 = cv2.dilate(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
+        iterations=1,
+    )
+    if int((cloth_u8 > 0).sum()) < 48:
+        return None
+
+    gate_u8 = np.zeros((H, W), dtype=np.uint8)
+    upper_top = max(0, int(cutoff_y + face_h * 0.02))
+    upper_bottom = min(H, int(cutoff_y + face_h * 0.40))
+    upper_half_w = max(14, int(face_w * 0.17))
+    lower_top = max(upper_bottom - max(6, int(face_h * 0.08)), int(cutoff_y + face_h * 0.18))
+    lower_bottom = min(H, int(cutoff_y + face_h * 1.00))
+    lower_half_w = max(20, int(face_w * 0.26))
+    if upper_top < upper_bottom:
+        gate_u8[upper_top:upper_bottom, max(0, cx - upper_half_w):min(W, cx + upper_half_w)] = 255
+    if lower_top < lower_bottom:
+        gate_u8[lower_top:lower_bottom, max(0, cx - lower_half_w):min(W, cx + lower_half_w)] = 255
+    gate_u8 = cv2.bitwise_and(gate_u8, cloth_u8)
+    if int((gate_u8 > 0).sum()) < 32:
+        return None
+
+    focus_u8 = gate_u8.copy()
+    if seed_mask is not None and seed_mask.shape == (H, W):
+        seed_u8 = cv2.dilate(
+            (np.clip(seed_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 21)),
+            iterations=1,
+        )
+        seed_u8 = cv2.bitwise_and(seed_u8, gate_u8)
+        if int((seed_u8 > 0).sum()) >= 24:
+            focus_u8 = cv2.bitwise_and(
+                gate_u8,
+                cv2.dilate(seed_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)), iterations=1),
+            )
+            if int((focus_u8 > 0).sum()) < 24:
+                focus_u8 = seed_u8
+
+    source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY)
+    current_gray = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2GRAY)
+    source_edge_u8 = cv2.Canny(source_gray, 68, 156)
+    current_edge_u8 = cv2.Canny(current_gray, 72, 164)
+    edge_gate_u8 = cv2.dilate(
+        focus_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+        iterations=1,
+    )
+    source_edge_u8 = cv2.bitwise_and(source_edge_u8, edge_gate_u8)
+    current_edge_u8 = cv2.bitwise_and(current_edge_u8, edge_gate_u8)
+
+    cloth_outline_u8 = cv2.morphologyEx(
+        cloth_u8,
+        cv2.MORPH_GRADIENT,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+    )
+    cloth_outline_u8 = cv2.bitwise_and(cloth_outline_u8, gate_u8)
+
+    preserve_outline_u8 = np.zeros((H, W), dtype=np.uint8)
+    if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
+        preserve_u8 = cv2.dilate(
+            (np.clip(neck_preserve_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+            iterations=1,
+        )
+        preserve_outline_u8 = cv2.morphologyEx(
+            preserve_u8,
+            cv2.MORPH_GRADIENT,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+        preserve_outline_u8 = cv2.bitwise_and(
+            preserve_outline_u8,
+            cv2.dilate(gate_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)), iterations=1),
+        )
+
+    if protect_mask is not None and protect_mask.shape == (H, W):
+        protect_u8 = cv2.dilate(
+            (np.clip(protect_mask.astype(np.float32), 0.0, 1.0) > 0.12).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+            iterations=1,
+        )
+        protect_u8 = cv2.bitwise_and(protect_u8, cv2.bitwise_not(preserve_outline_u8))
+        source_edge_u8 = cv2.bitwise_and(source_edge_u8, cv2.bitwise_not(protect_u8))
+        current_edge_u8 = cv2.bitwise_and(current_edge_u8, cv2.bitwise_not(protect_u8))
+        cloth_outline_u8 = cv2.bitwise_and(cloth_outline_u8, cv2.bitwise_not(protect_u8))
+
+    control_u8 = cv2.bitwise_or(source_edge_u8, cloth_outline_u8)
+    if int((control_u8 > 0).sum()) < 40:
+        control_u8 = cv2.bitwise_or(control_u8, current_edge_u8)
+    control_u8 = cv2.bitwise_or(control_u8, preserve_outline_u8)
+
+    control_u8 = cv2.morphologyEx(
+        control_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+    )
+    control_u8 = cv2.dilate(
+        control_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        iterations=1,
+    )
+    control_u8 = cv2.bitwise_and(
+        control_u8,
+        cv2.dilate(gate_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1),
+    )
+    if int((control_u8 > 0).sum()) < 24:
+        return None
+
+    return cv2.cvtColor(control_u8, cv2.COLOR_GRAY2RGB)
 
 def _build_source_conditioned_cloth_base(
     self,
@@ -8239,6 +8396,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._build_under_jaw_cloth_refine_mask = _build_under_jaw_cloth_refine_mask
     cls._build_short_cloth_only_second_pass_mask = _build_short_cloth_only_second_pass_mask
     cls._build_short_cloth_generation_silhouette_mask = _build_short_cloth_generation_silhouette_mask
+    cls._build_short_cloth_control_map = _build_short_cloth_control_map
     cls._build_source_conditioned_cloth_base = _build_source_conditioned_cloth_base
     cls._stabilize_under_jaw_cloth_fill = _stabilize_under_jaw_cloth_fill
     cls._build_generation_protect_mask = _build_generation_protect_mask
