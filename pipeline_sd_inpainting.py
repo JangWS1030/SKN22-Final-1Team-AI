@@ -2890,40 +2890,6 @@ class MirrAISDPipeline:
                 try:
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
-                    lateral_anchor_mask = np.zeros((H, W), dtype=np.float32)
-                    if (
-                        hair_length == "short"
-                        and subject_cloth_anchor_for_post is not None
-                        and subject_cloth_anchor_for_post.shape == (H, W)
-                        and float(subject_cloth_anchor_for_post.sum()) > 0.0
-                    ):
-                        x1, y1, x2, y2 = face_bbox
-                        face_w = max(int(x2 - x1), 1)
-                        face_h = max(int(y2 - y1), 1)
-                        cx = int(0.5 * (x1 + x2))
-                        lateral_anchor_gate_u8 = np.zeros((H, W), dtype=np.uint8)
-                        lane_top = max(0, int(cutoff_y_for_post + face_h * 0.04))
-                        lane_bottom = min(H, int(cutoff_y_for_post + face_h * 1.56))
-                        lane_left = max(0, int(x1 - face_w * 1.24))
-                        lane_right = min(W, int(x2 + face_w * 1.24))
-                        center_keepout_half = max(24, int(face_w * 0.22))
-                        left_lane_right = max(lane_left + 1, cx - center_keepout_half)
-                        right_lane_left = min(lane_right - 1, cx + center_keepout_half)
-                        if lane_top < lane_bottom and lane_left < left_lane_right:
-                            lateral_anchor_gate_u8[lane_top:lane_bottom, lane_left:left_lane_right] = 255
-                        if lane_top < lane_bottom and right_lane_left < lane_right:
-                            lateral_anchor_gate_u8[lane_top:lane_bottom, right_lane_left:lane_right] = 255
-                        lateral_anchor_mask = np.clip(
-                            subject_cloth_anchor_for_post.astype(np.float32),
-                            0.0,
-                            1.0,
-                        ) * (lateral_anchor_gate_u8.astype(np.float32) / 255.0)
-                        lateral_anchor_mask = cv2.GaussianBlur(
-                            lateral_anchor_mask.astype(np.float32),
-                            (0, 0),
-                            sigmaX=3.2,
-                            sigmaY=5.4,
-                        ).astype(np.float32)
                     side_restore_cloth_mask = np.clip(
                         cloth_restore_mask_for_post.astype(np.float32),
                         0.0,
@@ -2931,12 +2897,14 @@ class MirrAISDPipeline:
                     )
                     if (
                         hair_length == "short"
-                        and float(lateral_anchor_mask.sum()) > 0.0
+                        and subject_cloth_anchor_for_post is not None
+                        and subject_cloth_anchor_for_post.shape == (H, W)
+                        and float(subject_cloth_anchor_for_post.sum()) > 0.0
                     ):
                         anchor_weight = 0.98 if subject_gender_mode != "male" else 0.90
                         side_restore_cloth_mask = np.maximum(
                             side_restore_cloth_mask,
-                            np.clip(lateral_anchor_mask.astype(np.float32), 0.0, 1.0) * anchor_weight,
+                            np.clip(subject_cloth_anchor_for_post.astype(np.float32), 0.0, 1.0) * anchor_weight,
                         ).astype(np.float32)
                     side_column_candidate_mask = np.zeros((H, W), dtype=np.float32)
                     if removal_mask_for_post is not None and removal_mask_for_post.shape == (H, W):
@@ -2964,11 +2932,13 @@ class MirrAISDPipeline:
                         ).astype(np.float32)
                     if (
                         hair_length == "short"
-                        and float(lateral_anchor_mask.sum()) > 0.0
+                        and subject_cloth_anchor_for_post is not None
+                        and subject_cloth_anchor_for_post.shape == (H, W)
+                        and float(subject_cloth_anchor_for_post.sum()) > 0.0
                     ):
                         side_column_candidate_mask = np.maximum(
                             side_column_candidate_mask,
-                            np.clip(lateral_anchor_mask.astype(np.float32), 0.0, 1.0) * 0.92,
+                            np.clip(subject_cloth_anchor_for_post.astype(np.float32), 0.0, 1.0) * 0.92,
                         ).astype(np.float32)
                     side_column_restore_mask = self._build_side_column_cloth_restore_mask(
                         img_rgb=final_rgb,
