@@ -1504,6 +1504,172 @@ def _build_short_cloth_only_second_pass_mask(
     )
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
+def _build_short_cloth_generation_silhouette_mask(
+    self,
+    *,
+    current_rgb: np.ndarray,
+    source_rgb: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+    protect_mask: Optional[np.ndarray] = None,
+    final_hair_mask: Optional[np.ndarray] = None,
+    seed_mask: Optional[np.ndarray] = None,
+    neck_preserve_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    H, W = current_rgb.shape[:2]
+    if source_rgb.shape[:2] != (H, W):
+        return np.zeros((H, W), dtype=np.float32)
+
+    cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    protect_mask = self._resize_mask_to_shape(protect_mask, (H, W))
+    final_hair_mask = self._resize_mask_to_shape(final_hair_mask, (H, W))
+    seed_mask = self._resize_mask_to_shape(seed_mask, (H, W))
+    neck_preserve_mask = self._resize_mask_to_shape(neck_preserve_mask, (H, W))
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return np.zeros((H, W), dtype=np.float32)
+
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
+
+    cloth_u8 = cv2.dilate(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
+        iterations=1,
+    )
+    if int((cloth_u8 > 0).sum()) < 36:
+        return np.zeros((H, W), dtype=np.float32)
+
+    gate_u8 = np.zeros((H, W), dtype=np.uint8)
+    upper_top = max(0, int(cutoff_y + face_h * 0.03))
+    upper_bottom = min(H, int(cutoff_y + face_h * 0.38))
+    upper_half_w = max(12, int(face_w * 0.15))
+    lower_top = max(upper_bottom - max(6, int(face_h * 0.06)), int(cutoff_y + face_h * 0.16))
+    lower_bottom = min(H, int(cutoff_y + face_h * 0.96))
+    lower_half_w = max(18, int(face_w * 0.24))
+    if upper_top < upper_bottom:
+        gate_u8[upper_top:upper_bottom, max(0, cx - upper_half_w):min(W, cx + upper_half_w)] = 255
+    if lower_top < lower_bottom:
+        gate_u8[lower_top:lower_bottom, max(0, cx - lower_half_w):min(W, cx + lower_half_w)] = 255
+    gate_u8 = cv2.bitwise_and(gate_u8, cloth_u8)
+    if int((gate_u8 > 0).sum()) < 24:
+        return np.zeros((H, W), dtype=np.float32)
+
+    spine_u8 = np.zeros((H, W), dtype=np.uint8)
+    spine_half_w = max(10, int(face_w * 0.11))
+    spine_top = max(0, int(cutoff_y + face_h * 0.04))
+    spine_bottom = min(H, int(cutoff_y + face_h * 0.94))
+    if spine_top < spine_bottom:
+        spine_u8[spine_top:spine_bottom, max(0, cx - spine_half_w):min(W, cx + spine_half_w)] = 255
+    work_u8 = cv2.bitwise_and(spine_u8, gate_u8)
+
+    if seed_mask is not None and seed_mask.shape == (H, W):
+        seed_u8 = cv2.dilate(
+            (np.clip(seed_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 19)),
+            iterations=1,
+        )
+        seed_u8 = cv2.bitwise_and(seed_u8, gate_u8)
+        if int((seed_u8 > 0).sum()) >= 24:
+            work_u8 = cv2.bitwise_or(work_u8, seed_u8)
+
+    current_gray = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    current_sat = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+    source_sat = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2HSV)[:, :, 1].astype(np.float32)
+    diff_rgb = np.abs(current_rgb.astype(np.float32) - source_rgb.astype(np.float32)).mean(axis=2)
+    residual_u8 = (
+        (
+            (
+                ((source_gray - current_gray) > 6.0)
+                & (current_sat < np.minimum(source_sat + 26.0, 142.0))
+            )
+            | (
+                (diff_rgb > 16.0)
+                & (current_gray < source_gray + 6.0)
+            )
+        ).astype(np.uint8)
+        * 255
+    )
+    residual_u8 = cv2.bitwise_and(residual_u8, gate_u8)
+    residual_u8 = cv2.morphologyEx(
+        residual_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+    )
+    residual_u8 = cv2.dilate(
+        residual_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
+        iterations=1,
+    )
+    if int((residual_u8 > 0).sum()) >= 24:
+        work_u8 = cv2.bitwise_or(work_u8, residual_u8)
+
+    work_u8 = cv2.morphologyEx(
+        work_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 15)),
+    )
+    work_u8 = cv2.dilate(
+        work_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
+        iterations=1,
+    )
+    work_u8 = cv2.bitwise_and(work_u8, gate_u8)
+
+    if protect_mask is not None and protect_mask.shape == (H, W):
+        protect_u8 = cv2.dilate(
+            (np.clip(protect_mask.astype(np.float32), 0.0, 1.0) > 0.12).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+            iterations=1,
+        )
+        work_u8 = cv2.bitwise_and(work_u8, cv2.bitwise_not(protect_u8))
+    if final_hair_mask is not None and final_hair_mask.shape == (H, W):
+        final_hair_u8 = cv2.dilate(
+            (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.14).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 17)),
+            iterations=1,
+        )
+        work_u8 = cv2.bitwise_and(work_u8, cv2.bitwise_not(final_hair_u8))
+    if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
+        preserve_u8 = cv2.dilate(
+            (np.clip(neck_preserve_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+            iterations=1,
+        )
+        work_u8 = cv2.bitwise_and(work_u8, cv2.bitwise_not(preserve_u8))
+
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(work_u8, 8)
+    filtered_u8 = np.zeros((H, W), dtype=np.uint8)
+    max_component_area = max(96, int(face_w * face_h * 0.14))
+    max_component_width = max(48, int(face_w * 0.40))
+    min_component_height = max(16, int(face_h * 0.14))
+    center_allow = max(16, int(face_w * 0.18))
+    for idx in range(1, num_labels):
+        w = int(stats[idx, cv2.CC_STAT_WIDTH])
+        h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+        area = int(stats[idx, cv2.CC_STAT_AREA])
+        comp_cx = float(centroids[idx][0])
+        if area < 18 or area > max_component_area:
+            continue
+        if h < min_component_height or w > max_component_width:
+            continue
+        if abs(comp_cx - cx) > center_allow:
+            continue
+        filtered_u8[labels == idx] = 255
+    if int((filtered_u8 > 0).sum()) < 24:
+        return np.zeros((H, W), dtype=np.float32)
+
+    out = cv2.GaussianBlur(
+        filtered_u8.astype(np.float32) / 255.0,
+        (0, 0),
+        sigmaX=2.4,
+        sigmaY=4.0,
+    )
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
+
 def _build_source_conditioned_cloth_base(
     self,
     *,
@@ -8072,6 +8238,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._build_post_cloth_refine_mask = _build_post_cloth_refine_mask
     cls._build_under_jaw_cloth_refine_mask = _build_under_jaw_cloth_refine_mask
     cls._build_short_cloth_only_second_pass_mask = _build_short_cloth_only_second_pass_mask
+    cls._build_short_cloth_generation_silhouette_mask = _build_short_cloth_generation_silhouette_mask
     cls._build_source_conditioned_cloth_base = _build_source_conditioned_cloth_base
     cls._stabilize_under_jaw_cloth_fill = _stabilize_under_jaw_cloth_fill
     cls._build_generation_protect_mask = _build_generation_protect_mask
