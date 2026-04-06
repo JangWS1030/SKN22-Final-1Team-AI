@@ -4494,6 +4494,30 @@ class MirrAISDPipeline:
                         if cloth_restore_mask_for_post is not None and cloth_restore_mask_for_post.shape == final_bgr.shape[:2]
                         else cloth_mask_dilated
                     )
+                    short_cloth_neck_preserve_mask = np.zeros(final_bgr.shape[:2], dtype=np.float32)
+                    if hair_length == "short":
+                        if (
+                            neckline_preserve_for_post is not None
+                            and neckline_preserve_for_post.shape == final_bgr.shape[:2]
+                        ):
+                            short_cloth_neck_preserve_mask = np.maximum(
+                                short_cloth_neck_preserve_mask,
+                                np.clip(neckline_preserve_for_post.astype(np.float32), 0.0, 1.0),
+                            ).astype(np.float32)
+                        if (
+                            lateral_neck_preserve_for_post is not None
+                            and lateral_neck_preserve_for_post.shape == final_bgr.shape[:2]
+                        ):
+                            short_cloth_neck_preserve_mask = np.maximum(
+                                short_cloth_neck_preserve_mask,
+                                np.clip(lateral_neck_preserve_for_post.astype(np.float32), 0.0, 1.0) * 0.92,
+                            ).astype(np.float32)
+                    cloth_only_protect_mask = protect_mask_for_sd
+                    if hair_length == "short":
+                        cloth_only_protect_mask = np.maximum(
+                            np.clip(protect_mask_for_sd.astype(np.float32), 0.0, 1.0),
+                            short_cloth_neck_preserve_mask,
+                        ).astype(np.float32)
                     under_jaw_candidate_mask = np.maximum(
                         short_lower_garment_cleanup_mask_for_post,
                         center_residual_cleanup_mask_for_post,
@@ -4518,6 +4542,7 @@ class MirrAISDPipeline:
                         final_hair_mask=final_hair_mask,
                         candidate_mask=under_jaw_candidate_mask,
                         center_support_mask=center_chest_strand_removal_mask,
+                        neck_preserve_mask=short_cloth_neck_preserve_mask if hair_length == "short" else None,
                     )
                     under_jaw_cloth_refine_u8 = (
                         (np.clip(under_jaw_cloth_refine_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
@@ -4534,19 +4559,27 @@ class MirrAISDPipeline:
                                 fill_mask=under_jaw_cloth_refine_mask,
                                 cloth_mask=cloth_reference_mask,
                                 hair_length=hair_length,
+                                preserve_mask=short_cloth_neck_preserve_mask,
                             )
                         final_rgb = self._sd_refine_removed_region(
                             base_rgb=under_jaw_base_rgb,
                             removal_mask=under_jaw_cloth_refine_mask,
                             face_bbox=face_bbox,
                             face_crop_pil=face_crop_pil,
-                            protect_mask=protect_mask_for_sd,
+                            protect_mask=cloth_only_protect_mask,
                             cloth_mask=cloth_reference_mask,
                             hair_length=hair_length,
                             seed=int(cand["seed"]) + 1871,
                             reference_rgb=img_rgb,
                             refine_mode="under_jaw_cloth",
                         )
+                        if hair_length == "short" and float(short_cloth_neck_preserve_mask.sum()) > 0.0:
+                            final_rgb = self._restore_reference_region(
+                                final_rgb,
+                                img_rgb,
+                                short_cloth_neck_preserve_mask,
+                                strength=0.992,
+                            )
                         final_rgb = self._blend_neighbor_cloth_tone(
                             final_rgb,
                             under_jaw_cloth_refine_mask,
@@ -4578,6 +4611,7 @@ class MirrAISDPipeline:
                                 protect_mask=protect_mask_for_sd,
                                 final_hair_mask=final_hair_mask,
                                 seed_mask=under_jaw_cloth_refine_mask,
+                                neck_preserve_mask=short_cloth_neck_preserve_mask,
                             )
                             short_under_jaw_second_pass_u8 = (
                                 (
@@ -4593,19 +4627,27 @@ class MirrAISDPipeline:
                                     fill_mask=short_under_jaw_second_pass_mask,
                                     cloth_mask=cloth_reference_mask,
                                     hair_length=hair_length,
+                                    preserve_mask=short_cloth_neck_preserve_mask,
                                 )
                                 final_rgb = self._sd_refine_removed_region(
                                     base_rgb=short_under_jaw_second_pass_base_rgb,
                                     removal_mask=short_under_jaw_second_pass_mask,
                                     face_bbox=face_bbox,
                                     face_crop_pil=face_crop_pil,
-                                    protect_mask=protect_mask_for_sd,
+                                    protect_mask=cloth_only_protect_mask,
                                     cloth_mask=cloth_reference_mask,
                                     hair_length=hair_length,
                                     seed=int(cand["seed"]) + 1889,
                                     reference_rgb=img_rgb,
                                     refine_mode="cloth_only_second_pass",
                                 )
+                                if float(short_cloth_neck_preserve_mask.sum()) > 0.0:
+                                    final_rgb = self._restore_reference_region(
+                                        final_rgb,
+                                        img_rgb,
+                                        short_cloth_neck_preserve_mask,
+                                        strength=0.995,
+                                    )
                                 final_rgb = self._blend_neighbor_cloth_tone(
                                     final_rgb,
                                     short_under_jaw_second_pass_mask,
@@ -4631,6 +4673,14 @@ class MirrAISDPipeline:
                             under_jaw_cloth_refine_u8,
                             cv2.COLOR_GRAY2BGR,
                         )
+                        if hair_length == "short" and float(short_cloth_neck_preserve_mask.sum()) > 0.0:
+                            debug_images_common["pipeline_short_cloth_neck_preserve_mask"] = cv2.cvtColor(
+                                (
+                                    np.clip(short_cloth_neck_preserve_mask.astype(np.float32), 0.0, 1.0) > 0.05
+                                ).astype(np.uint8)
+                                * 255,
+                                cv2.COLOR_GRAY2BGR,
+                            )
                         if int((short_under_jaw_second_pass_u8 > 0).sum()) >= 24:
                             debug_images_common["pipeline_short_under_jaw_second_pass_mask"] = cv2.cvtColor(
                                 short_under_jaw_second_pass_u8,

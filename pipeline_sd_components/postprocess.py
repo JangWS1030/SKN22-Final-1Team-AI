@@ -1143,6 +1143,7 @@ def _build_under_jaw_cloth_refine_mask(
     final_hair_mask: Optional[np.ndarray] = None,
     candidate_mask: Optional[np.ndarray] = None,
     center_support_mask: Optional[np.ndarray] = None,
+    neck_preserve_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     H, W = current_rgb.shape[:2]
     if source_rgb.shape[:2] != (H, W):
@@ -1154,6 +1155,7 @@ def _build_under_jaw_cloth_refine_mask(
     final_hair_mask = self._resize_mask_to_shape(final_hair_mask, (H, W))
     candidate_mask = self._resize_mask_to_shape(candidate_mask, (H, W))
     center_support_mask = self._resize_mask_to_shape(center_support_mask, (H, W))
+    neck_preserve_mask = self._resize_mask_to_shape(neck_preserve_mask, (H, W))
     if cloth_mask is None or cloth_mask.shape != (H, W) or removal_mask.shape != (H, W):
         return np.zeros((H, W), dtype=np.float32)
 
@@ -1289,6 +1291,13 @@ def _build_under_jaw_cloth_refine_mask(
             iterations=1,
         )
         mask_u8 = cv2.bitwise_and(mask_u8, cv2.bitwise_not(final_hair_u8))
+    if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
+        preserve_u8 = cv2.dilate(
+            (np.clip(neck_preserve_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11) if hair_length == "short" else (9, 9)),
+            iterations=1,
+        )
+        mask_u8 = cv2.bitwise_and(mask_u8, cv2.bitwise_not(preserve_u8))
 
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_u8, 8)
     filtered_u8 = np.zeros((H, W), dtype=np.uint8)
@@ -1354,6 +1363,7 @@ def _build_short_cloth_only_second_pass_mask(
     protect_mask: Optional[np.ndarray] = None,
     final_hair_mask: Optional[np.ndarray] = None,
     seed_mask: Optional[np.ndarray] = None,
+    neck_preserve_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if hair_length != "short":
         return np.zeros(current_rgb.shape[:2], dtype=np.float32)
@@ -1366,6 +1376,7 @@ def _build_short_cloth_only_second_pass_mask(
     protect_mask = self._resize_mask_to_shape(protect_mask, (H, W))
     final_hair_mask = self._resize_mask_to_shape(final_hair_mask, (H, W))
     seed_mask = self._resize_mask_to_shape(seed_mask, (H, W))
+    neck_preserve_mask = self._resize_mask_to_shape(neck_preserve_mask, (H, W))
     if cloth_mask is None or cloth_mask.shape != (H, W):
         return np.zeros((H, W), dtype=np.float32)
 
@@ -1456,6 +1467,13 @@ def _build_short_cloth_only_second_pass_mask(
             iterations=1,
         )
         candidate_u8 = cv2.bitwise_and(candidate_u8, cv2.bitwise_not(final_hair_u8))
+    if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
+        preserve_u8 = cv2.dilate(
+            (np.clip(neck_preserve_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+            iterations=1,
+        )
+        candidate_u8 = cv2.bitwise_and(candidate_u8, cv2.bitwise_not(preserve_u8))
 
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(candidate_u8, 8)
     filtered_u8 = np.zeros((H, W), dtype=np.uint8)
@@ -1494,12 +1512,14 @@ def _build_source_conditioned_cloth_base(
     fill_mask: np.ndarray,
     cloth_mask: Optional[np.ndarray],
     hair_length: str = "",
+    preserve_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     H, W = current_rgb.shape[:2]
     if source_rgb.shape[:2] != (H, W) or fill_mask.shape != (H, W):
         return current_rgb
 
     cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    preserve_mask = self._resize_mask_to_shape(preserve_mask, (H, W))
     if cloth_mask is None or cloth_mask.shape != (H, W):
         return current_rgb
 
@@ -1509,6 +1529,12 @@ def _build_source_conditioned_cloth_base(
         0.0,
         1.0,
     )
+    if preserve_mask is not None and preserve_mask.shape == (H, W):
+        cloth_fill_mask = np.clip(
+            cloth_fill_mask - np.clip(preserve_mask.astype(np.float32), 0.0, 1.0) * 0.98,
+            0.0,
+            1.0,
+        )
     cloth_fill_u8 = (cloth_fill_mask > 0.08).astype(np.uint8) * 255
     if int((cloth_fill_u8 > 0).sum()) < 24:
         return current_rgb
@@ -1602,6 +1628,13 @@ def _build_source_conditioned_cloth_base(
         reference_rgb=reference_fill_rgb,
         reference_mask=cloth_mask,
     )
+    if preserve_mask is not None and preserve_mask.shape == (H, W):
+        conditioned = self._restore_reference_region(
+            conditioned,
+            source_rgb,
+            np.clip(preserve_mask.astype(np.float32), 0.0, 1.0),
+            strength=0.99 if str(hair_length or "").strip().lower() == "short" else 0.96,
+        )
     return conditioned
 
 def _stabilize_under_jaw_cloth_fill(
