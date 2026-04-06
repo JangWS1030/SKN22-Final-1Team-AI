@@ -667,6 +667,32 @@ def _sd_refine_removed_region(
         fill_mask=fill_mask,
     )
 
+    def _join_negative_terms(*parts: str) -> str:
+        ordered: List[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            for token in str(part or "").split(","):
+                cleaned = token.strip()
+                if not cleaned or cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                ordered.append(cleaned)
+        return ", ".join(ordered)
+
+    def _under_jaw_negative(*, include_bare_skin_gap: bool = False) -> str:
+        return _join_negative_terms(
+            "hair strands, loose dangling hair, dangling side locks, side locks touching shoulders or clothing",
+            "dark streaks, dark bib, black patch, black cloth shadow",
+            "vertical black stripe, u-shaped dark notch under chin, deep shadow under chin",
+            garment_negative,
+            "smudged cloth, melted fabric, warped garment",
+            "broken neckline, duplicate collar, extra folds, extra buttons",
+            "exposed chest cutout",
+            "bare skin gap" if include_bare_skin_gap else "",
+            "deformed neck, artifacts, blurry, cartoon, painting",
+            "earring, earrings, necklace, loose side tendrils touching clothing",
+        )
+
     if refine_mode == "under_jaw_cloth":
         fill_prompt = (
             f"professional studio portrait photo, regenerate a similar {garment_subject} under the jaw, "
@@ -676,14 +702,7 @@ def _sd_refine_removed_region(
             "photorealistic clothing details"
         )
         fill_guidance = 6.9 if hair_length == "short" else 6.8
-        fill_negative = (
-            "hair strands, loose dangling hair, dark streaks, dark bib, black patch, black cloth shadow, "
-            f"{garment_negative}, smudged cloth, melted fabric, warped garment, "
-            "broken neckline, duplicate collar, extra folds, extra buttons, bare skin gap, "
-            "exposed chest cutout, deep shadow under chin, vertical black stripe, u-shaped dark notch under chin, "
-            "deformed neck, artifacts, cartoon, painting, "
-            f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
-        )
+        fill_negative = _under_jaw_negative(include_bare_skin_gap=True)
     elif refine_mode == "short_cloth_crop" and hair_length == "short":
         fill_prompt = (
             f"professional studio portrait photo, regenerate only the short-hair under-jaw central {garment_subject} region, "
@@ -692,14 +711,7 @@ def _sd_refine_removed_region(
             "photorealistic clothing details"
         )
         fill_guidance = 7.4
-        fill_negative = (
-            "hair strands, loose dangling hair, dark streaks, dark bib, black patch, black cloth shadow, "
-            f"{garment_negative}, smudged cloth, melted fabric, warped garment, broken neckline, duplicate collar, "
-            "extra folds, extra buttons, exposed chest cutout, deep shadow under chin, vertical black stripe, "
-            "u-shaped dark notch under chin, deformed neck, "
-            "artifacts, cartoon, painting, "
-            f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
-        )
+        fill_negative = _under_jaw_negative()
     elif refine_mode == "short_cloth_insert" and hair_length == "short":
         fill_prompt = (
             f"professional studio portrait photo, freshly regenerate only the short-hair under-jaw {garment_subject} insert, "
@@ -708,14 +720,7 @@ def _sd_refine_removed_region(
             "no hair strands in masked region, no dark patch, no hollow chest cutout, photorealistic clothing details"
         )
         fill_guidance = 7.8
-        fill_negative = (
-            "hair strands, loose dangling hair, dark streaks, dark bib, black patch, black cloth shadow, "
-            f"{garment_negative}, smudged cloth, melted fabric, warped garment, broken neckline, duplicate collar, "
-            "extra folds, extra buttons, exposed chest cutout, deep shadow under chin, vertical black stripe, "
-            "u-shaped dark notch under chin, deformed neck, "
-            "artifacts, cartoon, painting, "
-            f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
-        )
+        fill_negative = _under_jaw_negative()
     elif refine_mode == "cloth_only_second_pass":
         fill_prompt = (
             f"professional studio portrait photo, regenerate only the central visible {garment_subject} below the chin, "
@@ -724,14 +729,7 @@ def _sd_refine_removed_region(
             "no dark patch, no hollow chest cutout, photorealistic clothing details"
         )
         fill_guidance = 7.0 if hair_length == "short" else 6.9
-        fill_negative = (
-            "hair strands, loose dangling hair, dark streaks, dark bib, black patch, black cloth shadow, "
-            f"{garment_negative}, smudged cloth, melted fabric, warped garment, broken neckline, duplicate collar, "
-            "extra folds, extra buttons, exposed chest cutout, deep shadow under chin, vertical black stripe, "
-            "u-shaped dark notch under chin, deformed neck, "
-            "artifacts, cartoon, painting, "
-            f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
-        )
+        fill_negative = _under_jaw_negative()
     elif refine_mode == "cloth":
         fill_prompt = (
             f"professional portrait photo, preserve a similar {garment_subject} shape, "
@@ -1386,6 +1384,15 @@ def _build_under_jaw_cloth_refine_mask(
         narrowed_mask_u8 = cv2.bitwise_and(mask_u8, short_center_gate_u8)
         if int((narrowed_mask_u8 > 0).sum()) >= 48:
             mask_u8 = narrowed_mask_u8
+        mask_u8 = _tighten_short_under_jaw_mask_to_center(
+            self,
+            mask_u8=mask_u8,
+            cloth_mask=cloth_mask,
+            face_bbox=face_bbox,
+            cutoff_y=cutoff_y,
+            neck_preserve_mask=neck_preserve_mask,
+            min_pixels=42,
+        )
 
     max_total_px = max(160, int(face_w * face_h * (0.26 if hair_length == "short" else 0.62)))
     current_px = int((mask_u8 > 0).sum())
@@ -1555,6 +1562,15 @@ def _build_short_cloth_only_second_pass_mask(
         filtered_u8[labels == idx] = 255
     if int((filtered_u8 > 0).sum()) < 24:
         return np.zeros((H, W), dtype=np.float32)
+    filtered_u8 = _tighten_short_under_jaw_mask_to_center(
+        self,
+        mask_u8=filtered_u8,
+        cloth_mask=cloth_mask,
+        face_bbox=face_bbox,
+        cutoff_y=cutoff_y,
+        neck_preserve_mask=neck_preserve_mask,
+        min_pixels=20,
+    )
 
     out = cv2.GaussianBlur(
         filtered_u8.astype(np.float32) / 255.0,
@@ -1721,6 +1737,15 @@ def _build_short_cloth_generation_silhouette_mask(
         filtered_u8[labels == idx] = 255
     if int((filtered_u8 > 0).sum()) < 24:
         return np.zeros((H, W), dtype=np.float32)
+    filtered_u8 = _tighten_short_under_jaw_mask_to_center(
+        self,
+        mask_u8=filtered_u8,
+        cloth_mask=cloth_mask,
+        face_bbox=face_bbox,
+        cutoff_y=cutoff_y,
+        neck_preserve_mask=neck_preserve_mask,
+        min_pixels=20,
+    )
 
     out = cv2.GaussianBlur(
         filtered_u8.astype(np.float32) / 255.0,
@@ -2153,6 +2178,48 @@ def _apply_short_source_cloth_anchor_restore(
         )
     return restored
 
+def _tighten_short_under_jaw_mask_to_center(
+    self,
+    *,
+    mask_u8: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+    neck_preserve_mask: Optional[np.ndarray] = None,
+    min_pixels: int = 24,
+) -> np.ndarray:
+    H, W = mask_u8.shape[:2]
+    cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    neck_preserve_mask = self._resize_mask_to_shape(neck_preserve_mask, (H, W))
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return mask_u8
+
+    focus_mask = self._build_short_under_jaw_crop_core_mask(
+        fill_mask=mask_u8.astype(np.float32) / 255.0,
+        cloth_mask=cloth_mask,
+        face_bbox=face_bbox,
+        cutoff_y=cutoff_y,
+        neck_preserve_mask=neck_preserve_mask,
+    )
+    focus_u8 = (np.clip(focus_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255
+    if int((focus_u8 > 0).sum()) < min_pixels:
+        return mask_u8
+
+    focus_u8 = cv2.dilate(
+        focus_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+        iterations=1,
+    )
+    tightened_u8 = cv2.bitwise_and(mask_u8, focus_u8)
+    if int((tightened_u8 > 0).sum()) < min_pixels:
+        return mask_u8
+    tightened_u8 = cv2.morphologyEx(
+        tightened_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
+    )
+    return tightened_u8
+
 def _build_short_under_jaw_crop_core_mask(
     self,
     *,
@@ -2529,7 +2596,7 @@ def _refine_short_under_jaw_crop_region(
     blended_crop = self._compose_strict_short_under_jaw_crop_result(
         current_rgb=crop_current_rgb,
         generated_rgb=crop_generated_rgb,
-        reference_rgb=crop_reference_base,
+        reference_rgb=crop_source_rgb,
         fill_mask=crop_fill_mask,
         cloth_mask=crop_cloth_mask,
         face_bbox=local_face_bbox,
@@ -2715,7 +2782,7 @@ def _generate_short_under_jaw_cloth_insert_region(
     blended_crop = self._compose_strict_short_under_jaw_crop_result(
         current_rgb=crop_current_rgb,
         generated_rgb=crop_generated_rgb,
-        reference_rgb=crop_insert_base,
+        reference_rgb=crop_source_rgb,
         fill_mask=crop_insert_mask,
         cloth_mask=crop_cloth_mask,
         face_bbox=local_face_bbox,
@@ -9166,6 +9233,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._build_short_cloth_control_map = _build_short_cloth_control_map
     cls._build_source_conditioned_cloth_base = _build_source_conditioned_cloth_base
     cls._apply_short_source_cloth_anchor_restore = _apply_short_source_cloth_anchor_restore
+    cls._tighten_short_under_jaw_mask_to_center = _tighten_short_under_jaw_mask_to_center
     cls._build_short_under_jaw_crop_core_mask = _build_short_under_jaw_crop_core_mask
     cls._compose_strict_short_under_jaw_crop_result = _compose_strict_short_under_jaw_crop_result
     cls._refine_short_under_jaw_crop_region = _refine_short_under_jaw_crop_region
