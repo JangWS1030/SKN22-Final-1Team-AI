@@ -2415,8 +2415,11 @@ class MirrAISDPipeline:
                         if int((artifact_cleanup_u8 > 0).sum()) >= 80:
                             img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, artifact_cleanup_u8)
                             img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(img_rgb_cleaned, artifact_cleanup_u8)
-                            if not use_upper_clothes_overwrite and int((front_strand_cleanup_u8 > 0).sum()) >= 20:
-                                img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(img_rgb_cleaned, front_strand_cleanup_u8)
+                            if int((front_strand_cleanup_u8 > 0).sum()) >= 20:
+                                if use_upper_clothes_overwrite:
+                                    img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, front_strand_cleanup_u8)
+                                else:
+                                    img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(img_rgb_cleaned, front_strand_cleanup_u8)
                             logger.info(
                                 f"[SDPipeline] short artifact preclean applied: pixels={int((artifact_cleanup_u8 > 0).sum())}"
                             )
