@@ -3715,6 +3715,39 @@ class MirrAISDPipeline:
                                 female_short_direct_cloth_restore_mask,
                                 np.clip(residual_strand_cleanup_mask_for_post * 0.90, 0.0, 1.0),
                             ).astype(np.float32)
+                        female_short_reference_preserve_mask = np.zeros(
+                            final_bgr.shape[:2],
+                            dtype=np.float32,
+                        )
+                        if (
+                            neckline_preserve_for_post is not None
+                            and neckline_preserve_for_post.shape == final_bgr.shape[:2]
+                        ):
+                            female_short_reference_preserve_mask = np.maximum(
+                                female_short_reference_preserve_mask,
+                                np.clip(neckline_preserve_for_post.astype(np.float32), 0.0, 1.0),
+                            ).astype(np.float32)
+                        if (
+                            lateral_neck_preserve_for_post is not None
+                            and lateral_neck_preserve_for_post.shape == final_bgr.shape[:2]
+                        ):
+                            female_short_reference_preserve_mask = np.maximum(
+                                female_short_reference_preserve_mask,
+                                np.clip(lateral_neck_preserve_for_post.astype(np.float32), 0.0, 1.0) * 0.92,
+                            ).astype(np.float32)
+                        source_cloth_reference_mask = np.clip(
+                            female_short_cloth_reference_mask.astype(np.float32),
+                            0.0,
+                            1.0,
+                        )
+                        source_cloth_reference_rgb = self._build_source_conditioned_cloth_base(
+                            current_rgb=final_rgb,
+                            source_rgb=img_rgb,
+                            fill_mask=female_short_direct_cloth_restore_mask,
+                            cloth_mask=source_cloth_reference_mask,
+                            hair_length="short",
+                            preserve_mask=female_short_reference_preserve_mask,
+                        )
                         female_short_direct_cloth_restore_u8 = (
                             (
                                 np.clip(female_short_direct_cloth_restore_mask.astype(np.float32), 0.0, 1.0) > 0.06
@@ -4249,7 +4282,7 @@ class MirrAISDPipeline:
                                                 sigmaX=4.4,
                                                 sigmaY=6.2,
                                             ).astype(np.float32)
-                                            source_cloth_reference_rgb = img_rgb.copy()
+                                            source_cloth_reference_rgb = source_cloth_reference_rgb.copy()
                                             visible_pixels = img_rgb[source_visible_cloth_u8 > 0]
                                             if visible_pixels.size > 0 and int((source_cloth_hole_u8 > 0).sum()) >= 80:
                                                 source_fill_color = np.median(visible_pixels, axis=0).astype(np.uint8)
@@ -4415,21 +4448,21 @@ class MirrAISDPipeline:
                                             ).astype(np.float32)
                                             final_rgb = self._restore_reference_region(
                                                 final_rgb,
-                                                img_rgb,
+                                                source_cloth_reference_rgb,
                                                 side_restore_mask,
                                                 strength=0.97,
                                             )
                                             final_rgb = self._overlay_reference_cloth_fill(
                                                 final_rgb,
-                                                img_rgb,
+                                                source_cloth_reference_rgb,
                                                 side_restore_mask,
                                                 cloth_mask=female_short_cloth_reference_mask,
                                             )
                                             final_rgb = self._cv2_refine_cloth_region(
                                                 final_rgb,
                                                 side_restore_mask,
-                                                reference_rgb=img_rgb,
-                                                reference_mask=female_short_cloth_reference_mask,
+                                                reference_rgb=source_cloth_reference_rgb,
+                                                reference_mask=source_cloth_reference_mask,
                                             )
                                         if center_fill_px >= 60:
                                             center_fill_mask = cv2.GaussianBlur(
@@ -4443,13 +4476,13 @@ class MirrAISDPipeline:
                                                 final_rgb,
                                                 center_fill_mask,
                                                 cloth_mask=female_short_cloth_reference_mask,
-                                                reference_rgb=img_rgb,
+                                                reference_rgb=source_cloth_reference_rgb,
                                             )
                                             final_rgb = self._cv2_refine_cloth_region(
                                                 final_rgb,
                                                 center_fill_mask,
-                                                reference_rgb=img_rgb,
-                                                reference_mask=female_short_cloth_reference_mask,
+                                                reference_rgb=source_cloth_reference_rgb,
+                                                reference_mask=source_cloth_reference_mask,
                                             )
                                     elif female_short_broad_cloth_restore_mask is not None:
                                         final_rgb = self._blend_neighbor_cloth_tone(
