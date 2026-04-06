@@ -1396,8 +1396,10 @@ def _build_short_below_bob_torso_mask(
         min_keep_px=80,
     )
     if int((torso_u8 > 0).sum()) < 80:
+        # v110: fallback_half를 최소 face_w * 0.80 이상으로 보장하여
+        # 좁은 수직 strip seed가 생성되지 않도록 한다.
         fallback_half = max(
-            22,
+            int(face_w * 0.80),
             int(face_w * float(getattr(self.config, "overwrite_core_fallback_half_ratio", 0.28))),
         )
         fallback_top = max(
@@ -1414,10 +1416,11 @@ def _build_short_below_bob_torso_mask(
                 fallback_top:fallback_bottom,
                 max(0, cx - fallback_half):min(W, cx + fallback_half),
             ] = 255
+            # 중앙 타원도 fallback_half 비율에 맞게 확장
             fallback_center = (cx, min(H - 1, int(y2 + face_h * 0.64)))
             fallback_axes = (
-                max(18, int(face_w * 0.26)),
-                max(20, int(face_h * 0.34)),
+                max(int(face_w * 0.72), int(face_w * 0.26)),
+                max(20, int(face_h * 0.48)),
             )
             cv2.ellipse(fallback_window_u8, fallback_center, fallback_axes, 0, 0, 360, 255, -1)
         fallback_source_u8 = cv2.bitwise_and(seed_pretrim_u8, fallback_window_u8)
@@ -1425,22 +1428,31 @@ def _build_short_below_bob_torso_mask(
             supported_fallback_u8 = cv2.bitwise_and(amodal_support_u8, fallback_window_u8)
             if int((supported_fallback_u8 > 0).sum()) >= 80:
                 fallback_source_u8 = cv2.bitwise_or(fallback_source_u8, supported_fallback_u8)
+        # fallback이 비었으면 fallback_window 자체를 seed로 사용 (가슴 전체를 overwrite 영역으로)
+        if int((fallback_source_u8 > 0).sum()) < 80:
+            fallback_source_u8 = fallback_window_u8.copy()
         fallback_source_u8 = cv2.morphologyEx(
             fallback_source_u8,
             cv2.MORPH_OPEN,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 9)),
         )
         fallback_source_u8 = cv2.morphologyEx(
             fallback_source_u8,
             cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 19)),
         )
-        fallback_source_u8 = cv2.erode(
+        # v110: 수평 방향 dilation을 추가하여 수직 strip 형태를 방지
+        fallback_source_u8 = cv2.dilate(
             fallback_source_u8,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(11, int(face_w * 0.14)), 5)),
             iterations=1,
         )
-        # 강제 직각 경계를 없애기 위해 마지막 fallback_window_u8 클리핑을 제거/완화합니다.
+        fallback_source_u8 = cv2.bitwise_and(fallback_source_u8, fallback_window_u8)
+        fallback_source_u8 = cv2.erode(
+            fallback_source_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 5)),
+            iterations=1,
+        )
         if int((fallback_source_u8 > 0).sum()) >= 80:
             torso_u8 = fallback_source_u8
             if debug_info is not None:

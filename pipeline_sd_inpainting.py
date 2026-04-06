@@ -2473,6 +2473,100 @@ class MirrAISDPipeline:
                     except Exception as e:
                         logger.warning(f"[SDPipeline] short tail-core LaMa preclean 실패(무시): {e}")
 
+                # ── v110: hair_length 무관 chest-center LaMa pre-clean ──────────────
+                # short_postprocess 블록은 hair_length=="short" 케이스에서만 실행된다.
+                # long/medium hair에서 chest-center 머리카락이 그대로 SD에 들어가는 문제를 수정.
+                # short에서 이미 front_strand_cleanup을 처리한 경우와 중복되지 않도록
+                # _needs_chest_preclean 조건으로 분기한다.
+                _needs_chest_preclean = (
+                    hair_length != "short"
+                    or disable_short_postprocess_experiment
+                )
+                if _needs_chest_preclean:
+                    try:
+                        chest_preclean_strand_mask = center_chest_strand_mask.copy()
+                        # center_chest_strand_removal_mask도 통합
+                        if float(center_chest_strand_removal_mask.sum()) > 0.0:
+                            chest_preclean_strand_mask = np.maximum(
+                                chest_preclean_strand_mask,
+                                np.clip(center_chest_strand_removal_mask * 0.70, 0.0, 1.0),
+                            ).astype(np.float32)
+                        # 어깨/넥라인 보호
+                        if shoulder_protect_for_post is not None and shoulder_protect_for_post.shape == (H, W):
+                            chest_preclean_strand_mask = np.clip(
+                                chest_preclean_strand_mask - shoulder_protect_for_post * 0.60,
+                                0.0,
+                                1.0,
+                            )
+                        if neckline_preserve_for_post is not None and neckline_preserve_for_post.shape == (H, W):
+                            chest_preclean_strand_mask = np.clip(
+                                chest_preclean_strand_mask - neckline_preserve_for_post * 0.55,
+                                0.0,
+                                1.0,
+                            )
+                        chest_preclean_u8 = (chest_preclean_strand_mask > 0.08).astype(np.uint8) * 255
+                        # cloth mask 교집합: 의상 바깥은 건드리지 않음
+                        if cloth_mask_dilated.shape == (H, W):
+                            chest_preclean_u8 = cv2.bitwise_and(
+                                chest_preclean_u8,
+                                (cloth_mask_dilated > 0.04).astype(np.uint8) * 255,
+                            )
+                        # long/medium은 가슴 중앙 corridor로 한정
+                        if hair_length in ("long", "medium"):
+                            x1f, y1f, x2f, y2f = [int(v) for v in face_bbox]
+                            face_w_cp = max(int(x2f - x1f), 1)
+                            face_h_cp = max(int(y2f - y1f), 1)
+                            face_cx_cp = int(0.5 * (x1f + x2f))
+                            corridor_cp = np.zeros((H, W), dtype=np.uint8)
+                            cp_top = max(0, int(y2f + face_h_cp * 0.02))
+                            cp_bottom = min(H, int(y2f + face_h_cp * 1.80))
+                            cp_left = max(0, int(face_cx_cp - face_w_cp * 1.10))
+                            cp_right = min(W, int(face_cx_cp + face_w_cp * 1.10))
+                            if cp_top < cp_bottom and cp_left < cp_right:
+                                corridor_cp[cp_top:cp_bottom, cp_left:cp_right] = 255
+                            chest_preclean_u8 = cv2.bitwise_and(chest_preclean_u8, corridor_cp)
+                            lama_min_px = 15
+                        else:
+                            lama_min_px = 20
+                        chest_preclean_u8 = cv2.dilate(
+                            chest_preclean_u8,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 13)),
+                            iterations=1,
+                        )
+                        preclean_px = int((chest_preclean_u8 > 0).sum())
+                        if preclean_px >= lama_min_px:
+                            if debug_images_common is not None:
+                                _store_rgb("lama_chest_preclean_before", img_rgb_cleaned)
+                            img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, chest_preclean_u8)
+                            if debug_images_common is not None:
+                                _store_rgb("lama_chest_preclean_after", img_rgb_cleaned)
+                            if debug_data_common is not None:
+                                ys_cp, xs_cp = np.where(chest_preclean_u8 > 0)
+                                debug_data_common["chest_preclean_lama_bbox"] = (
+                                    (int(np.min(xs_cp)), int(np.min(ys_cp)),
+                                     int(np.max(xs_cp)), int(np.max(ys_cp)))
+                                    if len(xs_cp) > 0 else (0, 0, 0, 0)
+                                )
+                                debug_data_common["chest_preclean_lama_pixels"] = preclean_px
+                                debug_data_common["chest_preclean_lama_hair_length"] = hair_length
+                            logger.info(
+                                "[SDPipeline][v110] chest-center LaMa preclean applied"
+                                " (hair_length=%s): pixels=%d",
+                                hair_length, preclean_px,
+                            )
+                        else:
+                            logger.info(
+                                "[SDPipeline][v110] chest-center LaMa preclean skipped"
+                                " (hair_length=%s): px=%d < min=%d",
+                                hair_length, preclean_px, lama_min_px,
+                            )
+                        _store_mask("pipeline_chest_preclean_lama_mask", chest_preclean_strand_mask)
+                    except Exception as e:
+                        logger.warning(
+                            "[SDPipeline][v110] chest-center LaMa preclean 실패(무시): %s", e
+                        )
+                # ── end v110 chest-center pre-clean ──────────────────────────────
+
                 logger.info("[SDPipeline] cv2.inpaint 2-way 블렌딩 완료")
                 if bg_mode == "sd":
                     try:
