@@ -3369,6 +3369,48 @@ def _build_side_column_cloth_restore_mask(
     if int((zone_u8 > 0).sum()) < 60:
         return np.zeros((H, W), dtype=np.float32)
 
+    short_outer_strip_u8 = corridor_u8
+    if hair_length == "short":
+        center_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
+        neckline_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
+        short_outer_strip_u8 = np.zeros((H, W), dtype=np.uint8)
+        inner_keepout_half = max(
+            40,
+            int(face_w * float(getattr(self.config, "short_side_column_inner_keepout_ratio", 0.42))),
+        )
+        neckline_keepout_half = max(inner_keepout_half + 18, int(face_w * 0.66))
+        keepout_top = max(top, int(cutoff_y + face_h * 0.10))
+        keepout_bottom = min(bottom, int(cutoff_y + face_h * 1.22))
+        if keepout_top < keepout_bottom:
+            center_keepout_u8[
+                keepout_top:keepout_bottom,
+                max(left, int(cx - inner_keepout_half)):min(right, int(cx + inner_keepout_half)),
+            ] = 255
+            zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(center_keepout_u8))
+        neckline_keepout_bottom = min(
+            bottom,
+            int(cutoff_y + face_h * float(getattr(self.config, "short_side_column_neckline_keepout_ratio", 0.34))),
+        )
+        if top < neckline_keepout_bottom:
+            neckline_keepout_u8[
+                top:neckline_keepout_bottom,
+                max(left, int(cx - neckline_keepout_half)):min(right, int(cx + neckline_keepout_half)),
+            ] = 255
+            zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(neckline_keepout_u8))
+        outer_gap_half = max(
+            inner_keepout_half,
+            int(face_w * float(getattr(self.config, "short_side_column_outer_strip_gap_ratio", 0.46))),
+        )
+        strip_top = max(top, int(cutoff_y + face_h * 0.16))
+        if strip_top < bottom:
+            left_inner = max(left + 1, int(cx - outer_gap_half))
+            right_inner = min(right - 1, int(cx + outer_gap_half))
+            if left < left_inner:
+                short_outer_strip_u8[strip_top:bottom, left:left_inner] = 255
+            if right_inner < right:
+                short_outer_strip_u8[strip_top:bottom, right_inner:right] = 255
+            zone_u8 = cv2.bitwise_and(zone_u8, short_outer_strip_u8)
+
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
     blur = cv2.GaussianBlur(gray, (0, 0), sigmaX=5.0, sigmaY=5.0)
     hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
@@ -3422,11 +3464,9 @@ def _build_side_column_cloth_restore_mask(
     min_height = max(36, int(face_h * 0.12))
     max_width = max(120, int(face_w * (0.78 if hair_length == "short" else 0.54)))
     max_offset = max(120, int(face_w * (0.98 if hair_length == "short" else 0.60)))
-    short_center_offset = max(24, int(face_w * 0.30))
-    short_center_width = max(76, int(face_w * 0.34))
-    short_center_area = max(1800, int(face_w * face_h * 0.09))
-    short_side_width = max(96, int(face_w * 0.56))
-    short_side_area = max(3600, int(face_w * face_h * 0.18))
+    short_min_offset = max(42, int(face_w * 0.42))
+    short_side_width = max(92, int(face_w * 0.50))
+    short_side_area = max(2800, int(face_w * face_h * 0.14))
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
         y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -3447,12 +3487,10 @@ def _build_side_column_cloth_restore_mask(
         if offset > max_offset:
             continue
         if hair_length == "short":
-            if offset <= short_center_offset:
-                if w > short_center_width or area > short_center_area:
-                    continue
-            else:
-                if w > short_side_width or area > short_side_area:
-                    continue
+            if offset < short_min_offset:
+                continue
+            if w > short_side_width or area > short_side_area:
+                continue
         keep_u8[labels == idx] = 255
 
     if int((keep_u8 > 0).sum()) < 60:
@@ -3474,6 +3512,8 @@ def _build_side_column_cloth_restore_mask(
     keep_gate_u8 = cv2.bitwise_or(loose_cloth_u8, candidate_u8)
     keep_u8 = cv2.bitwise_and(keep_u8, keep_gate_u8)
     keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
+    if hair_length == "short" and int((short_outer_strip_u8 > 0).sum()) > 0:
+        keep_u8 = cv2.bitwise_and(keep_u8, short_outer_strip_u8)
     if hair_length == "short":
         keep_u8 = self._trim_blocky_short_restore_mask_u8(
             mask_u8=keep_u8,
@@ -3481,6 +3521,8 @@ def _build_side_column_cloth_restore_mask(
             cutoff_y=cutoff_y,
             min_keep_px=60,
         )
+        if int((short_outer_strip_u8 > 0).sum()) > 0:
+            keep_u8 = cv2.bitwise_and(keep_u8, short_outer_strip_u8)
     if int((keep_u8 > 0).sum()) < 60:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -3542,6 +3584,48 @@ def _build_direct_short_column_restore_mask(
     if int((zone_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
 
+    center_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
+    neckline_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
+    outer_strip_u8 = np.zeros((H, W), dtype=np.uint8)
+    inner_keepout_half = max(
+        40,
+        int(face_w * float(getattr(self.config, "short_side_column_inner_keepout_ratio", 0.42))),
+    )
+    neckline_keepout_half = max(inner_keepout_half + 18, int(face_w * 0.66))
+    keepout_top = max(top, int(cutoff_y + face_h * 0.10))
+    keepout_bottom = min(bottom, int(cutoff_y + face_h * 1.24))
+    if keepout_top < keepout_bottom:
+        center_keepout_u8[
+            keepout_top:keepout_bottom,
+            max(left, int(cx - inner_keepout_half)):min(right, int(cx + inner_keepout_half)),
+        ] = 255
+        zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(center_keepout_u8))
+    neckline_keepout_bottom = min(
+        bottom,
+        int(cutoff_y + face_h * float(getattr(self.config, "short_side_column_neckline_keepout_ratio", 0.34))),
+    )
+    if top < neckline_keepout_bottom:
+        neckline_keepout_u8[
+            top:neckline_keepout_bottom,
+            max(left, int(cx - neckline_keepout_half)):min(right, int(cx + neckline_keepout_half)),
+        ] = 255
+        zone_u8 = cv2.bitwise_and(zone_u8, cv2.bitwise_not(neckline_keepout_u8))
+    outer_gap_half = max(
+        inner_keepout_half,
+        int(face_w * float(getattr(self.config, "short_side_column_outer_strip_gap_ratio", 0.46))),
+    )
+    strip_top = max(top, int(cutoff_y + face_h * 0.16))
+    if strip_top < bottom:
+        left_inner = max(left + 1, int(cx - outer_gap_half))
+        right_inner = min(right - 1, int(cx + outer_gap_half))
+        if left < left_inner:
+            outer_strip_u8[strip_top:bottom, left:left_inner] = 255
+        if right_inner < right:
+            outer_strip_u8[strip_top:bottom, right_inner:right] = 255
+        zone_u8 = cv2.bitwise_and(zone_u8, outer_strip_u8)
+    if int((zone_u8 > 0).sum()) < 80:
+        return np.zeros((H, W), dtype=np.float32)
+
     zone_u8 = cv2.morphologyEx(
         zone_u8,
         cv2.MORPH_OPEN,
@@ -3560,7 +3644,7 @@ def _build_direct_short_column_restore_mask(
     min_height = max(72, int(face_h * 0.28))
     max_width = max(128, int(face_w * 0.78))
     max_offset = max(180, int(face_w * 0.98))
-    center_reject_offset = max(26, int(face_w * 0.30))
+    min_side_offset = max(42, int(face_w * 0.42))
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
         y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -3579,11 +3663,7 @@ def _build_direct_short_column_restore_mask(
             continue
         if abs(comp_cx - cx) > max_offset:
             continue
-        if (
-            abs(comp_cx - cx) <= center_reject_offset
-            and w > max(84, int(face_w * 0.38))
-            and area > max(1600, int(face_w * face_h * 0.06))
-        ):
+        if abs(comp_cx - cx) < min_side_offset:
             continue
         keep_u8[labels == idx] = 255
 
@@ -3604,12 +3684,16 @@ def _build_direct_short_column_restore_mask(
         ),
     )
     keep_u8 = cv2.bitwise_and(keep_u8, corridor_u8)
+    if int((outer_strip_u8 > 0).sum()) > 0:
+        keep_u8 = cv2.bitwise_and(keep_u8, outer_strip_u8)
     keep_u8 = self._trim_blocky_short_restore_mask_u8(
         mask_u8=keep_u8,
         face_bbox=face_bbox,
         cutoff_y=cutoff_y,
         min_keep_px=80,
     )
+    if int((outer_strip_u8 > 0).sum()) > 0:
+        keep_u8 = cv2.bitwise_and(keep_u8, outer_strip_u8)
     if int((keep_u8 > 0).sum()) < 80:
         return np.zeros((H, W), dtype=np.float32)
 

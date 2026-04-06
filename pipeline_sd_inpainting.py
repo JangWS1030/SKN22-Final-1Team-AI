@@ -207,6 +207,10 @@ class SDInpaintConfig:
     short_upper_clothes_overwrite_alpha: float = 0.72
     medium_upper_clothes_overwrite_alpha: float = 0.82
     long_upper_clothes_overwrite_alpha: float = 0.92
+    short_side_column_inner_keepout_ratio: float = 0.42
+    short_side_column_neckline_keepout_ratio: float = 0.34
+    short_side_column_outer_strip_gap_ratio: float = 0.46
+    short_side_column_restore_plain_fill: bool = False
 
     # 씨드 리스트 — None 이면 요청마다 랜덤 생성 (권장), 고정값 지정도 가능
     seeds: Optional[List[int]] = None
@@ -4008,7 +4012,9 @@ class MirrAISDPipeline:
                                 final_hair_mask=final_hair_mask,
                                 ignore_final_hair_for_cloth_restore=False,
                                 cleanup_dark_tail=True,
-                                prefer_plain_cloth_fill=True,
+                                prefer_plain_cloth_fill=bool(
+                                    getattr(self.config, "short_side_column_restore_plain_fill", False)
+                                ),
                             )
                         else:
                             final_rgb = self._restore_cloth_overlap_from_source(
