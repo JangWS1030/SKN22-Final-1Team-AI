@@ -2434,11 +2434,11 @@ class MirrAISDPipeline:
                             bottom_scale=0.82,
                             half_w_scale=0.28,
                             shrink_half_w_scale=0.20,
-                            max_area_scale=0.12,
-                            max_width_scale=0.38,
+                            max_area_scale=0.40,
+                            max_width_scale=0.80,
                             min_height_scale=0.10,
                             center_allow_scale=0.20,
-                            max_total_scale=0.07,
+                            max_total_scale=0.40,
                         )
 
                         # artifact_cleanup (side dark tail)
