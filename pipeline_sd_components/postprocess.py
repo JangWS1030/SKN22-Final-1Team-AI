@@ -1287,6 +1287,38 @@ def _build_short_below_bob_torso_mask(
     face_h = max(int(y2 - y1), 1)
     cx = int(0.5 * (x1 + x2))
 
+    def _component_debug(mask_u8: np.ndarray, *, limit: int = 4) -> Dict[str, Any]:
+        mask_bin = (mask_u8 > 0).astype(np.uint8)
+        if int(mask_bin.sum()) == 0:
+            return {
+                "bbox": None,
+                "component_count": 0,
+                "largest_component_area": 0,
+                "components": [],
+            }
+        ys, xs = np.where(mask_bin > 0)
+        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask_bin, 8)
+        components: List[Dict[str, int]] = []
+        largest_component_area = 0
+        for label in range(1, num_labels):
+            x = int(stats[label, cv2.CC_STAT_LEFT])
+            y = int(stats[label, cv2.CC_STAT_TOP])
+            w = int(stats[label, cv2.CC_STAT_WIDTH])
+            h = int(stats[label, cv2.CC_STAT_HEIGHT])
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            largest_component_area = max(largest_component_area, area)
+            components.append({
+                "bbox": [x, y, x + w, y + h],
+                "area": area,
+            })
+        components.sort(key=lambda item: int(item["area"]), reverse=True)
+        return {
+            "bbox": [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1],
+            "component_count": max(0, num_labels - 1),
+            "largest_component_area": int(largest_component_area),
+            "components": components[:limit],
+        }
+
     amodal_support_u8 = np.zeros((H, W), dtype=np.uint8)
     for mask, kernel in (
         (torso_candidate_mask, (15, 21)),
@@ -1419,6 +1451,8 @@ def _build_short_below_bob_torso_mask(
     if debug_info is not None:
         seed_pretrim_px = int((seed_pretrim_u8 > 0).sum())
         seed_posttrim_px = int((torso_u8 > 0).sum())
+        seed_pretrim_debug = _component_debug(seed_pretrim_u8)
+        seed_posttrim_debug = _component_debug(torso_u8)
         debug_info.update({
             "amodal_support_px": int((amodal_support_u8 > 0).sum()),
             "seed_pretrim_px": seed_pretrim_px,
@@ -1430,7 +1464,23 @@ def _build_short_below_bob_torso_mask(
             "bottom": int(bottom),
             "center_half": int(center_half),
             "reason": debug_info.get("reason") or ("active" if seed_posttrim_px >= 80 else "trimmed_to_empty"),
+            "seed_pretrim_bbox": seed_pretrim_debug["bbox"],
+            "seed_pretrim_component_count": seed_pretrim_debug["component_count"],
+            "seed_pretrim_largest_component_area": seed_pretrim_debug["largest_component_area"],
+            "seed_pretrim_components": seed_pretrim_debug["components"],
+            "seed_posttrim_bbox": seed_posttrim_debug["bbox"],
+            "seed_posttrim_component_count": seed_posttrim_debug["component_count"],
+            "seed_posttrim_largest_component_area": seed_posttrim_debug["largest_component_area"],
+            "seed_posttrim_components": seed_posttrim_debug["components"],
         })
+        if "fallback_source_u8" in locals():
+            fallback_debug = _component_debug(fallback_source_u8)
+            debug_info.update({
+                "fallback_center_anchor_bbox": fallback_debug["bbox"],
+                "fallback_center_anchor_component_count": fallback_debug["component_count"],
+                "fallback_center_anchor_largest_component_area": fallback_debug["largest_component_area"],
+                "fallback_center_anchor_components": fallback_debug["components"],
+            })
     if debug_masks is not None:
         debug_masks["amodal_support"] = amodal_support_u8.astype(np.float32) / 255.0
         debug_masks["seed_pretrim"] = seed_pretrim_u8.astype(np.float32) / 255.0

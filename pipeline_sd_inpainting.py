@@ -690,6 +690,21 @@ class MirrAISDPipeline:
                 return 0.0
             return float(np.abs(arr_a - arr_b).mean())
 
+        def _build_abs_diff_heatmap_rgb(
+            rgb_a: Optional[np.ndarray],
+            rgb_b: Optional[np.ndarray],
+        ) -> Optional[np.ndarray]:
+            if rgb_a is None or rgb_b is None:
+                return None
+            if rgb_a.shape != rgb_b.shape:
+                return None
+            diff = np.abs(rgb_a.astype(np.float32) - rgb_b.astype(np.float32)).mean(axis=2)
+            diff_u8 = np.clip(diff * 3.0, 0.0, 255.0).astype(np.uint8)
+            return cv2.cvtColor(
+                cv2.applyColorMap(diff_u8, cv2.COLORMAP_TURBO),
+                cv2.COLOR_BGR2RGB,
+            )
+
         def _source_similarity_ratio(
             source_rgb: Optional[np.ndarray],
             target_rgb: Optional[np.ndarray],
@@ -1080,6 +1095,13 @@ class MirrAISDPipeline:
         upper_clothes_overwrite_core_mask = np.zeros((H, W), dtype=np.float32)
         effective_upper_clothes_overwrite_mask = np.zeros((H, W), dtype=np.float32)
         effective_upper_clothes_overwrite_core_mask = np.zeros((H, W), dtype=np.float32)
+        overwrite_core_restore_mask_for_debug = np.zeros((H, W), dtype=np.float32)
+        gen_mask_before_upper_overwrite = np.zeros((H, W), dtype=np.float32)
+        gen_mask_after_upper_overwrite = np.zeros((H, W), dtype=np.float32)
+        gen_mask_after_initial_core = np.zeros((H, W), dtype=np.float32)
+        gen_mask_before_final_core = np.zeros((H, W), dtype=np.float32)
+        gen_mask_after_final_core = np.zeros((H, W), dtype=np.float32)
+        hair_mask_for_sd_before_core = np.zeros((H, W), dtype=np.float32)
         upper_clothes_overwrite_anchor_mask = np.zeros((H, W), dtype=np.float32)
         upper_clothes_overwrite_px = 0
         use_upper_clothes_overwrite = bool(self.config.enable_upper_clothes_overwrite)
@@ -2074,6 +2096,7 @@ class MirrAISDPipeline:
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
                     iterations=1,
                 )
+            gen_mask_before_upper_overwrite = gen_mask.astype(np.float32).copy()
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == (H, W):
                 overwrite_restore_mask = effective_upper_clothes_overwrite_mask.astype(np.float32)
                 if protect_mask_for_sd.shape == (H, W):
@@ -2083,6 +2106,7 @@ class MirrAISDPipeline:
                         1.0,
                     )
                 gen_mask = np.maximum(gen_mask.astype(np.float32), overwrite_restore_mask).astype(np.float32)
+            gen_mask_after_upper_overwrite = gen_mask.astype(np.float32).copy()
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == (H, W):
                 core_restore_mask = effective_upper_clothes_overwrite_core_mask.astype(np.float32)
                 if protect_mask_for_sd.shape == (H, W):
@@ -2091,7 +2115,12 @@ class MirrAISDPipeline:
                         0.0,
                         1.0,
                     )
+                overwrite_core_restore_mask_for_debug = np.maximum(
+                    overwrite_core_restore_mask_for_debug.astype(np.float32),
+                    core_restore_mask.astype(np.float32),
+                ).astype(np.float32)
                 gen_mask = np.maximum(gen_mask.astype(np.float32), core_restore_mask).astype(np.float32)
+            gen_mask_after_initial_core = gen_mask.astype(np.float32).copy()
             composite_bangs_release_mask = np.zeros((H, W), dtype=np.float32)
             if float(bangs_restore_for_sd.sum()) > 0.0:
                 soft_bangs_generation_mask = self._build_soft_bangs_generation_mask(
@@ -2109,6 +2138,7 @@ class MirrAISDPipeline:
                 )
                 _store_mask("pipeline_bangs_generation_soft_mask", soft_bangs_generation_mask)
                 _store_mask("pipeline_bangs_composite_release_mask", composite_bangs_release_mask)
+            gen_mask_before_final_core = gen_mask.astype(np.float32).copy()
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == (H, W):
                 core_restore_mask = effective_upper_clothes_overwrite_core_mask.astype(np.float32)
                 if protect_mask_for_sd.shape == (H, W):
@@ -2117,10 +2147,21 @@ class MirrAISDPipeline:
                         0.0,
                         1.0,
                     )
+                overwrite_core_restore_mask_for_debug = np.maximum(
+                    overwrite_core_restore_mask_for_debug.astype(np.float32),
+                    core_restore_mask.astype(np.float32),
+                ).astype(np.float32)
                 gen_mask = np.maximum(gen_mask.astype(np.float32), core_restore_mask).astype(np.float32)
+            gen_mask_after_final_core = gen_mask.astype(np.float32).copy()
             _store_mask("pipeline_short_removal_mask", removal_mask_for_post)
             _store_mask("pipeline_short_generation_seed_mask", short_generation_seed_mask_for_debug)
             _store_mask("pipeline_short_generation_mask", gen_mask)
+            _store_mask("pipeline_short_generation_mask_before_upper_overwrite", gen_mask_before_upper_overwrite)
+            _store_mask("pipeline_short_generation_mask_after_upper_overwrite", gen_mask_after_upper_overwrite)
+            _store_mask("pipeline_short_generation_mask_after_initial_core", gen_mask_after_initial_core)
+            _store_mask("pipeline_short_generation_mask_before_final_core", gen_mask_before_final_core)
+            _store_mask("pipeline_short_generation_mask_after_final_core", gen_mask_after_final_core)
+            _store_mask("pipeline_overwrite_core_restore_mask", overwrite_core_restore_mask_for_debug)
             _store_mask("pipeline_short_below_bob_generation_block_mask", below_bob_generation_block_for_post)
             _store_mask("pipeline_short_below_bob_cloth_restore_mask", below_bob_cloth_restore_for_post)
 
@@ -2794,6 +2835,7 @@ class MirrAISDPipeline:
                     hair_mask_for_sd,
                     effective_upper_clothes_overwrite_mask.astype(np.float32),
                 ).astype(np.float32)
+            hair_mask_for_sd_before_core = hair_mask_for_sd.copy()
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == (H, W):
                 hair_mask_for_sd = np.maximum(
                     hair_mask_for_sd,
@@ -2804,6 +2846,7 @@ class MirrAISDPipeline:
             # long 헤어는 기존 단일 패스 유지
             hair_mask_for_sd = hair_mask
             composite_hair_mask = hair_mask_for_sd.astype(np.float32)
+            hair_mask_for_sd_before_core = hair_mask_for_sd.copy()
             img_rgb_for_sd   = img_rgb
             img_rgb_cleaned  = img_rgb
             if float(bangs_restore_for_sd.sum()) > 0.0:
@@ -2835,16 +2878,37 @@ class MirrAISDPipeline:
                     _store_mask("pipeline_bangs_generation_soft_mask", long_soft_bangs_mask)
                     _store_mask("pipeline_bangs_composite_release_mask", composite_bangs_release_mask)
 
+        _store_mask("pipeline_sd_inpaint_mask_before_core", hair_mask_for_sd_before_core)
         _store_mask("sd_inpaint_mask", hair_mask_for_sd)
         _store_rgb("sd_input_rgb", img_rgb_for_sd)
+        if debug_images_common is not None:
+            _store_rgb(
+                "pipeline_source_with_overwrite_core_overlay",
+                _overlay_mask_rgb(img_rgb, overwrite_core_restore_mask_for_debug, (255, 96, 64), alpha=0.52),
+            )
+            _store_rgb(
+                "pipeline_source_with_sd_inpaint_mask_before_core_overlay",
+                _overlay_mask_rgb(img_rgb, hair_mask_for_sd_before_core, (255, 0, 0), alpha=0.38),
+            )
+            _store_rgb(
+                "pipeline_source_with_sd_inpaint_mask_overlay",
+                _overlay_mask_rgb(img_rgb, hair_mask_for_sd, (255, 0, 0), alpha=0.38),
+            )
         if debug_data_common is not None:
             torso_rect = diagnostic_rois.get("torso_front")
             _mask_stats("guard_release", cloth_generation_guard_release_mask, torso_rect)
             _mask_stats("cloth_guard", cloth_generation_guard, torso_rect)
             _mask_stats("overwrite_mask", upper_clothes_overwrite_mask, torso_rect)
             _mask_stats("overwrite_effective", effective_upper_clothes_overwrite_mask, torso_rect)
+            _mask_stats("overwrite_core_restore", overwrite_core_restore_mask_for_debug, torso_rect)
             _mask_stats("overwrite_core_seed", short_upper_body_repaint_seed_mask, torso_rect)
             _mask_stats("overwrite_core", effective_upper_clothes_overwrite_core_mask, torso_rect)
+            _mask_stats("gen_mask_before_upper_overwrite", gen_mask_before_upper_overwrite, torso_rect)
+            _mask_stats("gen_mask_after_upper_overwrite", gen_mask_after_upper_overwrite, torso_rect)
+            _mask_stats("gen_mask_after_initial_core", gen_mask_after_initial_core, torso_rect)
+            _mask_stats("gen_mask_before_final_core", gen_mask_before_final_core, torso_rect)
+            _mask_stats("gen_mask_after_final_core", gen_mask_after_final_core, torso_rect)
+            _mask_stats("sd_inpaint_mask_before_core", hair_mask_for_sd_before_core, torso_rect)
             _mask_stats("garment_prepass", source_garment_prepass_mask, torso_rect)
             _mask_stats("short_repaint_mask", short_upper_body_repaint_mask, torso_rect)
             _mask_stats("final_inpaint_mask", hair_mask_for_sd, torso_rect)
@@ -3143,6 +3207,42 @@ class MirrAISDPipeline:
             )
             gen_preview_bgr = cv2.cvtColor(np.array(gen_pil), cv2.COLOR_RGB2BGR)
             generated_resized_rgb = _project_generated_to_original(gen_pil, scale, pad, (W, H))
+            composite_before_core_mask = gen_mask_after_upper_overwrite.astype(np.float32)
+            composite_after_core_mask = gen_mask_after_final_core.astype(np.float32)
+            composite_before_core_bgr = self._composite(
+                composite_base_bgr,
+                composite_base_rgb,
+                gen_pil,
+                composite_before_core_mask,
+                scale,
+                pad,
+                (W, H),
+                garment_mask=None,
+                protect_mask=protect_mask_for_sd,
+                protect_release_mask=(
+                    composite_bangs_release_mask
+                    if float(composite_bangs_release_mask.sum()) > 0.0
+                    else None
+                ),
+                hair_length=hair_length,
+            )
+            composite_after_core_mask_bgr = self._composite(
+                composite_base_bgr,
+                composite_base_rgb,
+                gen_pil,
+                composite_after_core_mask,
+                scale,
+                pad,
+                (W, H),
+                garment_mask=None,
+                protect_mask=protect_mask_for_sd,
+                protect_release_mask=(
+                    composite_bangs_release_mask
+                    if float(composite_bangs_release_mask.sum()) > 0.0
+                    else None
+                ),
+                hair_length=hair_length,
+            )
             composite_mask = composite_hair_mask.astype(np.float32)
             garment_composite_mask = None
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape:
@@ -3320,12 +3420,16 @@ class MirrAISDPipeline:
                 "image_bgr": composited_bgr,
                 "preview_bgr": gen_preview_bgr,
                 "generated_resized_rgb": generated_resized_rgb,
+                "composite_before_core_bgr": composite_before_core_bgr,
+                "composite_after_core_mask_bgr": composite_after_core_mask_bgr,
                 "composite_pre_cleanup_bgr": composite_pre_cleanup_bgr,
                 "post_final_cutoff_cleanup_bgr": post_final_cutoff_cleanup_bgr,
                 "post_remove_residual_below_cutoff_bgr": post_remove_residual_below_cutoff_bgr,
                 "final_cutoff_debug_masks": final_cutoff_debug_masks,
                 "residual_cleanup_debug_masks": residual_cleanup_debug_masks,
                 "candidate_cleanup_trace": candidate_cleanup_trace,
+                "composite_before_core_mask": composite_before_core_mask.copy(),
+                "composite_after_core_mask": composite_after_core_mask.copy(),
                 "composite_mask": composite_mask.astype(np.float32),
                 "garment_composite_mask": (
                     garment_composite_mask.astype(np.float32)
@@ -3408,7 +3512,30 @@ class MirrAISDPipeline:
                         cand["generated_resized_rgb"],
                         cv2.COLOR_RGB2BGR,
                     )
+                    _store_rgb(
+                        "pipeline_generated_rank0_resized_with_overwrite_core_overlay",
+                        _overlay_mask_rgb(
+                            cand["generated_resized_rgb"],
+                            overwrite_core_restore_mask_for_debug,
+                            (255, 96, 64),
+                            alpha=0.52,
+                        ),
+                    )
                     _store_roi_crops("generated_resized", cand["generated_resized_rgb"])
+                if isinstance(cand.get("composite_before_core_bgr"), np.ndarray):
+                    debug_images_common["pipeline_composite_rank0_before_core"] = cand["composite_before_core_bgr"].copy()
+                    _store_roi_crops(
+                        "composite_before_core",
+                        cv2.cvtColor(cand["composite_before_core_bgr"], cv2.COLOR_BGR2RGB),
+                    )
+                if isinstance(cand.get("composite_after_core_mask_bgr"), np.ndarray):
+                    debug_images_common["pipeline_composite_rank0_after_core_mask"] = cand[
+                        "composite_after_core_mask_bgr"
+                    ].copy()
+                    _store_roi_crops(
+                        "composite_after_core_mask",
+                        cv2.cvtColor(cand["composite_after_core_mask_bgr"], cv2.COLOR_BGR2RGB),
+                    )
                 if isinstance(cand.get("composite_pre_cleanup_bgr"), np.ndarray):
                     debug_images_common["pipeline_composite_rank0_pre_cleanup"] = cand["composite_pre_cleanup_bgr"].copy()
                     _store_roi_crops(
@@ -3444,6 +3571,22 @@ class MirrAISDPipeline:
                     debug_images_common["pipeline_garment_composite_mask_rank0"] = cv2.cvtColor(
                         (
                             (np.clip(cand["garment_composite_mask"].astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
+                            * 255
+                        ),
+                        cv2.COLOR_GRAY2BGR,
+                    )
+                if isinstance(cand.get("composite_before_core_mask"), np.ndarray):
+                    debug_images_common["pipeline_composite_before_core_mask_rank0"] = cv2.cvtColor(
+                        (
+                            (np.clip(cand["composite_before_core_mask"].astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
+                            * 255
+                        ),
+                        cv2.COLOR_GRAY2BGR,
+                    )
+                if isinstance(cand.get("composite_after_core_mask"), np.ndarray):
+                    debug_images_common["pipeline_composite_after_core_mask_rank0"] = cv2.cvtColor(
+                        (
+                            (np.clip(cand["composite_after_core_mask"].astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
                             * 255
                         ),
                         cv2.COLOR_GRAY2BGR,
@@ -4804,12 +4947,26 @@ class MirrAISDPipeline:
             if debug_data_common is not None and rank == 0:
                 final_rgb_for_diag = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                 generated_resized_rgb = cand.get("generated_resized_rgb")
+                composite_before_core_bgr = cand.get("composite_before_core_bgr")
+                composite_before_core_rgb = (
+                    cv2.cvtColor(composite_before_core_bgr, cv2.COLOR_BGR2RGB)
+                    if isinstance(composite_before_core_bgr, np.ndarray)
+                    else None
+                )
+                composite_after_core_mask_bgr = cand.get("composite_after_core_mask_bgr")
+                composite_after_core_mask_rgb = (
+                    cv2.cvtColor(composite_after_core_mask_bgr, cv2.COLOR_BGR2RGB)
+                    if isinstance(composite_after_core_mask_bgr, np.ndarray)
+                    else None
+                )
                 composite_pre_cleanup_bgr = cand.get("composite_pre_cleanup_bgr")
                 composite_pre_cleanup_rgb = (
                     cv2.cvtColor(composite_pre_cleanup_bgr, cv2.COLOR_BGR2RGB)
                     if isinstance(composite_pre_cleanup_bgr, np.ndarray)
                     else None
                 )
+                composite_before_core_mask = cand.get("composite_before_core_mask")
+                composite_after_core_mask = cand.get("composite_after_core_mask")
                 composite_mask_for_diag = cand.get("composite_mask")
                 boundary_band = _build_boundary_band(composite_mask_for_diag, (H, W))
                 if debug_images_common is not None:
@@ -4817,14 +4974,90 @@ class MirrAISDPipeline:
                         boundary_band,
                         cv2.COLOR_GRAY2BGR,
                     )
+                    for name, diff_rgb in (
+                        (
+                            "pipeline_diff_generated_to_composite_before_core",
+                            _build_abs_diff_heatmap_rgb(generated_resized_rgb, composite_before_core_rgb),
+                        ),
+                        (
+                            "pipeline_diff_composite_before_core_to_after_core_mask",
+                            _build_abs_diff_heatmap_rgb(composite_before_core_rgb, composite_after_core_mask_rgb),
+                        ),
+                        (
+                            "pipeline_diff_composite_after_core_mask_to_pre_cleanup",
+                            _build_abs_diff_heatmap_rgb(composite_after_core_mask_rgb, composite_pre_cleanup_rgb),
+                        ),
+                        (
+                            "pipeline_diff_generated_to_pre_cleanup",
+                            _build_abs_diff_heatmap_rgb(generated_resized_rgb, composite_pre_cleanup_rgb),
+                        ),
+                        (
+                            "pipeline_diff_generated_to_final",
+                            _build_abs_diff_heatmap_rgb(generated_resized_rgb, final_rgb_for_diag),
+                        ),
+                    ):
+                        if diff_rgb is None:
+                            continue
+                        _store_rgb(name, diff_rgb)
+                        _store_roi_crops(name, diff_rgb)
+                    _store_rgb(
+                        "pipeline_source_with_composite_before_core_mask_overlay",
+                        _overlay_mask_rgb(img_rgb, composite_before_core_mask, (255, 196, 0), alpha=0.42),
+                    )
+                    _store_rgb(
+                        "pipeline_source_with_composite_after_core_mask_overlay",
+                        _overlay_mask_rgb(img_rgb, composite_after_core_mask, (255, 96, 64), alpha=0.46),
+                    )
+                    _store_rgb(
+                        "pipeline_source_with_garment_composite_mask_overlay",
+                        _overlay_mask_rgb(img_rgb, cand.get("garment_composite_mask"), (0, 208, 255), alpha=0.52),
+                    )
                 _mask_stats(
                     "composite_boundary_band",
                     boundary_band.astype(np.float32) / 255.0,
                     diagnostic_rois.get("torso_front"),
                     bucket="cleanup_mask_stats",
                 )
+                _mask_stats(
+                    "composite_before_core_mask",
+                    composite_before_core_mask,
+                    diagnostic_rois.get("torso_front"),
+                    bucket="cleanup_mask_stats",
+                )
+                _mask_stats(
+                    "composite_after_core_mask",
+                    composite_after_core_mask,
+                    diagnostic_rois.get("torso_front"),
+                    bucket="cleanup_mask_stats",
+                )
+                _mask_stats(
+                    "garment_composite_mask",
+                    cand.get("garment_composite_mask"),
+                    diagnostic_rois.get("torso_front"),
+                    bucket="cleanup_mask_stats",
+                )
                 diag = debug_data_common.setdefault("diagnostics", {})
                 stage_diffs = diag.setdefault("stage_diffs", {})
+                stage_diffs["generated_resized_vs_composite_before_core_mean_abs_diff"] = _mean_abs_diff(
+                    generated_resized_rgb,
+                    composite_before_core_rgb,
+                )
+                stage_diffs["generated_resized_vs_composite_after_core_mask_mean_abs_diff"] = _mean_abs_diff(
+                    generated_resized_rgb,
+                    composite_after_core_mask_rgb,
+                )
+                stage_diffs["generated_resized_vs_composite_pre_cleanup_mean_abs_diff"] = _mean_abs_diff(
+                    generated_resized_rgb,
+                    composite_pre_cleanup_rgb,
+                )
+                stage_diffs["composite_before_core_vs_composite_after_core_mask_mean_abs_diff"] = _mean_abs_diff(
+                    composite_before_core_rgb,
+                    composite_after_core_mask_rgb,
+                )
+                stage_diffs["composite_after_core_mask_vs_composite_pre_cleanup_mean_abs_diff"] = _mean_abs_diff(
+                    composite_after_core_mask_rgb,
+                    composite_pre_cleanup_rgb,
+                )
                 stage_diffs["generated_resized_vs_final_mean_abs_diff"] = _mean_abs_diff(
                     generated_resized_rgb,
                     final_rgb_for_diag,
@@ -4835,6 +5068,31 @@ class MirrAISDPipeline:
                 )
                 for roi_name in ("chest_center", "left_side", "right_side", "neckline"):
                     rect = diagnostic_rois.get(roi_name)
+                    stage_diffs[f"{roi_name}_generated_resized_vs_composite_before_core_mean_abs_diff"] = _mean_abs_diff(
+                        generated_resized_rgb,
+                        composite_before_core_rgb,
+                        rect,
+                    )
+                    stage_diffs[f"{roi_name}_generated_resized_vs_composite_after_core_mask_mean_abs_diff"] = _mean_abs_diff(
+                        generated_resized_rgb,
+                        composite_after_core_mask_rgb,
+                        rect,
+                    )
+                    stage_diffs[f"{roi_name}_generated_resized_vs_composite_pre_cleanup_mean_abs_diff"] = _mean_abs_diff(
+                        generated_resized_rgb,
+                        composite_pre_cleanup_rgb,
+                        rect,
+                    )
+                    stage_diffs[f"{roi_name}_composite_before_core_vs_composite_after_core_mask_mean_abs_diff"] = _mean_abs_diff(
+                        composite_before_core_rgb,
+                        composite_after_core_mask_rgb,
+                        rect,
+                    )
+                    stage_diffs[f"{roi_name}_composite_after_core_mask_vs_composite_pre_cleanup_mean_abs_diff"] = _mean_abs_diff(
+                        composite_after_core_mask_rgb,
+                        composite_pre_cleanup_rgb,
+                        rect,
+                    )
                     stage_diffs[f"{roi_name}_generated_resized_vs_final_mean_abs_diff"] = _mean_abs_diff(
                         generated_resized_rgb,
                         final_rgb_for_diag,
@@ -4927,12 +5185,13 @@ class MirrAISDPipeline:
                         )
                     diag["candidate_cleanup_summary"] = candidate_summary
                 logger.info(
-                    "[SDPipeline][diag][stage] gen->final=%.2f comp->final=%.2f chest(gen)=%.2f left(comp)=%.2f right(comp)=%.2f",
+                    "[SDPipeline][diag][stage] gen->precore=%.2f gen->core=%.2f core->pre=%.2f gen->final=%.2f chest(core)=%.2f chest(final)=%.2f",
+                    stage_diffs.get("generated_resized_vs_composite_before_core_mean_abs_diff", 0.0),
+                    stage_diffs.get("generated_resized_vs_composite_after_core_mask_mean_abs_diff", 0.0),
+                    stage_diffs.get("composite_after_core_mask_vs_composite_pre_cleanup_mean_abs_diff", 0.0),
                     stage_diffs.get("generated_resized_vs_final_mean_abs_diff", 0.0),
-                    stage_diffs.get("composite_pre_cleanup_vs_final_mean_abs_diff", 0.0),
+                    stage_diffs.get("chest_center_generated_resized_vs_composite_after_core_mask_mean_abs_diff", 0.0),
                     stage_diffs.get("chest_center_generated_resized_vs_final_mean_abs_diff", 0.0),
-                    stage_diffs.get("left_side_composite_pre_cleanup_vs_final_mean_abs_diff", 0.0),
-                    stage_diffs.get("right_side_composite_pre_cleanup_vs_final_mean_abs_diff", 0.0),
                 )
             results.append(SDInpaintResult(
                 image=final_bgr,
