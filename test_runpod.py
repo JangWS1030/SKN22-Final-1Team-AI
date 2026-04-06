@@ -67,10 +67,8 @@ def poll_job(endpoint_id: str, api_key: str, job_id: str, timeout: int) -> dict:
                 fetched = requests.get(str(output_url), timeout=120)
                 fetched.raise_for_status()
                 return fetched.json()
-            output = data.get("output", {})
-            return output if isinstance(output, dict) else {"output": output}
+            return data
         if status in {"FAILED", "CANCELLED", "TIMED_OUT"}:
-            output = data.get("output", {}) or {}
             error = data.get("error") or output.get("error") or ""
             raise RuntimeError(f"RunPod job {status}: {error}")
         print(f"[poll] status={status}", end="\r", flush=True)
@@ -94,6 +92,27 @@ def save_results(output: dict, out_dir: Path) -> list[Path]:
         path = out_dir / f"result_rank{item.get('rank', 0)}_seed{item.get('seed', 0)}.jpg"
         image.save(path, format="JPEG", quality=95)
         saved.append(path)
+
+    intermediates = output.get("intermediates", {})
+    if isinstance(intermediates, dict):
+        for name, b64 in intermediates.items():
+            if not b64:
+                continue
+            if isinstance(b64, str) and "," in b64:
+                b64 = b64.split(",", 1)[1]
+            image = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+            path = out_dir / f"debug_{name}.jpg"
+            image.save(path, format="JPEG", quality=95)
+            saved.append(path)
+
+    intermediate_data = output.get("intermediate_data", {})
+    if intermediate_data:
+        import json
+        json_path = out_dir / "intermediate_data.json"
+        with open(json_path, "w") as f:
+            json.dump(intermediate_data, f, indent=2)
+        saved.append(json_path)
+
     return saved
 
 
@@ -106,6 +125,7 @@ def build_payload(args: argparse.Namespace) -> dict:
         "color_text": args.color,
         "top_k": args.top_k,
         "return_base64": True,
+        "return_intermediates": True,
     }
     if args.gender:
         payload["subject_gender"] = args.gender
@@ -129,7 +149,8 @@ def main() -> int:
     print(json.dumps({"endpoint_id": args.endpoint_id, "payload_keys": sorted(payload.keys())}, ensure_ascii=False))
     job_id = submit_job(args.endpoint_id, args.api_key, payload)
     output = poll_job(args.endpoint_id, args.api_key, job_id, args.timeout)
-    print(json.dumps(output, ensure_ascii=False, indent=2)[:4000])
+    with open("raw_output.json", "w") as f:
+        json.dump(output, f)
 
     if args.health_check:
         if str(output.get("status", "")).lower() != "ok":
