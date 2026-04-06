@@ -329,6 +329,7 @@ class MirrAISDPipeline:
         return_intermediates: bool = False,
         mask_refine_mode: Optional[str] = None,
         subject_gender: Optional[str] = None,
+        seed: Optional[int] = None,
         lora_path: Optional[str] = None,
         lora_scale: Optional[float] = None,
         sd_prompt_data: Optional[Dict[str, Any]] = None,
@@ -354,12 +355,27 @@ class MirrAISDPipeline:
 
         requested_top_k = top_k
 
-        # 시드 결정: config에 고정값 있으면 사용, 없으면 매 요청마다 랜덤 생성
-        if self.config.seeds:
-            seeds = self.config.seeds[:top_k]
+        seed_max = 2**31 - 1
+
+        def _normalize_seed_value(value: int) -> int:
+            normalized = int(value) % seed_max
+            return normalized if normalized > 0 else 1
+
+        request_seed_value: Optional[int] = None
+        if seed is not None:
+            request_seed_value = _normalize_seed_value(int(seed))
+            seed_rng = random.Random(request_seed_value)
+            seeds = [
+                _normalize_seed_value(request_seed_value + idx * 9973)
+                for idx in range(top_k)
+            ]
+        elif self.config.seeds:
+            seeds = [_normalize_seed_value(s) for s in self.config.seeds[:top_k]]
+            seed_rng = random.Random(seeds[0] if seeds else 1)
         else:
-            seeds = [random.randint(0, 2**31 - 1) for _ in range(top_k)]
-        logger.info(f"[SDPipeline] seeds={seeds}")
+            seed_rng = random
+            seeds = [seed_rng.randint(0, seed_max) for _ in range(top_k)]
+        logger.info(f"[SDPipeline] seeds={seeds}, request_seed={request_seed_value}")
 
         image_bgr = image.copy()
         img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
@@ -580,13 +596,13 @@ class MirrAISDPipeline:
         )
         if hair_length == "short" and len(seeds) < 5:
             extra = 5 - len(seeds)
-            seeds.extend(random.randint(0, 2**31 - 1) for _ in range(extra))
+            seeds.extend(seed_rng.randint(0, seed_max) for _ in range(extra))
             logger.info(
                 f"[SDPipeline] short internal candidate expansion: requested={requested_top_k}, internal={len(seeds)}"
             )
         elif subject_gender_mode == "male" and hair_length in ("short", "medium") and len(seeds) < 3:
             extra = 3 - len(seeds)
-            seeds.extend(random.randint(0, 2**31 - 1) for _ in range(extra))
+            seeds.extend(seed_rng.randint(0, seed_max) for _ in range(extra))
             logger.info(
                 f"[SDPipeline] male internal candidate expansion: requested={requested_top_k}, internal={len(seeds)}"
             )
@@ -4462,10 +4478,22 @@ class MirrAISDPipeline:
                                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
                                             iterations=1,
                                         )
-                                        strict_shoulder_lane_top = max(0, int(cutoff_y_for_post + face_h * 0.18))
-                                        strict_shoulder_lane_bottom = min(H, int(y2 + face_h * 1.82))
-                                        strict_shoulder_inner_half_w = max(34, int(face_w * 0.32))
-                                        strict_shoulder_outer_pad = max(28, int(face_w * 1.42))
+                                        strict_shoulder_lane_top = max(
+                                            0,
+                                            max(
+                                                int(cutoff_y_for_post + face_h * 0.26),
+                                                int(y2 + face_h * 0.12),
+                                            ),
+                                        )
+                                        strict_shoulder_lane_bottom = min(H, int(y2 + face_h * 1.94))
+                                        strict_shoulder_inner_x = min(
+                                            W,
+                                            max(
+                                                int(cx + face_w * 0.42),
+                                                int(x2 - face_w * 0.12),
+                                            ),
+                                        )
+                                        strict_shoulder_outer_x = min(W, int(x2 + face_w * 1.08))
                                         strict_shoulder_restore_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                                         strict_shoulder_restore_mask = None
                                         strict_shoulder_reference_mask = None
@@ -4474,21 +4502,14 @@ class MirrAISDPipeline:
                                             anchor_gate_u8 = None
                                             release_gate_u8 = None
                                             strict_shoulder_lane_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
-                                            strict_left_outer = max(0, int(x1 - strict_shoulder_outer_pad))
-                                            strict_right_outer = min(W, int(x2 + strict_shoulder_outer_pad))
-                                            strict_left_inner = max(0, cx - strict_shoulder_inner_half_w)
-                                            strict_right_inner = min(W, cx + strict_shoulder_inner_half_w)
-                                            if strict_shoulder_lane_top < strict_shoulder_lane_bottom:
-                                                if strict_left_outer < strict_left_inner:
-                                                    strict_shoulder_lane_u8[
-                                                        strict_shoulder_lane_top:strict_shoulder_lane_bottom,
-                                                        strict_left_outer:strict_left_inner,
-                                                    ] = 255
-                                                if strict_right_inner < strict_right_outer:
-                                                    strict_shoulder_lane_u8[
-                                                        strict_shoulder_lane_top:strict_shoulder_lane_bottom,
-                                                        strict_right_inner:strict_right_outer,
-                                                    ] = 255
+                                            if (
+                                                strict_shoulder_lane_top < strict_shoulder_lane_bottom
+                                                and strict_shoulder_inner_x < strict_shoulder_outer_x
+                                            ):
+                                                strict_shoulder_lane_u8[
+                                                    strict_shoulder_lane_top:strict_shoulder_lane_bottom,
+                                                    strict_shoulder_inner_x:strict_shoulder_outer_x,
+                                                ] = 255
                                             if (
                                                 subject_cloth_anchor_for_post is not None
                                                 and subject_cloth_anchor_for_post.shape == final_bgr.shape[:2]
@@ -4580,10 +4601,6 @@ class MirrAISDPipeline:
                                                         cv2.bitwise_not(strict_hair_guard_u8),
                                                     )
                                                 if int((strict_shoulder_restore_u8 > 0).sum()) >= 120:
-                                                    side_restore_u8 = cv2.bitwise_or(
-                                                        side_restore_u8,
-                                                        strict_shoulder_restore_u8,
-                                                    )
                                                     strict_shoulder_restore_mask = cv2.GaussianBlur(
                                                         strict_shoulder_restore_u8.astype(np.float32) / 255.0,
                                                         (0, 0),
@@ -4638,22 +4655,13 @@ class MirrAISDPipeline:
                                             ):
                                                 strict_crop_top = strict_shoulder_lane_top
                                                 strict_crop_bottom = strict_shoulder_lane_bottom
-                                                strict_left_crop = (
-                                                    max(0, int(x1 - strict_shoulder_outer_pad)),
-                                                    strict_crop_top,
-                                                    max(0, int(cx - strict_shoulder_inner_half_w)),
-                                                    strict_crop_bottom,
-                                                )
                                                 strict_right_crop = (
-                                                    min(W, int(cx + strict_shoulder_inner_half_w)),
+                                                    strict_shoulder_inner_x,
                                                     strict_crop_top,
-                                                    min(W, int(x2 + strict_shoulder_outer_pad)),
+                                                    strict_shoulder_outer_x,
                                                     strict_crop_bottom,
                                                 )
-                                                for crop_left, crop_top, crop_right, crop_bottom in (
-                                                    strict_left_crop,
-                                                    strict_right_crop,
-                                                ):
+                                                for crop_left, crop_top, crop_right, crop_bottom in (strict_right_crop,):
                                                     if crop_left >= crop_right or crop_top >= crop_bottom:
                                                         continue
                                                     crop_u8 = strict_shoulder_restore_u8[
@@ -4686,7 +4694,7 @@ class MirrAISDPipeline:
                                                         crop_rgb,
                                                         crop_reference_rgb,
                                                         crop_mask,
-                                                        strength=0.985,
+                                                        strength=0.99,
                                                     )
                                                     crop_rgb = self._overlay_reference_cloth_fill(
                                                         crop_rgb,

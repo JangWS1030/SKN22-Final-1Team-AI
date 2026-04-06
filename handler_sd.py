@@ -462,6 +462,7 @@ def _fetch_rag_context_for_styles(recommendations) -> Optional[str]:
 def _generate_per_recommendation(
     pipeline, img_bgr, recommendations, color_text,
     return_intermediates, mask_refine_mode, subject_gender, lora_path, lora_scale, rag_context,
+    seed=None,
 ):
     """추천된 각 스타일마다 1장씩 생성."""
     all_results = []
@@ -490,6 +491,7 @@ def _generate_per_recommendation(
             f"(sd_prompt_data={'yes' if sd_prompt_data else 'no'})"
         )
         try:
+            rec_seed = None if seed is None else int(seed) + idx * 9973
             results = pipeline.run(
                 image=img_bgr,
                 hairstyle_text=enriched_prompt,
@@ -498,6 +500,7 @@ def _generate_per_recommendation(
                 return_intermediates=return_intermediates if idx == 0 else False,
                 mask_refine_mode=mask_refine_mode,
                 subject_gender=subject_gender,
+                seed=rec_seed,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
                 sd_prompt_data=sd_prompt_data,
@@ -584,6 +587,10 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         hairstyle_text = str(inp.get("hairstyle_text", "")).strip()
         color_text     = str(inp.get("color_text", "")).strip()
         top_k          = max(1, min(5, int(inp.get("top_k", 3))))
+        request_seed_raw = inp.get("seed")
+        request_seed = None
+        if request_seed_raw is not None and str(request_seed_raw).strip() != "":
+            request_seed = int(request_seed_raw)
         return_base64  = _coerce_bool(inp.get("return_base64"), default=True)
         return_intermediates = _coerce_bool(inp.get("return_intermediates"), default=False)
         mask_debug_only = _coerce_bool(inp.get("mask_debug_only"), default=False)
@@ -631,7 +638,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             f"[handler_sd] 입력: {w}×{h}, "
             f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}, "
             f"mask_refine_mode={mask_refine_mode or 'default'}, "
-            f"recommend_mode={is_recommend_mode}, subject_gender={subject_gender or 'auto'}"
+            f"recommend_mode={is_recommend_mode}, subject_gender={subject_gender or 'auto'}, "
+            f"seed={request_seed if request_seed is not None else 'random'}"
         )
 
         # ── 파이프라인 실행 ───────────────────────────────────────────────────
@@ -652,6 +660,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 lora_path=lora_path,
                 lora_scale=lora_scale,
                 rag_context=rag_context_str,
+                seed=request_seed,
             )
         else:
             results = pipeline.run(
@@ -662,6 +671,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 return_intermediates=return_intermediates,
                 mask_refine_mode=mask_refine_mode,
                 subject_gender=subject_gender,
+                seed=request_seed,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
             )
