@@ -2793,7 +2793,7 @@ class MirrAISDPipeline:
         if debug_data_common is not None:
             torso_rect = diagnostic_rois.get("torso_front")
             _mask_stats("guard_release", cloth_generation_guard_release_mask, torso_rect)
-            _mask_stats("cloth_guard", cloth_generation_guard_mask, torso_rect)
+            _mask_stats("cloth_guard", cloth_generation_guard, torso_rect)
             _mask_stats("overwrite_mask", upper_clothes_overwrite_mask, torso_rect)
             _mask_stats("overwrite_effective", effective_upper_clothes_overwrite_mask, torso_rect)
             _mask_stats("overwrite_core", effective_upper_clothes_overwrite_core_mask, torso_rect)
@@ -2831,7 +2831,7 @@ class MirrAISDPipeline:
                 cv2.COLOR_RGB2BGR,
             )
             debug_images_common["pipeline_source_with_cloth_guard_overlay"] = cv2.cvtColor(
-                _overlay_mask_rgb(img_rgb_for_sd, cloth_generation_guard_mask, (64, 120, 255), alpha=0.46),
+                _overlay_mask_rgb(img_rgb_for_sd, cloth_generation_guard, (64, 120, 255), alpha=0.46),
                 cv2.COLOR_RGB2BGR,
             )
             debug_images_common["pipeline_source_with_guard_release_overlay"] = cv2.cvtColor(
