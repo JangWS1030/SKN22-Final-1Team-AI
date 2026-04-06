@@ -444,12 +444,28 @@ class MirrAISDPipeline:
                 return
             m = np.clip(mask, 0.0, 1.0)
             m_u8 = (m * 255).astype(np.uint8)
-            debug_images_common[name] = cv2.cvtColor(m_u8, cv2.COLOR_GRAY2BGR)
+            bgr = cv2.cvtColor(m_u8, cv2.COLOR_GRAY2BGR)
+            
+            # Resize for payload safety
+            max_dim = 1024
+            h, w = bgr.shape[:2]
+            if max(h, w) > max_dim:
+                scale = max_dim / max(h, w)
+                bgr = cv2.resize(bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+            debug_images_common[name] = bgr
 
         def _store_rgb(name: str, rgb_img: np.ndarray) -> None:
             if debug_images_common is None:
                 return
-            debug_images_common[name] = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2BGR)
+            bgr = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2BGR)
+            
+            # Resize for payload safety
+            max_dim = 1024
+            h, w = bgr.shape[:2]
+            if max(h, w) > max_dim:
+                scale = max_dim / max(h, w)
+                bgr = cv2.resize(bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+            debug_images_common[name] = bgr
 
         def _make_rect(
             x1: float,

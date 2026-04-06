@@ -64,14 +64,18 @@ def poll_job(endpoint_id: str, api_key: str, job_id: str, timeout: int) -> dict:
         if status == "COMPLETED":
             output_url = data.get("output_url")
             if output_url:
-                fetched = requests.get(str(output_url), timeout=120)
+                print(f"\n[poll] Result too large. Fetching from {output_url}...")
+                fetched = requests.get(str(output_url), timeout=300)
                 fetched.raise_for_status()
                 return fetched.json()
-            output = data.get("output", {})
-            return output if isinstance(output, dict) else {"raw_output": output}
+            output = data.get("output")
+            if output is not None:
+                return output if isinstance(output, dict) else {"results": [], "raw_output": output}
+            # If COMPLETED but no output key, maybe the results are top-level or it failed silently
+            return data
         if status in {"FAILED", "CANCELLED", "TIMED_OUT"}:
-            error = data.get("error") or data.get("output", {}).get("error") or ""
-            raise RuntimeError(f"RunPod job {status}: {error}")
+            error = data.get("error") or data.get("output", {}).get("error") if isinstance(data.get("output"), dict) else ""
+            raise RuntimeError(f"RunPod job {status}: {error or 'Unknown error'}")
         print(f"[poll] status={status}", end="\r", flush=True)
         time.sleep(5)
 
