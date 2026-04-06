@@ -53,6 +53,7 @@ import hashlib
 import io
 import logging
 import os
+import random
 import sys
 import time
 import traceback
@@ -121,6 +122,36 @@ try:
 except Exception as _e:
     _IMPORT_ERROR = f"{type(_e).__name__}: {_e}\n{traceback.format_exc()}"
     logger.error(f"[handler_sd] import 실패:\n{_IMPORT_ERROR}")
+
+
+def _apply_request_seed(seed: int) -> int:
+    normalized = int(seed) % (2**31 - 1)
+    if normalized <= 0:
+        normalized = 1
+
+    random.seed(normalized)
+    try:
+        np.random.seed(normalized % (2**32 - 1))
+    except Exception as exc:
+        logger.warning(f"[handler_sd] numpy seed setup failed (ignored): {exc}")
+
+    try:
+        import torch
+
+        torch.manual_seed(normalized)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(normalized)
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except Exception as exc:
+            logger.warning(f"[handler_sd] deterministic algorithms request failed (ignored): {exc}")
+    except Exception as exc:
+        logger.warning(f"[handler_sd] torch seed setup failed (ignored): {exc}")
+
+    return normalized
 
 
 def _get_pipeline() -> "MirrAISDPipeline":
@@ -591,6 +622,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         request_seed = None
         if request_seed_raw is not None and str(request_seed_raw).strip() != "":
             request_seed = int(request_seed_raw)
+            request_seed = _apply_request_seed(request_seed)
         return_base64  = _coerce_bool(inp.get("return_base64"), default=True)
         return_intermediates = _coerce_bool(inp.get("return_intermediates"), default=False)
         mask_debug_only = _coerce_bool(inp.get("mask_debug_only"), default=False)
