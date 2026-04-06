@@ -4462,6 +4462,120 @@ class MirrAISDPipeline:
                                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
                                             iterations=1,
                                         )
+                                        strict_shoulder_restore_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                                        strict_shoulder_restore_mask = None
+                                        strict_shoulder_reference_mask = None
+                                        if hair_length == "short":
+                                            strict_shoulder_gate_u8 = cloth_gate_u8.copy()
+                                            anchor_gate_u8 = None
+                                            release_gate_u8 = None
+                                            if (
+                                                subject_cloth_anchor_for_post is not None
+                                                and subject_cloth_anchor_for_post.shape == final_bgr.shape[:2]
+                                                and float(subject_cloth_anchor_for_post.sum()) > 0.0
+                                            ):
+                                                anchor_gate_u8 = cv2.dilate(
+                                                    (
+                                                        np.clip(subject_cloth_anchor_for_post.astype(np.float32), 0.0, 1.0)
+                                                        > 0.04
+                                                    ).astype(np.uint8)
+                                                    * 255,
+                                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 29)),
+                                                    iterations=1,
+                                                )
+                                                strict_shoulder_gate_u8 = cv2.bitwise_or(
+                                                    strict_shoulder_gate_u8,
+                                                    anchor_gate_u8,
+                                                )
+                                            if (
+                                                shoulder_cloth_release_for_post is not None
+                                                and shoulder_cloth_release_for_post.shape == final_bgr.shape[:2]
+                                                and float(shoulder_cloth_release_for_post.sum()) > 0.0
+                                            ):
+                                                release_gate_u8 = cv2.dilate(
+                                                    (
+                                                        np.clip(shoulder_cloth_release_for_post.astype(np.float32), 0.0, 1.0)
+                                                        > 0.04
+                                                    ).astype(np.uint8)
+                                                    * 255,
+                                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31)),
+                                                    iterations=1,
+                                                )
+                                                strict_shoulder_gate_u8 = cv2.bitwise_or(
+                                                    strict_shoulder_gate_u8,
+                                                    release_gate_u8,
+                                                )
+                                            strict_shoulder_gate_u8 = cv2.bitwise_and(
+                                                strict_shoulder_gate_u8,
+                                                torso_gate_u8,
+                                            )
+                                            strict_shoulder_gate_u8 = cv2.bitwise_and(
+                                                strict_shoulder_gate_u8,
+                                                cv2.bitwise_not(side_center_keepout_u8),
+                                            )
+                                            if int((strict_shoulder_gate_u8 > 0).sum()) >= 120:
+                                                strict_shoulder_restore_u8 = cv2.bitwise_and(
+                                                    direct_female_short_restore_u8,
+                                                    strict_shoulder_gate_u8,
+                                                )
+                                                if anchor_gate_u8 is not None:
+                                                    strict_shoulder_restore_u8 = cv2.bitwise_or(
+                                                        strict_shoulder_restore_u8,
+                                                        cv2.bitwise_and(anchor_gate_u8, strict_shoulder_gate_u8),
+                                                    )
+                                                if release_gate_u8 is not None:
+                                                    strict_shoulder_restore_u8 = cv2.bitwise_or(
+                                                        strict_shoulder_restore_u8,
+                                                        cv2.bitwise_and(release_gate_u8, strict_shoulder_gate_u8),
+                                                    )
+                                                strict_shoulder_restore_u8 = cv2.morphologyEx(
+                                                    strict_shoulder_restore_u8,
+                                                    cv2.MORPH_CLOSE,
+                                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 25)),
+                                                )
+                                                strict_shoulder_restore_u8 = cv2.dilate(
+                                                    strict_shoulder_restore_u8,
+                                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 15)),
+                                                    iterations=1,
+                                                )
+                                                if final_hair_mask is not None and final_hair_mask.shape == final_bgr.shape[:2]:
+                                                    strict_hair_guard_u8 = cv2.dilate(
+                                                        (
+                                                            np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.16
+                                                        ).astype(np.uint8)
+                                                        * 255,
+                                                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 17)),
+                                                        iterations=1,
+                                                    )
+                                                    strict_shoulder_restore_u8 = cv2.bitwise_and(
+                                                        strict_shoulder_restore_u8,
+                                                        cv2.bitwise_not(strict_hair_guard_u8),
+                                                    )
+                                                if int((strict_shoulder_restore_u8 > 0).sum()) >= 120:
+                                                    side_restore_u8 = cv2.bitwise_or(
+                                                        side_restore_u8,
+                                                        strict_shoulder_restore_u8,
+                                                    )
+                                                    strict_shoulder_restore_mask = cv2.GaussianBlur(
+                                                        strict_shoulder_restore_u8.astype(np.float32) / 255.0,
+                                                        (0, 0),
+                                                        sigmaX=2.8,
+                                                        sigmaY=4.4,
+                                                    ).astype(np.float32)
+                                                    strict_shoulder_reference_mask = np.maximum(
+                                                        female_short_cloth_reference_mask,
+                                                        np.clip(
+                                                            cv2.GaussianBlur(
+                                                                strict_shoulder_gate_u8.astype(np.float32) / 255.0,
+                                                                (0, 0),
+                                                                sigmaX=3.4,
+                                                                sigmaY=5.2,
+                                                            ).astype(np.float32)
+                                                            * 0.98,
+                                                            0.0,
+                                                            1.0,
+                                                        ),
+                                                    )
 
                                         side_restore_px = int((side_restore_u8 > 0).sum())
                                         center_fill_px = int((center_fill_u8 > 0).sum())
@@ -4490,6 +4604,95 @@ class MirrAISDPipeline:
                                                 reference_rgb=source_cloth_reference_rgb,
                                                 reference_mask=source_cloth_reference_mask,
                                             )
+                                            if (
+                                                strict_shoulder_restore_mask is not None
+                                                and strict_shoulder_reference_mask is not None
+                                            ):
+                                                strict_crop_top = max(0, int(cutoff_y_for_post + face_h * 0.02))
+                                                strict_crop_bottom = min(H, int(y2 + face_h * 1.82))
+                                                strict_left_crop = (
+                                                    max(0, int(x1 - face_w * 1.42)),
+                                                    strict_crop_top,
+                                                    max(0, int(cx - face_w * 0.10)),
+                                                    strict_crop_bottom,
+                                                )
+                                                strict_right_crop = (
+                                                    min(W, int(cx + face_w * 0.10)),
+                                                    strict_crop_top,
+                                                    min(W, int(x2 + face_w * 1.42)),
+                                                    strict_crop_bottom,
+                                                )
+                                                for crop_left, crop_top, crop_right, crop_bottom in (
+                                                    strict_left_crop,
+                                                    strict_right_crop,
+                                                ):
+                                                    if crop_left >= crop_right or crop_top >= crop_bottom:
+                                                        continue
+                                                    crop_u8 = strict_shoulder_restore_u8[
+                                                        crop_top:crop_bottom,
+                                                        crop_left:crop_right,
+                                                    ]
+                                                    if int((crop_u8 > 0).sum()) < 60:
+                                                        continue
+                                                    crop_mask = strict_shoulder_restore_mask[
+                                                        crop_top:crop_bottom,
+                                                        crop_left:crop_right,
+                                                    ]
+                                                    crop_reference_mask = np.clip(
+                                                        strict_shoulder_reference_mask[
+                                                            crop_top:crop_bottom,
+                                                            crop_left:crop_right,
+                                                        ].astype(np.float32),
+                                                        0.0,
+                                                        1.0,
+                                                    )
+                                                    crop_reference_rgb = source_cloth_reference_rgb[
+                                                        crop_top:crop_bottom,
+                                                        crop_left:crop_right,
+                                                    ].copy()
+                                                    crop_rgb = final_rgb[
+                                                        crop_top:crop_bottom,
+                                                        crop_left:crop_right,
+                                                    ].copy()
+                                                    crop_rgb = self._restore_reference_region(
+                                                        crop_rgb,
+                                                        crop_reference_rgb,
+                                                        crop_mask,
+                                                        strength=0.995,
+                                                    )
+                                                    crop_rgb = self._overlay_reference_cloth_fill(
+                                                        crop_rgb,
+                                                        crop_reference_rgb,
+                                                        crop_mask,
+                                                        cloth_mask=crop_reference_mask,
+                                                    )
+                                                    crop_hair_mask = None
+                                                    if final_hair_mask is not None and final_hair_mask.shape == final_bgr.shape[:2]:
+                                                        crop_hair_mask = final_hair_mask[
+                                                            crop_top:crop_bottom,
+                                                            crop_left:crop_right,
+                                                        ]
+                                                    crop_rgb = self._restore_cloth_overlap_from_source(
+                                                        source_rgb=img_rgb[
+                                                            crop_top:crop_bottom,
+                                                            crop_left:crop_right,
+                                                        ],
+                                                        current_rgb=crop_rgb,
+                                                        restore_mask=crop_mask,
+                                                        final_hair_mask=crop_hair_mask,
+                                                        tone_reference_rgb=crop_reference_rgb,
+                                                        tone_reference_mask=crop_reference_mask,
+                                                    )
+                                                    crop_rgb = self._cv2_refine_cloth_region(
+                                                        crop_rgb,
+                                                        crop_mask,
+                                                        reference_rgb=crop_reference_rgb,
+                                                        reference_mask=crop_reference_mask,
+                                                    )
+                                                    final_rgb[
+                                                        crop_top:crop_bottom,
+                                                        crop_left:crop_right,
+                                                    ] = crop_rgb
                                         if center_fill_px >= 60:
                                             center_fill_mask = cv2.GaussianBlur(
                                                 center_fill_u8.astype(np.float32) / 255.0,
@@ -4528,6 +4731,11 @@ class MirrAISDPipeline:
                                     if female_short_direct_cloth_restore_px >= 120:
                                         debug_images_common["pipeline_female_short_direct_cloth_restore_mask"] = cv2.cvtColor(
                                             female_short_direct_cloth_restore_u8,
+                                            cv2.COLOR_GRAY2BGR,
+                                        )
+                                    if int((strict_shoulder_restore_u8 > 0).sum()) >= 120:
+                                        debug_images_common["pipeline_short_strict_shoulder_restore_mask"] = cv2.cvtColor(
+                                            strict_shoulder_restore_u8,
                                             cv2.COLOR_GRAY2BGR,
                                         )
                                     if female_short_broad_cloth_restore_mask is not None:
