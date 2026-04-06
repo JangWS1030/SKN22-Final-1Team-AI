@@ -2318,13 +2318,8 @@ class MirrAISDPipeline:
                             cutoff_y=cutoff_y,
                             hair_length=hair_length,
                         )
-                        front_strand_cleanup_mask = self._build_front_strand_cleanup_mask(
-                            removal_mask=removal_mask,
-                            face_bbox=face_bbox,
-                            cutoff_y=cutoff_y,
-                            hair_length=hair_length,
-                            anchor_mask=center_chest_strand_removal_mask,
-                        )
+                        # Use existing center_chest_strand_mask as base for front strand cleanup
+                        front_strand_cleanup_mask = center_chest_strand_mask.copy()
                         front_strand_cleanup_u8 = (
                             (np.clip(front_strand_cleanup_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
                         )
@@ -2429,6 +2424,23 @@ class MirrAISDPipeline:
                             center_allow_scale=0.19,
                             max_total_scale=0.06,
                         )
+                        front_strand_cleanup_u8 = (front_strand_cleanup_mask > 0.08).astype(np.uint8) * 255
+                        front_strand_cleanup_u8 = self._filter_short_center_cleanup_mask(
+                            front_strand_cleanup_u8,
+                            face_bbox,
+                            cutoff_y,
+                            anchor_u8=artifact_anchor_u8,
+                            top_scale=0.00,
+                            bottom_scale=0.82,
+                            half_w_scale=0.28,
+                            shrink_half_w_scale=0.20,
+                            max_area_scale=0.12,
+                            max_width_scale=0.38,
+                            min_height_scale=0.10,
+                            center_allow_scale=0.20,
+                            max_total_scale=0.07,
+                        )
+
                         # artifact_cleanup (side dark tail)
                         if int((artifact_cleanup_u8 > 0).sum()) >= 80:
                             img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, artifact_cleanup_u8)
