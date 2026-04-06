@@ -742,6 +742,13 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             response["intermediates"] = intermediates
         if intermediate_data:
             response["intermediate_data"] = intermediate_data
+        
+        try:
+            resp_json_len = len(json.dumps(response))
+            logger.info(f"[handler_sd] 응답 생성 완료: json_len={resp_json_len}")
+        except:
+            pass
+            
         return response
 
     except Exception as e:
