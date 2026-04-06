@@ -67,9 +67,10 @@ def poll_job(endpoint_id: str, api_key: str, job_id: str, timeout: int) -> dict:
                 fetched = requests.get(str(output_url), timeout=120)
                 fetched.raise_for_status()
                 return fetched.json()
-            return data
+            output = data.get("output", {})
+            return output if isinstance(output, dict) else {"raw_output": output}
         if status in {"FAILED", "CANCELLED", "TIMED_OUT"}:
-            error = data.get("error") or output.get("error") or ""
+            error = data.get("error") or data.get("output", {}).get("error") or ""
             raise RuntimeError(f"RunPod job {status}: {error}")
         print(f"[poll] status={status}", end="\r", flush=True)
         time.sleep(5)

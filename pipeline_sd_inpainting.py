@@ -2417,14 +2417,16 @@ class MirrAISDPipeline:
                             img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(img_rgb_cleaned, artifact_cleanup_u8)
                             if int((front_strand_cleanup_u8 > 0).sum()) >= 20:
                                 if use_upper_clothes_overwrite:
-                                    self._debug_images["lama_before_base"] = img_rgb_cleaned.copy()
+                                    if debug_images_common is not None:
+                                        _store_rgb("lama_before_base", img_rgb_cleaned)
                                     img_rgb_cleaned = self._lama_inpaint(img_rgb_cleaned, front_strand_cleanup_u8)
-                                    self._debug_images["lama_after_base"] = img_rgb_cleaned.copy()
-                                    
-                                    ys, xs = np.where(front_strand_cleanup_u8 > 0)
-                                    bbox = (int(np.min(xs)), int(np.min(ys)), int(np.max(xs)), int(np.max(ys))) if len(xs) > 0 else (0,0,0,0)
-                                    self._debug_data["lama_front_strand_bbox"] = bbox
-                                    self._debug_data["lama_front_strand_pixels"] = int(len(xs))
+                                    if debug_images_common is not None:
+                                        _store_rgb("lama_after_base", img_rgb_cleaned)
+                                    if debug_data_common is not None:
+                                        ys, xs = np.where(front_strand_cleanup_u8 > 0)
+                                        bbox = (int(np.min(xs)), int(np.min(ys)), int(np.max(xs)), int(np.max(ys))) if len(xs) > 0 else (0,0,0,0)
+                                        debug_data_common["lama_front_strand_bbox"] = bbox
+                                        debug_data_common["lama_front_strand_pixels"] = int(len(xs))
                                 else:
                                     img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(img_rgb_cleaned, front_strand_cleanup_u8)
                             logger.info(
@@ -4860,9 +4862,10 @@ class MirrAISDPipeline:
                     )
                     garment_repaint_px = int((garment_repaint_u8 > 0).sum())
                     generated_resized_rgb = cand.get("generated_resized_rgb")
-                    if isinstance(generated_resized_rgb, np.ndarray):
-                        self._debug_images["generated_resized_rgb_debug"] = generated_resized_rgb.copy()
-                    self._debug_images["composite_pre_cleanup_debug"] = final_rgb.copy()
+                    if isinstance(generated_resized_rgb, np.ndarray) and debug_images_common is not None:
+                        _store_rgb("generated_resized_rgb_debug", generated_resized_rgb)
+                    if debug_images_common is not None:
+                        _store_rgb("composite_pre_cleanup_debug", final_rgb)
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_short_below_bob_torso_mask"] = cv2.cvtColor(
                             ((np.clip(short_below_bob_torso_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255),
