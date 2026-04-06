@@ -680,7 +680,7 @@ def _sd_refine_removed_region(
             "hair strands, loose dangling hair, dark streaks, dark bib, black patch, black cloth shadow, "
             f"{garment_negative}, smudged cloth, melted fabric, warped garment, "
             "broken neckline, duplicate collar, extra folds, extra buttons, bare skin gap, "
-            "exposed chest cutout, deep shadow under chin, "
+            "exposed chest cutout, deep shadow under chin, vertical black stripe, u-shaped dark notch under chin, "
             "deformed neck, artifacts, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
@@ -695,7 +695,8 @@ def _sd_refine_removed_region(
         fill_negative = (
             "hair strands, loose dangling hair, dark streaks, dark bib, black patch, black cloth shadow, "
             f"{garment_negative}, smudged cloth, melted fabric, warped garment, broken neckline, duplicate collar, "
-            "extra folds, extra buttons, exposed chest cutout, deep shadow under chin, deformed neck, "
+            "extra folds, extra buttons, exposed chest cutout, deep shadow under chin, vertical black stripe, "
+            "u-shaped dark notch under chin, deformed neck, "
             "artifacts, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
@@ -710,7 +711,8 @@ def _sd_refine_removed_region(
         fill_negative = (
             "hair strands, loose dangling hair, dark streaks, dark bib, black patch, black cloth shadow, "
             f"{garment_negative}, smudged cloth, melted fabric, warped garment, broken neckline, duplicate collar, "
-            "extra folds, extra buttons, exposed chest cutout, deep shadow under chin, deformed neck, "
+            "extra folds, extra buttons, exposed chest cutout, deep shadow under chin, vertical black stripe, "
+            "u-shaped dark notch under chin, deformed neck, "
             "artifacts, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
@@ -725,7 +727,8 @@ def _sd_refine_removed_region(
         fill_negative = (
             "hair strands, loose dangling hair, dark streaks, dark bib, black patch, black cloth shadow, "
             f"{garment_negative}, smudged cloth, melted fabric, warped garment, broken neckline, duplicate collar, "
-            "extra folds, extra buttons, exposed chest cutout, deep shadow under chin, deformed neck, "
+            "extra folds, extra buttons, exposed chest cutout, deep shadow under chin, vertical black stripe, "
+            "u-shaped dark notch under chin, deformed neck, "
             "artifacts, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
@@ -2150,6 +2153,249 @@ def _apply_short_source_cloth_anchor_restore(
         )
     return restored
 
+def _build_short_under_jaw_crop_core_mask(
+    self,
+    *,
+    fill_mask: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+    neck_preserve_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    H, W = fill_mask.shape[:2]
+    cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    neck_preserve_mask = self._resize_mask_to_shape(neck_preserve_mask, (H, W))
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return np.zeros((H, W), dtype=np.float32)
+
+    work = np.clip(fill_mask.astype(np.float32), 0.0, 1.0)
+    work = np.clip(
+        work * (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.float32),
+        0.0,
+        1.0,
+    )
+    if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
+        work = np.clip(
+            work - np.clip(neck_preserve_mask.astype(np.float32), 0.0, 1.0) * 0.98,
+            0.0,
+            1.0,
+        )
+
+    work_u8 = (work > 0.08).astype(np.uint8) * 255
+    if int((work_u8 > 0).sum()) < 24:
+        return np.zeros((H, W), dtype=np.float32)
+
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
+
+    top = max(0, int(cutoff_y + face_h * 0.02))
+    upper_bottom = min(H, int(cutoff_y + face_h * 0.32))
+    lower_bottom = min(H, int(cutoff_y + face_h * 0.96))
+    gate_u8 = np.zeros((H, W), dtype=np.uint8)
+
+    upper_half_w = max(10, int(face_w * 0.16))
+    middle_half_w = max(14, int(face_w * 0.22))
+    lower_half_w = max(18, int(face_w * 0.30))
+    if top < upper_bottom:
+        gate_u8[top:upper_bottom, max(0, cx - upper_half_w):min(W, cx + upper_half_w)] = 255
+    if upper_bottom < lower_bottom:
+        split_y = max(upper_bottom, int(cutoff_y + face_h * 0.48))
+        gate_u8[upper_bottom:split_y, max(0, cx - middle_half_w):min(W, cx + middle_half_w)] = 255
+        gate_u8[split_y:lower_bottom, max(0, cx - lower_half_w):min(W, cx + lower_half_w)] = 255
+
+    ellipse_center = (
+        cx,
+        min(H - 1, max(0, int(cutoff_y + face_h * 0.44))),
+    )
+    ellipse_axes = (
+        max(12, int(face_w * 0.20)),
+        max(10, int(face_h * 0.16)),
+    )
+    cv2.ellipse(gate_u8, ellipse_center, ellipse_axes, 0, 0, 360, 255, -1)
+    gate_u8 = cv2.morphologyEx(
+        gate_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+    )
+
+    core_u8 = cv2.bitwise_and(work_u8, gate_u8)
+    if int((core_u8 > 0).sum()) < 24:
+        eroded_u8 = cv2.erode(
+            work_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
+            iterations=1,
+        )
+        if int((eroded_u8 > 0).sum()) >= 24:
+            core_u8 = cv2.bitwise_and(eroded_u8, gate_u8)
+        if int((core_u8 > 0).sum()) < 24:
+            core_u8 = cv2.bitwise_and(
+                work_u8,
+                cv2.dilate(
+                    gate_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+                    iterations=1,
+                ),
+            )
+    if int((core_u8 > 0).sum()) < 24:
+        return np.zeros((H, W), dtype=np.float32)
+
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(core_u8, connectivity=8)
+    filtered_u8 = np.zeros((H, W), dtype=np.uint8)
+    center_allow = max(12.0, face_w * 0.24)
+    max_component_area = max(40, int(face_w * face_h * 0.18))
+    min_component_height = max(6, int(face_h * 0.08))
+    for idx in range(1, num_labels):
+        area = int(stats[idx, cv2.CC_STAT_AREA])
+        if area < 12:
+            continue
+        if area > max_component_area:
+            continue
+        comp_cx = float(centroids[idx][0])
+        comp_h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+        if abs(comp_cx - cx) > center_allow:
+            continue
+        if comp_h < min_component_height:
+            continue
+        filtered_u8[labels == idx] = 255
+    if int((filtered_u8 > 0).sum()) < 24:
+        filtered_u8 = core_u8
+
+    filtered_u8 = cv2.morphologyEx(
+        filtered_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
+    )
+    filtered_u8 = cv2.dilate(
+        filtered_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
+        iterations=1,
+    )
+    out = cv2.GaussianBlur(
+        filtered_u8.astype(np.float32) / 255.0,
+        (0, 0),
+        sigmaX=2.8,
+        sigmaY=3.4,
+    )
+    return np.clip(out * 0.995, 0.0, 1.0).astype(np.float32)
+
+def _compose_strict_short_under_jaw_crop_result(
+    self,
+    *,
+    current_rgb: np.ndarray,
+    generated_rgb: np.ndarray,
+    reference_rgb: np.ndarray,
+    fill_mask: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+    neck_preserve_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    H, W = current_rgb.shape[:2]
+    if (
+        generated_rgb.shape[:2] != (H, W)
+        or reference_rgb.shape[:2] != (H, W)
+        or fill_mask.shape != (H, W)
+    ):
+        return current_rgb
+
+    cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    neck_preserve_mask = self._resize_mask_to_shape(neck_preserve_mask, (H, W))
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return current_rgb
+
+    visible_fill_mask = np.clip(
+        fill_mask.astype(np.float32)
+        * (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.float32),
+        0.0,
+        1.0,
+    )
+    if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
+        visible_fill_mask = np.clip(
+            visible_fill_mask - np.clip(neck_preserve_mask.astype(np.float32), 0.0, 1.0) * 0.98,
+            0.0,
+            1.0,
+        )
+    if float(visible_fill_mask.sum()) <= 0.0:
+        return current_rgb
+
+    core_mask = self._build_short_under_jaw_crop_core_mask(
+        fill_mask=visible_fill_mask,
+        cloth_mask=cloth_mask,
+        face_bbox=face_bbox,
+        cutoff_y=cutoff_y,
+        neck_preserve_mask=neck_preserve_mask,
+    )
+    if float(core_mask.sum()) <= 0.0:
+        core_mask = cv2.GaussianBlur(
+            np.clip(visible_fill_mask.astype(np.float32), 0.0, 1.0),
+            (0, 0),
+            sigmaX=2.8,
+            sigmaY=3.4,
+        ).astype(np.float32)
+
+    boundary_mask = np.clip(
+        visible_fill_mask - np.clip(core_mask * 1.08, 0.0, 1.0),
+        0.0,
+        1.0,
+    )
+    constrained_base = current_rgb.copy()
+    if float(boundary_mask.sum()) > 0.0:
+        constrained_base = self._restore_reference_region(
+            constrained_base,
+            reference_rgb,
+            boundary_mask,
+            strength=0.992,
+        )
+        constrained_base = self._overlay_reference_cloth_fill(
+            constrained_base,
+            reference_rgb,
+            boundary_mask,
+            cloth_mask=cloth_mask,
+        )
+        constrained_base = self._blend_neighbor_cloth_tone(
+            constrained_base,
+            boundary_mask,
+            cloth_mask=cloth_mask,
+            reference_rgb=reference_rgb,
+        )
+        constrained_base = self._cv2_refine_cloth_region(
+            constrained_base,
+            boundary_mask,
+            reference_rgb=reference_rgb,
+            reference_mask=cloth_mask,
+        )
+
+    constrained_generated = generated_rgb.copy()
+    if float(boundary_mask.sum()) > 0.0:
+        constrained_generated = self._restore_reference_region(
+            constrained_generated,
+            reference_rgb,
+            boundary_mask,
+            strength=0.996,
+        )
+    if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
+        constrained_generated = self._restore_reference_region(
+            constrained_generated,
+            reference_rgb,
+            np.clip(neck_preserve_mask.astype(np.float32), 0.0, 1.0),
+            strength=0.997,
+        )
+
+    paste_mask = cv2.GaussianBlur(
+        np.clip(core_mask.astype(np.float32), 0.0, 1.0),
+        (0, 0),
+        sigmaX=3.6,
+        sigmaY=4.1,
+    )[..., np.newaxis]
+    paste_mask = np.clip(paste_mask * 0.996, 0.0, 1.0)
+    out = (
+        constrained_generated.astype(np.float32) * paste_mask
+        + constrained_base.astype(np.float32) * (1.0 - paste_mask)
+    )
+    return np.clip(out, 0, 255).astype(np.uint8)
+
 def _refine_short_under_jaw_crop_region(
     self,
     *,
@@ -2237,9 +2483,17 @@ def _refine_short_under_jaw_crop_region(
         min(crop_bottom - crop_top, y2 - crop_top),
     )
     local_cutoff_y = max(0, cutoff_y - crop_top)
+    crop_reference_base = self._build_source_conditioned_cloth_base(
+        current_rgb=crop_current_rgb,
+        source_rgb=crop_source_rgb,
+        fill_mask=crop_fill_mask,
+        cloth_mask=crop_cloth_mask,
+        hair_length="short",
+        preserve_mask=crop_neck_preserve_mask,
+    )
 
     crop_generated_rgb = self._sd_refine_removed_region(
-        base_rgb=crop_current_rgb,
+        base_rgb=crop_reference_base,
         removal_mask=crop_fill_mask,
         face_bbox=local_face_bbox,
         face_crop_pil=face_crop_pil,
@@ -2251,6 +2505,18 @@ def _refine_short_under_jaw_crop_region(
         refine_mode="short_cloth_crop",
         control_rgb=crop_control_rgb,
     )
+    crop_generated_rgb = self._blend_neighbor_cloth_tone(
+        crop_generated_rgb,
+        crop_fill_mask,
+        cloth_mask=crop_cloth_mask,
+        reference_rgb=crop_reference_base,
+    )
+    crop_generated_rgb = self._cv2_refine_cloth_region(
+        crop_generated_rgb,
+        crop_fill_mask,
+        reference_rgb=crop_reference_base,
+        reference_mask=crop_cloth_mask,
+    )
     crop_generated_rgb = self._apply_short_source_cloth_anchor_restore(
         current_rgb=crop_generated_rgb,
         source_rgb=crop_source_rgb,
@@ -2260,18 +2526,16 @@ def _refine_short_under_jaw_crop_region(
         cutoff_y=local_cutoff_y,
         neck_preserve_mask=crop_neck_preserve_mask,
     )
-
-    paste_mask = cv2.GaussianBlur(
-        np.clip(crop_fill_mask.astype(np.float32), 0.0, 1.0),
-        (0, 0),
-        sigmaX=4.2,
-        sigmaY=4.2,
-    )[..., np.newaxis]
-    paste_mask = np.clip(paste_mask * 0.995, 0.0, 1.0)
-    blended_crop = (
-        crop_generated_rgb.astype(np.float32) * paste_mask
-        + crop_current_rgb.astype(np.float32) * (1.0 - paste_mask)
-    ).astype(np.uint8)
+    blended_crop = self._compose_strict_short_under_jaw_crop_result(
+        current_rgb=crop_current_rgb,
+        generated_rgb=crop_generated_rgb,
+        reference_rgb=crop_reference_base,
+        fill_mask=crop_fill_mask,
+        cloth_mask=crop_cloth_mask,
+        face_bbox=local_face_bbox,
+        cutoff_y=local_cutoff_y,
+        neck_preserve_mask=crop_neck_preserve_mask,
+    )
 
     out = current_rgb.copy()
     out[crop_top:crop_bottom, crop_left:crop_right] = blended_crop
@@ -2427,22 +2691,16 @@ def _generate_short_under_jaw_cloth_insert_region(
         refine_mode="short_cloth_insert",
         control_rgb=crop_control_rgb,
     )
-    crop_generated_rgb = self._restore_reference_region(
-        crop_current_rgb,
-        crop_generated_rgb,
-        crop_insert_mask,
-        strength=0.998,
-    )
     crop_generated_rgb = self._blend_neighbor_cloth_tone(
         crop_generated_rgb,
         crop_insert_mask,
         cloth_mask=crop_cloth_mask,
-        reference_rgb=crop_source_rgb,
+        reference_rgb=crop_insert_base,
     )
     crop_generated_rgb = self._cv2_refine_cloth_region(
         crop_generated_rgb,
         crop_insert_mask,
-        reference_rgb=crop_source_rgb,
+        reference_rgb=crop_insert_base,
         reference_mask=crop_cloth_mask,
     )
     crop_generated_rgb = self._apply_short_source_cloth_anchor_restore(
@@ -2454,18 +2712,16 @@ def _generate_short_under_jaw_cloth_insert_region(
         cutoff_y=local_cutoff_y,
         neck_preserve_mask=crop_neck_preserve_mask,
     )
-
-    paste_mask = cv2.GaussianBlur(
-        np.clip(crop_insert_mask.astype(np.float32), 0.0, 1.0),
-        (0, 0),
-        sigmaX=4.8,
-        sigmaY=4.8,
-    )[..., np.newaxis]
-    paste_mask = np.clip(paste_mask * 0.998, 0.0, 1.0)
-    blended_crop = (
-        crop_generated_rgb.astype(np.float32) * paste_mask
-        + crop_current_rgb.astype(np.float32) * (1.0 - paste_mask)
-    ).astype(np.uint8)
+    blended_crop = self._compose_strict_short_under_jaw_crop_result(
+        current_rgb=crop_current_rgb,
+        generated_rgb=crop_generated_rgb,
+        reference_rgb=crop_insert_base,
+        fill_mask=crop_insert_mask,
+        cloth_mask=crop_cloth_mask,
+        face_bbox=local_face_bbox,
+        cutoff_y=local_cutoff_y,
+        neck_preserve_mask=crop_neck_preserve_mask,
+    )
 
     out = current_rgb.copy()
     out[crop_top:crop_bottom, crop_left:crop_right] = blended_crop
@@ -8910,6 +9166,8 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._build_short_cloth_control_map = _build_short_cloth_control_map
     cls._build_source_conditioned_cloth_base = _build_source_conditioned_cloth_base
     cls._apply_short_source_cloth_anchor_restore = _apply_short_source_cloth_anchor_restore
+    cls._build_short_under_jaw_crop_core_mask = _build_short_under_jaw_crop_core_mask
+    cls._compose_strict_short_under_jaw_crop_result = _compose_strict_short_under_jaw_crop_result
     cls._refine_short_under_jaw_crop_region = _refine_short_under_jaw_crop_region
     cls._generate_short_under_jaw_cloth_insert_region = _generate_short_under_jaw_cloth_insert_region
     cls._stabilize_under_jaw_cloth_fill = _stabilize_under_jaw_cloth_fill
