@@ -459,6 +459,155 @@ def _resolve_background_fill_mode(
 
     return mode
 
+def _describe_garment_color(sample_pixels: np.ndarray) -> str:
+    if sample_pixels.size == 0:
+        return "neutral-toned"
+
+    pixels = np.asarray(sample_pixels, dtype=np.uint8).reshape(-1, 3)
+    median_rgb = np.median(pixels, axis=0).astype(np.uint8)[np.newaxis, np.newaxis, :]
+    hsv = cv2.cvtColor(median_rgb, cv2.COLOR_RGB2HSV)[0, 0].astype(np.float32)
+    h, s, v = float(hsv[0]), float(hsv[1]), float(hsv[2])
+
+    if v >= 244.0 and s <= 18.0:
+        return "white"
+    if v >= 222.0 and s <= 38.0:
+        return "ivory"
+    if v >= 196.0 and s <= 58.0:
+        return "light gray"
+    if s <= 24.0:
+        if v <= 52.0:
+            return "black"
+        if v <= 96.0:
+            return "charcoal gray"
+        if v <= 168.0:
+            return "gray"
+        return "off-white"
+    if 10.0 <= h < 26.0 and v >= 148.0 and s <= 120.0:
+        return "beige"
+    if 10.0 <= h < 26.0 and v < 148.0:
+        return "brown"
+    if h < 10.0 or h >= 170.0:
+        return "red"
+    if h < 22.0:
+        return "rust"
+    if h < 38.0:
+        return "tan"
+    if h < 52.0:
+        return "mustard"
+    if h < 86.0:
+        return "olive green" if v < 138.0 else "green"
+    if h < 114.0:
+        return "teal"
+    if h < 146.0:
+        return "blue"
+    if h < 170.0:
+        return "purple"
+    return "muted"
+
+def _infer_visible_garment_prompt_hint(
+    reference_rgb: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    *,
+    fill_mask: Optional[np.ndarray] = None,
+) -> Tuple[str, str]:
+    H, W = reference_rgb.shape[:2]
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return "clean top", "scarf, ribbon, tie, armor, exposed chest"
+
+    cloth_u8 = (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255
+    if int((cloth_u8 > 0).sum()) < 80:
+        return "clean top", "scarf, ribbon, tie, armor, exposed chest"
+
+    sample_u8 = cloth_u8.copy()
+    if fill_mask is not None and fill_mask.shape == (H, W):
+        exclusion_u8 = cv2.dilate(
+            (np.clip(fill_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+            iterations=1,
+        )
+        remaining_u8 = cv2.bitwise_and(sample_u8, cv2.bitwise_not(exclusion_u8))
+        if int((remaining_u8 > 0).sum()) >= 120:
+            sample_u8 = remaining_u8
+
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
+
+    focus_u8 = np.zeros((H, W), dtype=np.uint8)
+    focus_top = max(0, int(y2 - face_h * 0.06))
+    focus_bottom = min(H, int(y2 + face_h * 1.72))
+    focus_half_w = max(28, int(face_w * 1.18))
+    focus_left = max(0, cx - focus_half_w)
+    focus_right = min(W, cx + focus_half_w)
+    if focus_top < focus_bottom and focus_left < focus_right:
+        focus_u8[focus_top:focus_bottom, focus_left:focus_right] = 255
+        focused_u8 = cv2.bitwise_and(sample_u8, focus_u8)
+        if int((focused_u8 > 0).sum()) >= 120:
+            sample_u8 = focused_u8
+
+    sample_pixels = reference_rgb[sample_u8 > 0]
+    if sample_pixels.size == 0:
+        return "clean top", "scarf, ribbon, tie, armor, exposed chest"
+
+    color_name = _describe_garment_color(sample_pixels)
+    sample_hsv = cv2.cvtColor(sample_pixels.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2HSV).reshape(-1, 3)
+    median_sat = float(np.median(sample_hsv[:, 1])) if sample_hsv.size else 0.0
+    median_val = float(np.median(sample_hsv[:, 2])) if sample_hsv.size else 0.0
+
+    sample_area = max(int((sample_u8 > 0).sum()), 1)
+    gray = cv2.cvtColor(reference_rgb, cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, 72, 160)
+    edge_density = float((cv2.bitwise_and(edges, sample_u8) > 0).sum()) / float(sample_area)
+
+    neckline_u8 = np.zeros((H, W), dtype=np.uint8)
+    neckline_top = max(0, int(y2 - face_h * 0.04))
+    neckline_bottom = min(H, int(y2 + face_h * 0.24))
+    side_half_w = max(18, int(face_w * 0.42))
+    center_half_w = max(12, int(face_w * 0.16))
+    if neckline_top < neckline_bottom:
+        neckline_u8[neckline_top:neckline_bottom, max(0, cx - side_half_w):min(W, cx + side_half_w)] = 255
+    center_u8 = np.zeros((H, W), dtype=np.uint8)
+    if neckline_top < neckline_bottom:
+        center_u8[neckline_top:neckline_bottom, max(0, cx - center_half_w):min(W, cx + center_half_w)] = 255
+    side_u8 = cv2.bitwise_and(neckline_u8, cv2.bitwise_not(center_u8))
+    center_coverage = float((cv2.bitwise_and(sample_u8, center_u8) > 0).sum()) / float(max((center_u8 > 0).sum(), 1))
+    side_coverage = float((cv2.bitwise_and(sample_u8, side_u8) > 0).sum()) / float(max((side_u8 > 0).sum(), 1))
+    open_collar = side_coverage >= max(0.18, center_coverage + 0.08)
+
+    soft_texture = edge_density <= 0.075
+    structured_texture = edge_density >= 0.135
+    bright_plain = median_val >= 178.0 and median_sat <= 86.0
+    dark_or_heavy = median_val <= 132.0
+
+    if open_collar and bright_plain:
+        garment_subject = f"{color_name} button-up shirt"
+        garment_negative = "hoodie, turtleneck, scarf, ribbon, tie, heavy coat"
+    elif open_collar and structured_texture:
+        garment_subject = f"{color_name} collared jacket"
+        garment_negative = "hoodie, sweater, scarf, ribbon, tie, robe"
+    elif open_collar:
+        garment_subject = f"{color_name} collared shirt"
+        garment_negative = "hoodie, turtleneck, scarf, ribbon, tie"
+    elif structured_texture and dark_or_heavy:
+        garment_subject = f"{color_name} structured jacket"
+        garment_negative = "hoodie, sweater, scarf, ribbon, tie, robe"
+    elif soft_texture and dark_or_heavy and median_sat <= 104.0:
+        garment_subject = f"{color_name} knit sweater"
+        garment_negative = "hoodie, scarf, ribbon, tie, jacket lapels"
+    elif bright_plain:
+        garment_subject = f"{color_name} crew-neck top"
+        garment_negative = "hoodie, scarf, ribbon, tie, deep v-neck"
+    elif median_sat >= 108.0 and median_val >= 110.0:
+        garment_subject = f"{color_name} blouse-like top"
+        garment_negative = "hoodie, scarf, ribbon, tie, heavy outerwear"
+    else:
+        garment_subject = f"{color_name} clean top"
+        garment_negative = "hoodie, scarf, ribbon, tie, armor"
+
+    return garment_subject, garment_negative
+
 def _sd_refine_removed_region(
     self,
     base_rgb: np.ndarray,          # H×W×3 RGB (cv2 inpaint 1차 결과)
@@ -469,6 +618,7 @@ def _sd_refine_removed_region(
     cloth_mask: Optional[np.ndarray],    # H×W float32 (의상 영역)
     hair_length: str,
     seed: int,
+    reference_rgb: Optional[np.ndarray] = None,
     refine_mode: str = "generic",
 ) -> np.ndarray:
     """
@@ -488,40 +638,51 @@ def _sd_refine_removed_region(
         fill_mask,
         mask_edge_suppression=0.45,
     )
+    prompt_reference_rgb = base_rgb
+    if reference_rgb is not None and reference_rgb.shape[:2] == (H, W):
+        prompt_reference_rgb = reference_rgb
+    garment_subject, garment_negative = _infer_visible_garment_prompt_hint(
+        prompt_reference_rgb,
+        cloth_mask,
+        face_bbox,
+        fill_mask=fill_mask,
+    )
 
     if refine_mode == "under_jaw_cloth":
         fill_prompt = (
-            "professional studio portrait photo, preserve the original light shirt or white blouse under the jaw, "
-            "white inner shirt continuity when the garment is bright, realistic fabric texture continuity, "
-            "natural folds and seams, coherent open collar and neckline, clean neck and shoulders, "
-            "no hair strands in masked region, no dark patch under the neck, photorealistic clothing details"
+            f"professional studio portrait photo, regenerate a similar {garment_subject} under the jaw, "
+            "keep the same garment family, neckline and collar behavior, realistic fabric texture continuity, "
+            "natural folds and seams, continuous clothing coverage under the jaw, clean neck and shoulders, "
+            "no hair strands in masked region, no dark patch under the neck, no empty chest cutout, "
+            "photorealistic clothing details"
         )
         fill_guidance = 6.9 if hair_length == "short" else 6.8
         fill_negative = (
             "hair strands, loose dangling hair, dark streaks, dark bib, black patch, black cloth shadow, "
-            "scarf, ribbon, tie, smudged cloth, melted fabric, warped shirt, warped blouse, "
-            "broken neckline, duplicate collar, extra folds, extra buttons, "
+            f"{garment_negative}, smudged cloth, melted fabric, warped garment, "
+            "broken neckline, duplicate collar, extra folds, extra buttons, bare skin gap, "
+            "exposed chest cutout, deep shadow under chin, "
             "deformed neck, artifacts, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
     elif refine_mode == "cloth":
         fill_prompt = (
-            "professional portrait photo, preserve the original shirt or blouse shape, "
-            "realistic clothing fabric texture continuity, coherent folds and seams, "
+            f"professional portrait photo, preserve a similar {garment_subject} shape, "
+            "realistic clothing fabric texture continuity, coherent folds and seams, color continuity, "
             "clean neck and shoulders, no hair strands in masked region, photorealistic details"
         )
         fill_guidance = 6.8 if hair_length == "short" else 7.0
         fill_negative = (
             "hair strands, loose dangling hair, long hair, blur, blurry cloth, smudged cloth, "
-            "melted fabric, duplicate collar, broken neckline, extra folds, extra buttons, "
-            "warped shirt, warped blouse, deformed neck, artifacts, cartoon, painting, "
+            f"melted fabric, duplicate collar, broken neckline, extra folds, extra buttons, {garment_negative}, "
+            "warped garment, deformed neck, artifacts, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
     elif refine_mode == "short_tail" and hair_length == "short":
         fill_prompt = (
             "professional portrait photo, neat compact short jaw-length bob haircut, "
             "clean side silhouette above the shoulders, visible neck and shoulders, "
-            "same shirt or blouse preserved, realistic clothing fabric texture continuity, "
+            f"preserve the same visible {garment_subject}, realistic clothing fabric texture continuity, "
             "clean neckline, no hair below jawline, no shoulder-length side hair, "
             "no dangling strands in masked region, photorealistic details"
         )
@@ -529,14 +690,14 @@ def _sd_refine_removed_region(
         fill_negative = (
             "long hair, shoulder-length hair, medium hair, lob haircut, hair below jawline, "
             "hair touching shoulders, dangling side tails, loose strands, extra hair mass, "
-            "warped shirt, warped blouse, melted fabric, deformed neck, artifacts, blurry, "
+            f"warped garment, melted fabric, {garment_negative}, deformed neck, artifacts, blurry, "
             "smudged texture, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
     elif hair_length == "short":
         fill_prompt = (
             "professional portrait photo, clean natural neck and shoulders, "
-            "same shirt or blouse preserved, realistic clothing fabric texture continuity, "
+            f"preserve the same visible {garment_subject}, realistic clothing fabric texture continuity, "
             "coherent neckline, collar and sleeve folds, coherent background, "
             "short-hair silhouette maintained, no long hair below jawline, "
             "no loose dangling strands in masked region, photorealistic details"
@@ -545,7 +706,7 @@ def _sd_refine_removed_region(
         fill_negative = (
             "long hair, hair below chin, hair below shoulders, loose hair strands, "
             "wavy hair, straight long hair, wig, ponytail, braid, bangs, side locks, "
-            "deformed neck, artifacts, blurry, smudged texture, melted details, cartoon, painting, "
+            f"{garment_negative}, deformed neck, artifacts, blurry, smudged texture, melted details, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
     else:

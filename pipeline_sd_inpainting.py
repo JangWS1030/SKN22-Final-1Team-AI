@@ -2526,6 +2526,7 @@ class MirrAISDPipeline:
                             cloth_mask=cloth_restore_mask_for_post,
                             hair_length=hair_length,
                             seed=int(cand["seed"]) + 1701,
+                            reference_rgb=img_rgb,
                             refine_mode="cloth",
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
@@ -2854,6 +2855,7 @@ class MirrAISDPipeline:
                             cloth_mask=cloth_mask_dilated,
                             hair_length=hair_length,
                             seed=int(cand["seed"]) + 1739,
+                            reference_rgb=img_rgb,
                             refine_mode="cloth",
                         )
                     if 100 <= shoulder_refine_px < 8000:
@@ -3007,6 +3009,7 @@ class MirrAISDPipeline:
                                 cloth_mask=cloth_mask_dilated,
                                 hair_length=hair_length,
                                 seed=int(cand["seed"]) + 1787,
+                                reference_rgb=img_rgb,
                                 refine_mode="cloth",
                             )
                         if hair_length == "short":
@@ -3075,6 +3078,7 @@ class MirrAISDPipeline:
                             cloth_mask=cloth_mask_dilated,
                             hair_length=hair_length,
                             seed=int(cand["seed"]) + 1823,
+                            reference_rgb=img_rgb,
                             refine_mode="short_tail",
                         )
                         short_side_lane_cloth_mask = np.clip(
@@ -4521,30 +4525,30 @@ class MirrAISDPipeline:
                     )
                     under_jaw_cloth_refine_px = int((under_jaw_cloth_refine_u8 > 0).sum())
                     if under_jaw_cloth_refine_px >= 140:
-                        if hair_length != "short":
-                            final_rgb = self._sd_refine_removed_region(
-                                base_rgb=final_rgb,
-                                removal_mask=under_jaw_cloth_refine_mask,
-                                face_bbox=face_bbox,
-                                face_crop_pil=face_crop_pil,
-                                protect_mask=protect_mask_for_sd,
-                                cloth_mask=cloth_reference_mask,
-                                hair_length=hair_length,
-                                seed=int(cand["seed"]) + 1871,
-                                refine_mode="under_jaw_cloth",
-                            )
-                            final_rgb = self._blend_neighbor_cloth_tone(
-                                final_rgb,
-                                under_jaw_cloth_refine_mask,
-                                cloth_mask=cloth_reference_mask,
-                                reference_rgb=img_rgb,
-                            )
-                            final_rgb = self._cv2_refine_cloth_region(
-                                final_rgb,
-                                under_jaw_cloth_refine_mask,
-                                reference_rgb=img_rgb,
-                                reference_mask=cloth_reference_mask,
-                            )
+                        final_rgb = self._sd_refine_removed_region(
+                            base_rgb=final_rgb,
+                            removal_mask=under_jaw_cloth_refine_mask,
+                            face_bbox=face_bbox,
+                            face_crop_pil=face_crop_pil,
+                            protect_mask=protect_mask_for_sd,
+                            cloth_mask=cloth_reference_mask,
+                            hair_length=hair_length,
+                            seed=int(cand["seed"]) + 1871,
+                            reference_rgb=img_rgb,
+                            refine_mode="under_jaw_cloth",
+                        )
+                        final_rgb = self._blend_neighbor_cloth_tone(
+                            final_rgb,
+                            under_jaw_cloth_refine_mask,
+                            cloth_mask=cloth_reference_mask,
+                            reference_rgb=img_rgb,
+                        )
+                        final_rgb = self._cv2_refine_cloth_region(
+                            final_rgb,
+                            under_jaw_cloth_refine_mask,
+                            reference_rgb=img_rgb,
+                            reference_mask=cloth_reference_mask,
+                        )
                         final_rgb = self._stabilize_under_jaw_cloth_fill(
                             final_rgb,
                             img_rgb,
