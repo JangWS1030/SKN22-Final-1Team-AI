@@ -5430,6 +5430,7 @@ class MirrAISDPipeline:
                                     neck_preserve_mask=short_cloth_neck_preserve_mask,
                                 )
                         if hair_length == "short":
+                            use_broad_under_jaw_crop_fallback = False
                             under_jaw_crop_fallback_u8 = (
                                 (
                                     np.clip(under_jaw_cloth_refine_mask.astype(np.float32), 0.0, 1.0) > 0.08
@@ -5443,6 +5444,7 @@ class MirrAISDPipeline:
                             ):
                                 short_under_jaw_crop_refine_mask = under_jaw_cloth_refine_mask
                                 short_under_jaw_crop_control_rgb = None
+                                use_broad_under_jaw_crop_fallback = True
                             short_under_jaw_front_plate_mask = np.zeros(final_bgr.shape[:2], dtype=np.float32)
                             if short_under_jaw_crop_refine_mask is not None:
                                 short_under_jaw_front_plate_mask = self._build_short_under_jaw_front_plate_mask(
@@ -5461,6 +5463,7 @@ class MirrAISDPipeline:
                             if int((short_under_jaw_front_plate_u8 > 0).sum()) >= 48:
                                 short_under_jaw_crop_refine_mask = short_under_jaw_front_plate_mask
                                 short_under_jaw_crop_control_rgb = None
+                                use_broad_under_jaw_crop_fallback = False
                             short_under_jaw_crop_refine_u8 = (
                                 (
                                     np.clip(short_under_jaw_crop_refine_mask.astype(np.float32), 0.0, 1.0) > 0.08
@@ -5480,6 +5483,8 @@ class MirrAISDPipeline:
                                     seed=int(cand["seed"]) + 1907,
                                     control_rgb=short_under_jaw_crop_control_rgb,
                                     neck_preserve_mask=short_cloth_neck_preserve_mask,
+                                    apply_anchor_restore=not use_broad_under_jaw_crop_fallback,
+                                    prefer_broad_paste=use_broad_under_jaw_crop_fallback,
                                 )
                                 short_under_jaw_insert_u8 = short_under_jaw_crop_refine_u8.copy()
                                 if short_under_jaw_crop_control_rgb is not None:
@@ -5496,6 +5501,8 @@ class MirrAISDPipeline:
                                     seed=int(cand["seed"]) + 1923,
                                     control_rgb=short_under_jaw_crop_control_rgb,
                                     neck_preserve_mask=short_cloth_neck_preserve_mask,
+                                    apply_anchor_restore=not use_broad_under_jaw_crop_fallback,
+                                    prefer_broad_paste=use_broad_under_jaw_crop_fallback,
                                 )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     if debug_images_common is not None and rank == 0:

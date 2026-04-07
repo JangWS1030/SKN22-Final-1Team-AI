@@ -2572,6 +2572,7 @@ def _compose_strict_short_under_jaw_crop_result(
     face_bbox: Tuple[int, int, int, int],
     cutoff_y: int,
     neck_preserve_mask: Optional[np.ndarray] = None,
+    prefer_broad_paste: bool = False,
 ) -> np.ndarray:
     H, W = current_rgb.shape[:2]
     if (
@@ -2615,9 +2616,28 @@ def _compose_strict_short_under_jaw_crop_result(
             sigmaX=2.8,
             sigmaY=3.4,
         ).astype(np.float32)
+    paste_core_mask = np.clip(core_mask.astype(np.float32), 0.0, 1.0)
+    visible_area = float((visible_fill_mask > 0.08).sum())
+    core_area = float((paste_core_mask > 0.08).sum())
+    use_broad_paste = (
+        prefer_broad_paste
+        and visible_area >= 96.0
+        and core_area < max(72.0, visible_area * 0.72)
+    )
+    if use_broad_paste:
+        broad_mask = cv2.GaussianBlur(
+            np.clip(visible_fill_mask.astype(np.float32), 0.0, 1.0),
+            (0, 0),
+            sigmaX=3.2,
+            sigmaY=3.8,
+        ).astype(np.float32)
+        paste_core_mask = np.maximum(
+            paste_core_mask,
+            np.clip(broad_mask * 0.96, 0.0, 1.0),
+        )
 
     boundary_mask = np.clip(
-        visible_fill_mask - np.clip(core_mask * 1.08, 0.0, 1.0),
+        visible_fill_mask - np.clip(paste_core_mask * (0.90 if use_broad_paste else 1.08), 0.0, 1.0),
         0.0,
         1.0,
     )
@@ -2627,7 +2647,7 @@ def _compose_strict_short_under_jaw_crop_result(
             constrained_base,
             reference_rgb,
             boundary_mask,
-            strength=0.992,
+            strength=0.948 if use_broad_paste else 0.992,
         )
         constrained_base = self._overlay_reference_cloth_fill(
             constrained_base,
@@ -2654,7 +2674,7 @@ def _compose_strict_short_under_jaw_crop_result(
             constrained_generated,
             reference_rgb,
             boundary_mask,
-            strength=0.996,
+            strength=0.972 if use_broad_paste else 0.996,
         )
     if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
         constrained_generated = self._restore_reference_region(
@@ -2665,12 +2685,12 @@ def _compose_strict_short_under_jaw_crop_result(
         )
 
     paste_mask = cv2.GaussianBlur(
-        np.clip(core_mask.astype(np.float32), 0.0, 1.0),
+        np.clip(paste_core_mask.astype(np.float32), 0.0, 1.0),
         (0, 0),
         sigmaX=3.6,
         sigmaY=4.1,
     )[..., np.newaxis]
-    paste_mask = np.clip(paste_mask * 0.996, 0.0, 1.0)
+    paste_mask = np.clip(paste_mask * (0.998 if use_broad_paste else 0.996), 0.0, 1.0)
     out = (
         constrained_generated.astype(np.float32) * paste_mask
         + constrained_base.astype(np.float32) * (1.0 - paste_mask)
@@ -2691,6 +2711,8 @@ def _refine_short_under_jaw_crop_region(
     seed: int,
     control_rgb: Optional[np.ndarray] = None,
     neck_preserve_mask: Optional[np.ndarray] = None,
+    apply_anchor_restore: bool = True,
+    prefer_broad_paste: bool = False,
 ) -> np.ndarray:
     H, W = current_rgb.shape[:2]
     if source_rgb.shape[:2] != (H, W) or fill_mask.shape != (H, W):
@@ -2798,15 +2820,16 @@ def _refine_short_under_jaw_crop_region(
         reference_rgb=crop_reference_base,
         reference_mask=crop_cloth_mask,
     )
-    crop_generated_rgb = self._apply_short_source_cloth_anchor_restore(
-        current_rgb=crop_generated_rgb,
-        source_rgb=crop_source_rgb,
-        fill_mask=crop_fill_mask,
-        cloth_mask=crop_cloth_mask,
-        face_bbox=local_face_bbox,
-        cutoff_y=local_cutoff_y,
-        neck_preserve_mask=crop_neck_preserve_mask,
-    )
+    if apply_anchor_restore:
+        crop_generated_rgb = self._apply_short_source_cloth_anchor_restore(
+            current_rgb=crop_generated_rgb,
+            source_rgb=crop_source_rgb,
+            fill_mask=crop_fill_mask,
+            cloth_mask=crop_cloth_mask,
+            face_bbox=local_face_bbox,
+            cutoff_y=local_cutoff_y,
+            neck_preserve_mask=crop_neck_preserve_mask,
+        )
     blended_crop = self._compose_strict_short_under_jaw_crop_result(
         current_rgb=crop_current_rgb,
         generated_rgb=crop_generated_rgb,
@@ -2816,6 +2839,7 @@ def _refine_short_under_jaw_crop_region(
         face_bbox=local_face_bbox,
         cutoff_y=local_cutoff_y,
         neck_preserve_mask=crop_neck_preserve_mask,
+        prefer_broad_paste=prefer_broad_paste,
     )
 
     out = current_rgb.copy()
@@ -2836,6 +2860,8 @@ def _generate_short_under_jaw_cloth_insert_region(
     seed: int,
     control_rgb: Optional[np.ndarray] = None,
     neck_preserve_mask: Optional[np.ndarray] = None,
+    apply_anchor_restore: bool = True,
+    prefer_broad_paste: bool = False,
 ) -> np.ndarray:
     H, W = current_rgb.shape[:2]
     if source_rgb.shape[:2] != (H, W) or fill_mask.shape != (H, W):
@@ -2984,15 +3010,16 @@ def _generate_short_under_jaw_cloth_insert_region(
         reference_rgb=crop_insert_base,
         reference_mask=crop_cloth_mask,
     )
-    crop_generated_rgb = self._apply_short_source_cloth_anchor_restore(
-        current_rgb=crop_generated_rgb,
-        source_rgb=crop_source_rgb,
-        fill_mask=crop_insert_mask,
-        cloth_mask=crop_cloth_mask,
-        face_bbox=local_face_bbox,
-        cutoff_y=local_cutoff_y,
-        neck_preserve_mask=crop_neck_preserve_mask,
-    )
+    if apply_anchor_restore:
+        crop_generated_rgb = self._apply_short_source_cloth_anchor_restore(
+            current_rgb=crop_generated_rgb,
+            source_rgb=crop_source_rgb,
+            fill_mask=crop_insert_mask,
+            cloth_mask=crop_cloth_mask,
+            face_bbox=local_face_bbox,
+            cutoff_y=local_cutoff_y,
+            neck_preserve_mask=crop_neck_preserve_mask,
+        )
     blended_crop = self._compose_strict_short_under_jaw_crop_result(
         current_rgb=crop_current_rgb,
         generated_rgb=crop_generated_rgb,
@@ -3002,6 +3029,7 @@ def _generate_short_under_jaw_cloth_insert_region(
         face_bbox=local_face_bbox,
         cutoff_y=local_cutoff_y,
         neck_preserve_mask=crop_neck_preserve_mask,
+        prefer_broad_paste=prefer_broad_paste,
     )
 
     out = current_rgb.copy()
