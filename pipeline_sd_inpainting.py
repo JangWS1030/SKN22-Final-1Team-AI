@@ -5162,6 +5162,7 @@ class MirrAISDPipeline:
                     short_under_jaw_control_map_rgb = np.zeros_like(final_rgb)
                     short_under_jaw_second_pass_control_map_rgb = np.zeros_like(final_rgb)
                     short_under_jaw_crop_refine_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                    short_under_jaw_front_plate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                     short_under_jaw_insert_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                     short_under_jaw_insert_control_map_rgb = np.zeros_like(final_rgb)
                     under_jaw_cloth_refine_px = int((under_jaw_cloth_refine_u8 > 0).sum())
@@ -5404,6 +5405,24 @@ class MirrAISDPipeline:
                                     neck_preserve_mask=short_cloth_neck_preserve_mask,
                                 )
                         if hair_length == "short":
+                            short_under_jaw_front_plate_mask = np.zeros(final_bgr.shape[:2], dtype=np.float32)
+                            if short_under_jaw_crop_refine_mask is not None:
+                                short_under_jaw_front_plate_mask = self._build_short_under_jaw_front_plate_mask(
+                                    seed_mask=short_under_jaw_crop_refine_mask,
+                                    cloth_mask=cloth_reference_mask,
+                                    face_bbox=face_bbox,
+                                    cutoff_y=cutoff_y_for_post,
+                                    neck_preserve_mask=short_cloth_neck_preserve_mask,
+                                )
+                            short_under_jaw_front_plate_u8 = (
+                                (
+                                    np.clip(short_under_jaw_front_plate_mask.astype(np.float32), 0.0, 1.0) > 0.08
+                                ).astype(np.uint8)
+                                * 255
+                            )
+                            if int((short_under_jaw_front_plate_u8 > 0).sum()) >= 48:
+                                short_under_jaw_crop_refine_mask = short_under_jaw_front_plate_mask
+                                short_under_jaw_crop_control_rgb = None
                             short_under_jaw_crop_refine_u8 = (
                                 (
                                     np.clip(short_under_jaw_crop_refine_mask.astype(np.float32), 0.0, 1.0) > 0.08
@@ -5482,6 +5501,11 @@ class MirrAISDPipeline:
                         if int((short_under_jaw_crop_refine_u8 > 0).sum()) >= 24:
                             debug_images_common["pipeline_short_under_jaw_crop_refine_mask"] = cv2.cvtColor(
                                 short_under_jaw_crop_refine_u8,
+                                cv2.COLOR_GRAY2BGR,
+                            )
+                        if int((short_under_jaw_front_plate_u8 > 0).sum()) >= 24:
+                            debug_images_common["pipeline_short_under_jaw_front_plate_mask"] = cv2.cvtColor(
+                                short_under_jaw_front_plate_u8,
                                 cv2.COLOR_GRAY2BGR,
                             )
                         if int((short_under_jaw_insert_u8 > 0).sum()) >= 24:

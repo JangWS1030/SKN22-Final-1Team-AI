@@ -1807,9 +1807,13 @@ def _build_short_cloth_control_map(
         return None
 
     focus_u8 = gate_u8.copy()
+    seed_u8 = np.zeros((H, W), dtype=np.uint8)
+    raw_seed_u8 = np.zeros((H, W), dtype=np.uint8)
+    plate_control_u8 = np.zeros((H, W), dtype=np.uint8)
     if seed_mask is not None and seed_mask.shape == (H, W):
+        raw_seed_u8 = (np.clip(seed_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255
         seed_u8 = cv2.dilate(
-            (np.clip(seed_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255,
+            raw_seed_u8,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 21)),
             iterations=1,
         )
@@ -1821,6 +1825,29 @@ def _build_short_cloth_control_map(
             )
             if int((focus_u8 > 0).sum()) < 24:
                 focus_u8 = seed_u8
+        if _is_tall_narrow_short_under_jaw_mask(raw_seed_u8, face_bbox, cutoff_y):
+            plate_mask = self._build_short_under_jaw_front_plate_mask(
+                seed_mask=raw_seed_u8.astype(np.float32) / 255.0,
+                cloth_mask=cloth_mask,
+                face_bbox=face_bbox,
+                cutoff_y=cutoff_y,
+                neck_preserve_mask=neck_preserve_mask,
+            )
+            plate_u8 = (np.clip(plate_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255
+            if int((plate_u8 > 0).sum()) >= 36:
+                plate_control_u8 = cv2.morphologyEx(
+                    plate_u8,
+                    cv2.MORPH_GRADIENT,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+                )
+                plate_control_u8 = cv2.bitwise_and(
+                    plate_control_u8,
+                    cv2.dilate(
+                        plate_u8,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 9)),
+                        iterations=1,
+                    ),
+                )
 
     source_gray = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2GRAY)
     current_gray = cv2.cvtColor(current_rgb, cv2.COLOR_RGB2GRAY)
@@ -1868,11 +1895,22 @@ def _build_short_cloth_control_map(
         source_edge_u8 = cv2.bitwise_and(source_edge_u8, cv2.bitwise_not(protect_u8))
         current_edge_u8 = cv2.bitwise_and(current_edge_u8, cv2.bitwise_not(protect_u8))
         cloth_outline_u8 = cv2.bitwise_and(cloth_outline_u8, cv2.bitwise_not(protect_u8))
+        plate_control_u8 = cv2.bitwise_and(plate_control_u8, cv2.bitwise_not(protect_u8))
 
-    control_u8 = cv2.bitwise_or(source_edge_u8, cloth_outline_u8)
-    if int((control_u8 > 0).sum()) < 40:
-        control_u8 = cv2.bitwise_or(control_u8, current_edge_u8)
-    control_u8 = cv2.bitwise_or(control_u8, preserve_outline_u8)
+    prefer_plate_control = int((plate_control_u8 > 0).sum()) >= 24
+    if prefer_plate_control:
+        plate_gate_u8 = cv2.dilate(
+            plate_control_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 11)),
+            iterations=1,
+        )
+        control_u8 = cv2.bitwise_or(plate_control_u8, cv2.bitwise_and(cloth_outline_u8, plate_gate_u8))
+        control_u8 = cv2.bitwise_or(control_u8, preserve_outline_u8)
+    else:
+        control_u8 = cv2.bitwise_or(source_edge_u8, cloth_outline_u8)
+        if int((control_u8 > 0).sum()) < 40:
+            control_u8 = cv2.bitwise_or(control_u8, current_edge_u8)
+        control_u8 = cv2.bitwise_or(control_u8, preserve_outline_u8)
 
     control_u8 = cv2.morphologyEx(
         control_u8,
@@ -1892,6 +1930,41 @@ def _build_short_cloth_control_map(
         return None
 
     return cv2.cvtColor(control_u8, cv2.COLOR_GRAY2RGB)
+
+def _is_tall_narrow_short_under_jaw_mask(
+    mask_u8: np.ndarray,
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+) -> bool:
+    if mask_u8 is None or mask_u8.ndim != 2:
+        return False
+
+    ys, xs = np.where(mask_u8 > 0)
+    if ys.size < 24 or xs.size < 24:
+        return False
+
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = float(0.5 * (x1 + x2))
+
+    left = int(xs.min())
+    right = int(xs.max())
+    top = int(ys.min())
+    bottom = int(ys.max())
+    width = right - left + 1
+    height = bottom - top + 1
+    area = int(ys.size)
+    bbox_area = max(width * height, 1)
+    fill_ratio = area / float(bbox_area)
+    comp_cx = 0.5 * (left + right)
+
+    centered = abs(comp_cx - cx) <= max(16.0, face_w * 0.18)
+    tall_enough = height >= max(22, int(face_h * 0.20))
+    narrow_enough = width <= max(34, int(face_w * 0.34))
+    slender_enough = height >= max(int(width * 1.18), int(face_h * 0.22))
+    under_jaw_band = top >= int(cutoff_y - face_h * 0.04) and bottom >= int(cutoff_y + face_h * 0.16)
+    return centered and tall_enough and narrow_enough and slender_enough and under_jaw_band and fill_ratio <= 0.94
 
 def _build_source_conditioned_cloth_base(
     self,
@@ -2025,6 +2098,147 @@ def _build_source_conditioned_cloth_base(
             strength=0.99 if str(hair_length or "").strip().lower() == "short" else 0.96,
         )
     return conditioned
+
+def _build_short_under_jaw_front_plate_mask(
+    self,
+    *,
+    seed_mask: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+    neck_preserve_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    H, W = seed_mask.shape[:2]
+    cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    neck_preserve_mask = self._resize_mask_to_shape(neck_preserve_mask, (H, W))
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return np.zeros((H, W), dtype=np.float32)
+
+    seed_u8 = (np.clip(seed_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255
+    if int((seed_u8 > 0).sum()) < 24:
+        return np.zeros((H, W), dtype=np.float32)
+    if not _is_tall_narrow_short_under_jaw_mask(seed_u8, face_bbox, cutoff_y):
+        return np.zeros((H, W), dtype=np.float32)
+
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
+
+    cloth_u8 = cv2.dilate(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
+        iterations=1,
+    )
+    if int((cloth_u8 > 0).sum()) < 48:
+        return np.zeros((H, W), dtype=np.float32)
+
+    corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+    top = max(0, int(cutoff_y + face_h * 0.02))
+    bottom = min(H, int(cutoff_y + face_h * 1.04))
+    half_w = max(34, int(face_w * 0.48))
+    left = max(0, cx - half_w)
+    right = min(W, cx + half_w)
+    if top >= bottom or left >= right:
+        return np.zeros((H, W), dtype=np.float32)
+    corridor_u8[top:bottom, left:right] = 255
+
+    plate_u8 = np.zeros((H, W), dtype=np.uint8)
+    upper_bottom = min(H, int(cutoff_y + face_h * 0.26))
+    mid_bottom = min(H, int(cutoff_y + face_h * 0.52))
+    lower_half_w = max(32, int(face_w * 0.42))
+    mid_half_w = max(24, int(face_w * 0.30))
+    upper_half_w = max(16, int(face_w * 0.18))
+    if top < upper_bottom:
+        plate_u8[top:upper_bottom, max(0, cx - upper_half_w):min(W, cx + upper_half_w)] = 255
+    if upper_bottom < mid_bottom:
+        plate_u8[upper_bottom:mid_bottom, max(0, cx - mid_half_w):min(W, cx + mid_half_w)] = 255
+    if mid_bottom < bottom:
+        plate_u8[mid_bottom:bottom, max(0, cx - lower_half_w):min(W, cx + lower_half_w)] = 255
+    cv2.ellipse(
+        plate_u8,
+        (cx, min(H - 1, max(0, int(cutoff_y + face_h * 0.56)))),
+        (max(20, int(face_w * 0.30)), max(14, int(face_h * 0.20))),
+        0,
+        0,
+        360,
+        255,
+        thickness=-1,
+    )
+    plate_u8 = cv2.morphologyEx(
+        plate_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+    )
+
+    seed_bridge_u8 = cv2.dilate(
+        seed_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 27)),
+        iterations=1,
+    )
+    lower_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+    lower_top = max(top, int(cutoff_y + face_h * 0.16))
+    if lower_top < bottom:
+        lower_gate_u8[lower_top:bottom, max(0, cx - lower_half_w):min(W, cx + lower_half_w)] = 255
+    lower_cloth_u8 = cv2.bitwise_and(cloth_u8, lower_gate_u8)
+
+    plate_u8 = cv2.bitwise_and(plate_u8, corridor_u8)
+    if int((lower_cloth_u8 > 0).sum()) >= 60:
+        plate_u8 = cv2.bitwise_and(plate_u8, cv2.bitwise_or(lower_cloth_u8, seed_bridge_u8))
+    plate_u8 = cv2.bitwise_or(plate_u8, cv2.bitwise_and(seed_bridge_u8, cloth_u8))
+    plate_u8 = cv2.bitwise_and(plate_u8, cloth_u8)
+
+    if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
+        preserve_u8 = cv2.dilate(
+            (np.clip(neck_preserve_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+            iterations=1,
+        )
+        plate_u8 = cv2.bitwise_and(plate_u8, cv2.bitwise_not(preserve_u8))
+
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(plate_u8, 8)
+    filtered_u8 = np.zeros((H, W), dtype=np.uint8)
+    max_area = max(180, int(face_w * face_h * 0.46))
+    max_width = max(72, int(face_w * 0.92))
+    min_height = max(20, int(face_h * 0.18))
+    center_allow = max(24, int(face_w * 0.44))
+    min_bottom = int(cutoff_y + face_h * 0.18)
+    for idx in range(1, num_labels):
+        w = int(stats[idx, cv2.CC_STAT_WIDTH])
+        h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+        y = int(stats[idx, cv2.CC_STAT_TOP])
+        area = int(stats[idx, cv2.CC_STAT_AREA])
+        comp_cx = float(centroids[idx][0])
+        if area < 24 or area > max_area:
+            continue
+        if h < min_height or w > max_width:
+            continue
+        if (y + h) < min_bottom:
+            continue
+        if abs(comp_cx - cx) > center_allow:
+            continue
+        filtered_u8[labels == idx] = 255
+    if int((filtered_u8 > 0).sum()) < 48:
+        return np.zeros((H, W), dtype=np.float32)
+
+    filtered_u8 = cv2.morphologyEx(
+        filtered_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 15)),
+    )
+    filtered_u8 = cv2.dilate(
+        filtered_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+        iterations=1,
+    )
+    filtered_u8 = cv2.bitwise_and(filtered_u8, corridor_u8)
+    out = cv2.GaussianBlur(
+        filtered_u8.astype(np.float32) / 255.0,
+        (0, 0),
+        sigmaX=3.2,
+        sigmaY=4.8,
+    )
+    return np.clip(out * 0.998, 0.0, 1.0).astype(np.float32)
 
 def _apply_short_source_cloth_anchor_restore(
     self,
@@ -9320,6 +9534,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._build_short_cloth_generation_silhouette_mask = _build_short_cloth_generation_silhouette_mask
     cls._build_short_cloth_control_map = _build_short_cloth_control_map
     cls._build_source_conditioned_cloth_base = _build_source_conditioned_cloth_base
+    cls._build_short_under_jaw_front_plate_mask = _build_short_under_jaw_front_plate_mask
     cls._apply_short_source_cloth_anchor_restore = _apply_short_source_cloth_anchor_restore
     cls._tighten_short_under_jaw_mask_to_center = _tighten_short_under_jaw_mask_to_center
     cls._build_short_under_jaw_crop_core_mask = _build_short_under_jaw_crop_core_mask
