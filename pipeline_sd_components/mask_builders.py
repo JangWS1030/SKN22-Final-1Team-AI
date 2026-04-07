@@ -3873,6 +3873,7 @@ def _build_short_final_side_lane_refine_mask(
                 face_bbox=face_bbox,
                 cutoff_y=cutoff_y,
                 hair_length=hair_length,
+                final_hair_mask=final_hair_mask,
             ) > 0.08
         ).astype(np.uint8) * 255
         candidate_u8 = cv2.bitwise_or(candidate_u8, cv2.bitwise_and(lower_tail_u8, corridor_u8))
