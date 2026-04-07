@@ -1834,8 +1834,8 @@ class MirrAISDPipeline:
                 short_generation_seed_mask_for_debug = gen_mask.copy()
             if hair_length == "short":
                 # SHORT 변환 시 기존 긴머리 영역(SAM2)을 인페인팅 범위에 포함시켜야 지울 수 있음
-                if sam2_hair_mask is not None and sam2_hair_mask.shape == (H, W):
-                    gen_mask = np.maximum(gen_mask, np.clip(sam2_hair_mask.astype(np.float32) * 0.92, 0.0, 1.0))
+                if hair_mask_for_removal is not None and hair_mask_for_removal.shape == (H, W):
+                    gen_mask = np.maximum(gen_mask, np.clip(hair_mask_for_removal.astype(np.float32) * 0.92, 0.0, 1.0))
                 # 리무벌 마스크(LaMa 타겟)도 포함
                 if removal_mask_for_post is not None and removal_mask_for_post.shape == (H, W):
                     gen_mask = np.maximum(gen_mask, np.clip(removal_mask_for_post.astype(np.float32) * 0.85, 0.0, 1.0))
@@ -3217,8 +3217,8 @@ class MirrAISDPipeline:
             composite_mask = composite_hair_mask.astype(np.float32)
             if hair_length == "short":
                 # 숏컷 변환 시, 원본 긴머리가 있던 곳을 생성물로 확실히 덮어씌워야 함
-                if sam2_hair_mask is not None and sam2_hair_mask.shape == (H, W):
-                    composite_mask = np.maximum(composite_mask, np.clip(sam2_hair_mask.astype(np.float32) * 1.05, 0.0, 1.0))
+                if hair_mask_for_removal is not None and hair_mask_for_removal.shape == (H, W):
+                    composite_mask = np.maximum(composite_mask, np.clip(hair_mask_for_removal.astype(np.float32) * 1.05, 0.0, 1.0))
                 if removal_mask_for_post is not None and removal_mask_for_post.shape == (H, W):
                     composite_mask = np.maximum(composite_mask, np.clip(removal_mask_for_post.astype(np.float32) * 1.05, 0.0, 1.0))
 
