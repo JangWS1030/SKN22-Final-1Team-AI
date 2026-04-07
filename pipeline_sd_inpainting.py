@@ -5049,6 +5049,19 @@ class MirrAISDPipeline:
                                             reference_rgb=img_rgb,
                                             reference_mask=female_short_cloth_reference_mask,
                                         )
+                                if (
+                                    short_bob_tail_mask_for_post is not None
+                                    and short_bob_tail_mask_for_post.shape == final_bgr.shape[:2]
+                                    and float(short_bob_tail_mask_for_post.sum()) > 0.0
+                                ):
+                                    final_rgb = self._cleanup_region_with_cloth_restore(
+                                        source_rgb=img_rgb,
+                                        current_rgb=final_rgb,
+                                        cleanup_mask=short_bob_tail_mask_for_post,
+                                        cloth_mask=female_short_cloth_reference_mask,
+                                        ignore_final_hair_for_cloth_restore=True,
+                                        cleanup_dark_tail=True,
+                                    )
                                 final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                                 if debug_images_common is not None and rank == 0:
                                     if female_short_direct_cloth_restore_px >= 120:
