@@ -2184,9 +2184,9 @@ def _build_short_under_jaw_front_plate_mask(
 
     plate_u8 = cv2.bitwise_and(plate_u8, corridor_u8)
     if int((lower_cloth_u8 > 0).sum()) >= 60:
-        plate_u8 = cv2.bitwise_and(plate_u8, cv2.bitwise_or(lower_cloth_u8, seed_bridge_u8))
-    plate_u8 = cv2.bitwise_or(plate_u8, cv2.bitwise_and(seed_bridge_u8, cloth_u8))
-    plate_u8 = cv2.bitwise_and(plate_u8, cloth_u8)
+        plate_u8 = cv2.bitwise_or(plate_u8, lower_cloth_u8)
+    plate_u8 = cv2.bitwise_or(plate_u8, cv2.bitwise_and(seed_bridge_u8, corridor_u8))
+    plate_u8 = cv2.bitwise_and(plate_u8, cv2.bitwise_or(cloth_u8, seed_bridge_u8))
 
     if neck_preserve_mask is not None and neck_preserve_mask.shape == (H, W):
         preserve_u8 = cv2.dilate(

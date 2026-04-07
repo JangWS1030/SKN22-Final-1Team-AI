@@ -5097,11 +5097,36 @@ class MirrAISDPipeline:
                 try:
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
-                    cloth_reference_mask = (
-                        cloth_restore_mask_for_post
-                        if cloth_restore_mask_for_post is not None and cloth_restore_mask_for_post.shape == final_bgr.shape[:2]
-                        else cloth_mask_dilated
+                    cloth_reference_mask = np.clip(
+                        cloth_mask_dilated.astype(np.float32),
+                        0.0,
+                        1.0,
                     )
+                    if (
+                        cloth_restore_mask_for_post is not None
+                        and cloth_restore_mask_for_post.shape == final_bgr.shape[:2]
+                    ):
+                        cloth_reference_mask = np.maximum(
+                            cloth_reference_mask,
+                            np.clip(cloth_restore_mask_for_post.astype(np.float32), 0.0, 1.0),
+                        ).astype(np.float32)
+                    if hair_length == "short":
+                        if (
+                            female_short_cloth_reference_mask is not None
+                            and female_short_cloth_reference_mask.shape == final_bgr.shape[:2]
+                        ):
+                            cloth_reference_mask = np.maximum(
+                                cloth_reference_mask,
+                                np.clip(female_short_cloth_reference_mask.astype(np.float32), 0.0, 1.0),
+                            ).astype(np.float32)
+                        if (
+                            source_cloth_reference_mask is not None
+                            and source_cloth_reference_mask.shape == final_bgr.shape[:2]
+                        ):
+                            cloth_reference_mask = np.maximum(
+                                cloth_reference_mask,
+                                np.clip(source_cloth_reference_mask.astype(np.float32), 0.0, 1.0) * 0.98,
+                            ).astype(np.float32)
                     short_cloth_neck_preserve_mask = np.zeros(final_bgr.shape[:2], dtype=np.float32)
                     if hair_length == "short":
                         if (
@@ -5463,6 +5488,13 @@ class MirrAISDPipeline:
                     if debug_images_common is not None and rank == 0:
                         debug_images_common["pipeline_under_jaw_cloth_refine_mask"] = cv2.cvtColor(
                             under_jaw_cloth_refine_u8,
+                            cv2.COLOR_GRAY2BGR,
+                        )
+                        debug_images_common["pipeline_under_jaw_cloth_reference_mask"] = cv2.cvtColor(
+                            (
+                                np.clip(cloth_reference_mask.astype(np.float32), 0.0, 1.0) > 0.05
+                            ).astype(np.uint8)
+                            * 255,
                             cv2.COLOR_GRAY2BGR,
                         )
                         if hair_length == "short" and float(short_cloth_neck_preserve_mask.sum()) > 0.0:
