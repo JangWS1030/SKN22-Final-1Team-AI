@@ -10,9 +10,9 @@ normalize_runpod_webhook_env() {
     return
   fi
 
-  if [[ "$name" == "RUNPOD_WEBHOOK_GET_JOB" && "$updated" == *'$RUNPOD_POD_ID'* ]]; then
-    updated="${updated//\$RUNPOD_POD_ID/\$ID}"
-    echo "[entrypoint_sd] normalized ${name} placeholder: \$RUNPOD_POD_ID -> \$ID"
+  if [[ -n "${RUNPOD_POD_ID:-}" && "$updated" == *'$RUNPOD_POD_ID'* ]]; then
+    updated="${updated//\$RUNPOD_POD_ID/${RUNPOD_POD_ID}}"
+    echo "[entrypoint_sd] expanded ${name} placeholder: \$RUNPOD_POD_ID"
   fi
 
   if [[ -n "${RUNPOD_GPU_TYPE_ID:-}" && "$updated" == *'$RUNPOD_GPU_TYPE_ID'* ]]; then
