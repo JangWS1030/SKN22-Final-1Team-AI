@@ -1264,7 +1264,7 @@ class MirrAISDPipeline:
                         upper_clothes_overwrite_mask.astype(np.float32),
                         np.clip(upper_clothes_overwrite_core_mask.astype(np.float32) * overwrite_core_alpha, 0.0, 1.0),
                     ).astype(np.float32)
-                if short_upper_body_repaint_px >= 120:
+                if short_upper_body_repaint_px >= 16:
                     repaint_release_u8 = cv2.dilate(
                         short_upper_body_repaint_u8,
                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 27)),
@@ -2013,12 +2013,19 @@ class MirrAISDPipeline:
                     if seed_top < fallback_bottom and fallback_left < fallback_right:
                         gen_mask[seed_top:fallback_bottom, fallback_left:fallback_right] = 1.0
                 short_generation_seed_mask_for_debug = gen_mask.copy()
-            else:
-                gen_mask[head_y1:head_y2, head_x1:head_x2] = 1.0
+            if hair_length == "short":
+                # SHORT 변환 시 기존 긴머리 영역(SAM2)을 인페인팅 범위에 포함시켜야 지울 수 있음
+                if sam2_hair_mask is not None and sam2_hair_mask.shape == (H, W):
+                    gen_mask = np.maximum(gen_mask, np.clip(sam2_hair_mask.astype(np.float32) * 0.92, 0.0, 1.0))
+                # 리무벌 마스크(LaMa 타겟)도 포함
+                if removal_mask_for_post is not None and removal_mask_for_post.shape == (H, W):
+                    gen_mask = np.maximum(gen_mask, np.clip(removal_mask_for_post.astype(np.float32) * 0.85, 0.0, 1.0))
+
             gen_mask = np.clip(gen_mask - protect_mask_for_sd, 0.0, 1.0)
             gen_mask = np.clip(gen_mask - cloth_generation_guard, 0.0, 1.0)
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == (H, W):
                 gen_mask = np.maximum(gen_mask, effective_upper_clothes_overwrite_mask).astype(np.float32)
+
             if hair_length == "short":
                 below_bob_generation_block_for_post = self._build_short_below_bob_generation_block_mask(
                     removal_mask=removal_mask_for_post,
@@ -2036,42 +2043,27 @@ class MirrAISDPipeline:
                     hair_length=hair_length,
                     support_mask=lower_tail_support_for_post,
                 )
-                if (
-                    below_bob_generation_block_for_post is not None
-                    and below_bob_generation_block_for_post.shape == (H, W)
-                ):
-                    gen_mask = np.clip(
-                        gen_mask - below_bob_generation_block_for_post * 1.75,
-                        0.0,
-                        1.0,
-                    )
-                if (
-                    below_bob_cloth_restore_for_post is not None
-                    and below_bob_cloth_restore_for_post.shape == (H, W)
-                ):
-                    gen_mask = np.clip(
-                        gen_mask - below_bob_cloth_restore_for_post * 1.55,
-                        0.0,
-                        1.0,
-                    )
+                # 억제 마스크 가중치 대폭 완화 (1.75 -> 0.42, 1.55 -> 0.38)
+                if below_bob_generation_block_for_post is not None and below_bob_generation_block_for_post.shape == (H, W):
+                    gen_mask = np.clip(gen_mask - below_bob_generation_block_for_post * 0.42, 0.0, 1.0)
+                if below_bob_cloth_restore_for_post is not None and below_bob_cloth_restore_for_post.shape == (H, W):
+                    gen_mask = np.clip(gen_mask - below_bob_cloth_restore_for_post * 0.38, 0.0, 1.0)
+            
             if shoulder_protect_for_post is not None and shoulder_protect_for_post.shape == (H, W):
                 gen_mask = np.clip(
-                    gen_mask - (shoulder_protect_for_post * (0.42 if hair_length == "short" else 0.28)),
+                    gen_mask - (shoulder_protect_for_post * (0.12 if hair_length == "short" else 0.28)),
                     0.0,
                     1.0,
                 )
-            if (
-                shoulder_hair_forbid_for_post is not None
-                and shoulder_hair_forbid_for_post.shape == (H, W)
-            ):
+            if shoulder_hair_forbid_for_post is not None and shoulder_hair_forbid_for_post.shape == (H, W):
                 gen_mask = np.clip(
-                    gen_mask - shoulder_hair_forbid_for_post * (1.85 if hair_length == "short" else 1.10),
+                    gen_mask - shoulder_hair_forbid_for_post * (0.45 if hair_length == "short" else 1.10),
                     0.0,
                     1.0,
                 )
             if neckline_preserve_for_post is not None and neckline_preserve_for_post.shape == (H, W):
                 gen_mask = np.clip(
-                    gen_mask - neckline_preserve_for_post * (0.34 if hair_length == "short" else 0.18),
+                    gen_mask - neckline_preserve_for_post * (0.08 if hair_length == "short" else 0.18),
                     0.0,
                     1.0,
                 )
@@ -3386,6 +3378,13 @@ class MirrAISDPipeline:
                 hair_length=hair_length,
             )
             composite_mask = composite_hair_mask.astype(np.float32)
+            if hair_length == "short":
+                # 숏컷 변환 시, 원본 긴머리가 있던 곳을 생성물로 확실히 덮어씌워야 함
+                if sam2_hair_mask is not None and sam2_hair_mask.shape == (H, W):
+                    composite_mask = np.maximum(composite_mask, np.clip(sam2_hair_mask.astype(np.float32) * 1.05, 0.0, 1.0))
+                if removal_mask_for_post is not None and removal_mask_for_post.shape == (H, W):
+                    composite_mask = np.maximum(composite_mask, np.clip(removal_mask_for_post.astype(np.float32) * 1.05, 0.0, 1.0))
+
             garment_composite_mask = None
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape:
                 if float(effective_upper_clothes_overwrite_core_mask.sum()) > 0.0:
@@ -8118,28 +8117,28 @@ class MirrAISDPipeline:
             fill_ratio = float(area) / float(max(w * h, 1))
 
             reject_far_blob = (
-                offset > reject_far_offset
-                and area >= reject_far_area
-                and (fill_ratio >= 0.30 or w >= max(56, int(face_w * 0.26)))
+                offset > reject_far_offset * 1.5
+                and area >= reject_far_area * 1.8
+                and (fill_ratio >= 0.45 or w >= max(84, int(face_w * 0.42)))
             )
             reject_center_block = (
-                offset <= reject_center_offset
+                offset <= reject_center_offset * 0.8
                 and bottom_y >= min_bottom
-                and w >= reject_center_width
-                and area >= reject_center_area
-                and fill_ratio >= 0.34
+                and w >= reject_center_width * 1.6
+                and area >= reject_center_area * 1.8
+                and fill_ratio >= 0.52
             )
             reject_dense_wide = (
                 bottom_y >= min_bottom
-                and w >= reject_wide_width
-                and area >= reject_wide_area
-                and fill_ratio >= 0.46
+                and w >= reject_wide_width * 1.5
+                and area >= reject_wide_area * 1.8
+                and fill_ratio >= 0.62
             )
             reject_rect_patch = (
                 bottom_y >= min_bottom
-                and h >= max(72, int(face_h * 0.26))
-                and w >= max(84, int(face_w * 0.34))
-                and fill_ratio >= 0.58
+                and h >= max(96, int(face_h * 0.42))
+                and w >= max(120, int(face_w * 0.52))
+                and fill_ratio >= 0.72
             )
             if reject_far_blob or reject_center_block or reject_dense_wide or reject_rect_patch:
                 continue

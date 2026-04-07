@@ -1765,9 +1765,9 @@ def _build_short_torso_garment_repaint_mask(
         mask_u8=candidate_u8,
         face_bbox=face_bbox,
         cutoff_y=cutoff_y,
-        min_keep_px=120,
+        min_keep_px=16,
     )
-    if int((candidate_u8 > 0).sum()) < 120:
+    if int((candidate_u8 > 0).sum()) < 16:
         return np.zeros((H, W), dtype=np.float32)
 
     return cv2.GaussianBlur(
