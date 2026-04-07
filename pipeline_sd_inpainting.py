@@ -807,10 +807,7 @@ class MirrAISDPipeline:
         source_garment_prepass_mask: Optional[np.ndarray] = None
         source_garment_prepass_enabled = False
         source_garment_prepass_applied = False
-        # Temporary experiment: bypass short-hair post-cleanup so we can
-        # isolate whether the remaining lower-tail artifacts come from the
-        # short postprocess stack rather than the base generation/removal masks.
-        disable_short_postprocess_experiment = hair_length == "short"
+        disable_short_postprocess_experiment = False
         if disable_short_postprocess_experiment:
             logger.info("[SDPipeline] short postprocess disabled for experiment")
         if debug_data_common is not None:
