@@ -7879,6 +7879,7 @@ def _build_soft_bangs_generation_mask(
     self,
     bangs_mask: np.ndarray,
     face_bbox: Tuple[int, int, int, int],
+    hair_length: str = "long",
 ) -> np.ndarray:
     H, W = bangs_mask.shape[:2]
     base = (np.clip(bangs_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255
@@ -7932,11 +7933,13 @@ def _build_soft_bangs_generation_mask(
     if int((soft_u8 > 0).sum()) < 8:
         return np.zeros((H, W), dtype=np.float32)
 
+    _sx = 2.2 if hair_length == "short" else 2.4 if hair_length == "medium" else 2.6
+    _sy = 2.6 if hair_length == "short" else 2.8 if hair_length == "medium" else 3.0
     alpha = cv2.GaussianBlur(
         soft_u8.astype(np.float32) / 255.0,
         (0, 0),
-        sigmaX=2.2,
-        sigmaY=2.6,
+        sigmaX=_sx,
+        sigmaY=_sy,
     )
     alpha = np.clip((alpha - 0.02) / 0.94, 0.0, 1.0)
 

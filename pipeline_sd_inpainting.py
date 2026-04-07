@@ -1954,7 +1954,24 @@ class MirrAISDPipeline:
                 soft_bangs_generation_mask = self._build_soft_bangs_generation_mask(
                     bangs_restore_for_sd,
                     face_bbox=face_bbox,
+                    hair_length=hair_length,
                 )
+                if float(soft_bangs_generation_mask.sum()) > 0.0:
+                    _bangs_dilate_k = (5, 7) if hair_length == "short" else (7, 9)
+                    _bangs_sx = 2.2 if hair_length == "short" else 2.4
+                    _bangs_sy = 2.6 if hair_length == "short" else 2.8
+                    _bangs_u8 = cv2.dilate(
+                        (np.clip(soft_bangs_generation_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, _bangs_dilate_k),
+                        iterations=1,
+                    )
+                    soft_bangs_generation_mask = cv2.GaussianBlur(
+                        _bangs_u8.astype(np.float32) / 255.0,
+                        (0, 0),
+                        sigmaX=_bangs_sx,
+                        sigmaY=_bangs_sy,
+                    ).astype(np.float32)
+                    soft_bangs_generation_mask = np.clip(soft_bangs_generation_mask * 1.10, 0.0, 1.0)
                 composite_bangs_release_mask = np.clip(
                     soft_bangs_generation_mask.astype(np.float32) * 1.15,
                     0.0,
@@ -2806,6 +2823,7 @@ class MirrAISDPipeline:
                 long_soft_bangs_mask = self._build_soft_bangs_generation_mask(
                     bangs_restore_for_sd,
                     face_bbox=face_bbox,
+                    hair_length=hair_length,
                 )
                 if float(long_soft_bangs_mask.sum()) > 0.0:
                     long_soft_bangs_u8 = cv2.dilate(
@@ -3231,6 +3249,19 @@ class MirrAISDPipeline:
                 protect_release_mask=composite_bangs_release_mask if float(composite_bangs_release_mask.sum()) > 0.0 else None,
                 hair_length=hair_length,
             )
+            if float(composite_bangs_release_mask.sum()) > 60.0:
+                try:
+                    composited_bgr = cv2.cvtColor(
+                        self._cv2_refine_cloth_region(
+                            cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB),
+                            composite_bangs_release_mask,
+                            reference_rgb=img_rgb,
+                            reference_mask=composite_bangs_release_mask,
+                        ),
+                        cv2.COLOR_RGB2BGR,
+                    )
+                except Exception:
+                    pass
             composite_pre_cleanup_bgr = composited_bgr.copy()
             candidate_cleanup_trace: List[Dict[str, Any]] = []
             candidate_prev_rgb = cv2.cvtColor(composite_pre_cleanup_bgr, cv2.COLOR_BGR2RGB)
