@@ -3266,6 +3266,7 @@ class MirrAISDPipeline:
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] final hair lane cleanup failed (ignored): {e}")
+            short_bob_tail_mask_for_post = np.zeros(final_bgr.shape[:2], dtype=np.float32)
             if (
                 hair_length == "short"
                 and cloth_mask_dilated is not None
@@ -3286,6 +3287,11 @@ class MirrAISDPipeline:
                     )
                     short_bob_tail_u8 = (
                         (np.clip(short_bob_tail_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+                    )
+                    short_bob_tail_mask_for_post = np.clip(
+                        short_bob_tail_mask.astype(np.float32),
+                        0.0,
+                        1.0,
                     )
                     short_bob_tail_px = int((short_bob_tail_u8 > 0).sum())
                     if short_bob_tail_px >= 60:
@@ -3756,6 +3762,15 @@ class MirrAISDPipeline:
                             female_short_direct_cloth_restore_mask = np.maximum(
                                 female_short_direct_cloth_restore_mask,
                                 np.clip(residual_strand_cleanup_mask_for_post * 0.90, 0.0, 1.0),
+                            ).astype(np.float32)
+                        if (
+                            short_bob_tail_mask_for_post is not None
+                            and short_bob_tail_mask_for_post.shape == final_bgr.shape[:2]
+                            and float(short_bob_tail_mask_for_post.sum()) > 0.0
+                        ):
+                            female_short_direct_cloth_restore_mask = np.maximum(
+                                female_short_direct_cloth_restore_mask,
+                                np.clip(short_bob_tail_mask_for_post * 0.96, 0.0, 1.0),
                             ).astype(np.float32)
                         female_short_reference_preserve_mask = np.zeros(
                             final_bgr.shape[:2],
