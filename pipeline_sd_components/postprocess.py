@@ -6198,7 +6198,7 @@ def _build_center_chest_strand_support_mask(
     cutoff_y: int,
     hair_length: str,
 ) -> np.ndarray:
-    if hair_length not in ("short", "medium"):
+    if hair_length not in ("short", "medium", "long"):
         return np.zeros(img_rgb.shape[:2], dtype=np.float32)
 
     H, W = img_rgb.shape[:2]
@@ -6211,11 +6211,21 @@ def _build_center_chest_strand_support_mask(
     cx = int(0.5 * (x1 + x2))
 
     lane_u8 = np.zeros((H, W), dtype=np.uint8)
-    lane_half = max(18, int(face_w * (0.20 if hair_length == "short" else 0.17)))
+    # v111: 가슴 중앙 감지 대역폭 확장 (sideways strands 포착 목적)
+    if hair_length == "long":
+        lane_half = max(38, int(face_w * 0.48))
+        lane_y_extent = 1.62
+    elif hair_length == "medium":
+        lane_half = max(28, int(face_w * 0.35))
+        lane_y_extent = 1.42
+    else: # short
+        lane_half = max(24, int(face_w * 0.30))
+        lane_y_extent = 2.05
+
     lane_x1 = max(0, cx - lane_half)
     lane_x2 = min(W, cx + lane_half)
-    lane_y1 = max(0, int(cutoff_y - face_h * 0.04))
-    lane_y2 = min(H, int(cutoff_y + face_h * (2.05 if hair_length == "short" else 1.42)))
+    lane_y1 = max(0, int(cutoff_y - face_h * 0.08))
+    lane_y2 = min(H, int(cutoff_y + face_h * lane_y_extent))
     if lane_x1 >= lane_x2 or lane_y1 >= lane_y2:
         return np.zeros((H, W), dtype=np.float32)
     lane_u8[lane_y1:lane_y2, lane_x1:lane_x2] = 255
@@ -6267,10 +6277,24 @@ def _build_center_chest_strand_support_mask(
     blackhat_u8 = (
         blackhat > (9 if hair_length == "short" else 10)
     ).astype(np.uint8) * 255
+    # v111: 배경이 밝은 흰색/아이보리일 때 머리카락 감지를 위해 임계값(154->178) 완화
+    if hair_length == "long":
+        gray_threshold = 178.0
+        diff_threshold = 1.8
+        blur_base_threshold = 96.0
+    elif hair_length == "medium":
+        gray_threshold = 168.0
+        diff_threshold = 2.0
+        blur_base_threshold = 100.0
+    else: # short
+        gray_threshold = 162.0
+        diff_threshold = 2.2
+        blur_base_threshold = 110.0
+
     dark_u8 = (
-        (gray < (162.0 if hair_length == "short" else 154.0))
-        & ((blur - gray) > (2.2 if hair_length == "short" else 2.4))
-        & (blur > (110.0 if hair_length == "short" else 104.0))
+        (gray < gray_threshold)
+        & ((blur - gray) > diff_threshold)
+        & (blur > blur_base_threshold)
     ).astype(np.uint8) * 255
     dark_u8 = cv2.bitwise_or(dark_u8, blackhat_u8)
     dark_u8 = cv2.bitwise_and(dark_u8, zone_u8)
@@ -6316,7 +6340,9 @@ def _build_center_chest_strand_support_mask(
             continue
         if w > max_width or h < min_height:
             continue
-        if abs(comp_cx - cx) > max(16, int(face_w * 0.18)):
+        # v111: comp_cx - cx 오프셋 허용치 대폭 완화
+        cx_offset_max = max(32, int(face_w * (0.45 if hair_length == "long" else 0.32)))
+        if abs(comp_cx - cx) > cx_offset_max:
             continue
         if (y + h) < int(cutoff_y + face_h * 0.14):
             continue
