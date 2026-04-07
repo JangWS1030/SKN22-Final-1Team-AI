@@ -4908,19 +4908,114 @@ class MirrAISDPipeline:
                                                 sigmaX=3.2,
                                                 sigmaY=5.2,
                                             ).astype(np.float32)
-                                            final_rgb = self._cv2_cleanup_dark_tail_blob(final_rgb, center_fill_u8)
-                                            final_rgb = self._blend_neighbor_cloth_tone(
-                                                final_rgb,
-                                                center_fill_mask,
-                                                cloth_mask=female_short_cloth_reference_mask,
-                                                reference_rgb=source_cloth_reference_rgb,
+                                            center_fill_x, center_fill_y, center_fill_w, center_fill_h = cv2.boundingRect(
+                                                center_fill_u8
                                             )
-                                            final_rgb = self._cv2_refine_cloth_region(
-                                                final_rgb,
-                                                center_fill_mask,
-                                                reference_rgb=source_cloth_reference_rgb,
-                                                reference_mask=source_cloth_reference_mask,
-                                            )
+                                            if center_fill_w > 0 and center_fill_h > 0:
+                                                crop_pad_x = max(18, int(face_w * 0.12))
+                                                crop_pad_y = max(18, int(face_h * 0.14))
+                                                crop_left = max(0, center_fill_x - crop_pad_x)
+                                                crop_top = max(0, center_fill_y - crop_pad_y)
+                                                crop_right = min(W, center_fill_x + center_fill_w + crop_pad_x)
+                                                crop_bottom = min(H, center_fill_y + center_fill_h + crop_pad_y)
+                                                crop_u8 = center_fill_u8[crop_top:crop_bottom, crop_left:crop_right]
+                                                crop_mask = center_fill_mask[crop_top:crop_bottom, crop_left:crop_right]
+                                                crop_reference_mask = np.clip(
+                                                    source_cloth_reference_mask[
+                                                        crop_top:crop_bottom,
+                                                        crop_left:crop_right,
+                                                    ].astype(np.float32),
+                                                    0.0,
+                                                    1.0,
+                                                )
+                                                crop_reference_rgb = source_cloth_reference_rgb[
+                                                    crop_top:crop_bottom,
+                                                    crop_left:crop_right,
+                                                ].copy()
+                                                crop_rgb = final_rgb[
+                                                    crop_top:crop_bottom,
+                                                    crop_left:crop_right,
+                                                ].copy()
+                                                crop_hair_mask = None
+                                                if final_hair_mask is not None and final_hair_mask.shape == final_bgr.shape[:2]:
+                                                    crop_hair_mask = final_hair_mask[
+                                                        crop_top:crop_bottom,
+                                                        crop_left:crop_right,
+                                                    ]
+                                                crop_rgb = self._restore_reference_region(
+                                                    crop_rgb,
+                                                    crop_reference_rgb,
+                                                    crop_mask,
+                                                    strength=1.0,
+                                                )
+                                                crop_rgb = self._overlay_reference_cloth_fill(
+                                                    crop_rgb,
+                                                    crop_reference_rgb,
+                                                    crop_mask,
+                                                    cloth_mask=crop_reference_mask,
+                                                )
+                                                crop_rgb = self._restore_cloth_overlap_from_source(
+                                                    source_rgb=img_rgb[
+                                                        crop_top:crop_bottom,
+                                                        crop_left:crop_right,
+                                                    ],
+                                                    current_rgb=crop_rgb,
+                                                    restore_mask=crop_mask,
+                                                    final_hair_mask=crop_hair_mask,
+                                                    tone_reference_rgb=crop_reference_rgb,
+                                                    tone_reference_mask=crop_reference_mask,
+                                                )
+                                                crop_rgb = self._cv2_cleanup_dark_tail_blob(crop_rgb, crop_u8)
+                                                crop_rgb = self._blend_neighbor_cloth_tone(
+                                                    crop_rgb,
+                                                    crop_mask,
+                                                    cloth_mask=crop_reference_mask,
+                                                    reference_rgb=crop_reference_rgb,
+                                                )
+                                                crop_rgb = self._cv2_refine_cloth_region(
+                                                    crop_rgb,
+                                                    crop_mask,
+                                                    reference_rgb=crop_reference_rgb,
+                                                    reference_mask=crop_reference_mask,
+                                                )
+                                                final_rgb[
+                                                    crop_top:crop_bottom,
+                                                    crop_left:crop_right,
+                                                ] = crop_rgb
+                                            else:
+                                                final_rgb = self._restore_reference_region(
+                                                    final_rgb,
+                                                    source_cloth_reference_rgb,
+                                                    center_fill_mask,
+                                                    strength=1.0,
+                                                )
+                                                final_rgb = self._overlay_reference_cloth_fill(
+                                                    final_rgb,
+                                                    source_cloth_reference_rgb,
+                                                    center_fill_mask,
+                                                    cloth_mask=source_cloth_reference_mask,
+                                                )
+                                                final_rgb = self._restore_cloth_overlap_from_source(
+                                                    source_rgb=img_rgb,
+                                                    current_rgb=final_rgb,
+                                                    restore_mask=center_fill_mask,
+                                                    final_hair_mask=final_hair_mask,
+                                                    tone_reference_rgb=source_cloth_reference_rgb,
+                                                    tone_reference_mask=source_cloth_reference_mask,
+                                                )
+                                                final_rgb = self._cv2_cleanup_dark_tail_blob(final_rgb, center_fill_u8)
+                                                final_rgb = self._blend_neighbor_cloth_tone(
+                                                    final_rgb,
+                                                    center_fill_mask,
+                                                    cloth_mask=female_short_cloth_reference_mask,
+                                                    reference_rgb=source_cloth_reference_rgb,
+                                                )
+                                                final_rgb = self._cv2_refine_cloth_region(
+                                                    final_rgb,
+                                                    center_fill_mask,
+                                                    reference_rgb=source_cloth_reference_rgb,
+                                                    reference_mask=source_cloth_reference_mask,
+                                                )
                                     elif female_short_broad_cloth_restore_mask is not None:
                                         final_rgb = self._blend_neighbor_cloth_tone(
                                             final_rgb,
