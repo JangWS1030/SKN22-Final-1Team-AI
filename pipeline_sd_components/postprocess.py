@@ -6212,14 +6212,15 @@ def _build_center_chest_strand_support_mask(
 
     lane_u8 = np.zeros((H, W), dtype=np.uint8)
     # v111: 가슴 중앙 감지 대역폭 확장 (sideways strands 포착 목적)
+    # v111_ablation: Revert lane_half to v110 levels (sideways strands 포착 목적 축소)
     if hair_length == "long":
-        lane_half = max(38, int(face_w * 0.48))
+        lane_half = max(32, int(face_w * 0.38))
         lane_y_extent = 1.62
     elif hair_length == "medium":
-        lane_half = max(28, int(face_w * 0.35))
+        lane_half = max(24, int(face_w * 0.28))
         lane_y_extent = 1.42
     else: # short
-        lane_half = max(24, int(face_w * 0.30))
+        lane_half = max(20, int(face_w * 0.24))
         lane_y_extent = 2.05
 
     lane_x1 = max(0, cx - lane_half)
@@ -6278,16 +6279,17 @@ def _build_center_chest_strand_support_mask(
         blackhat > (9 if hair_length == "short" else 10)
     ).astype(np.uint8) * 255
     # v111: 배경이 밝은 흰색/아이보리일 때 머리카락 감지를 위해 임계값(154->178) 완화
+    # v111_ablation: Revert gray_threshold to v110 levels (154.0 / 150.0 / 148.0)
     if hair_length == "long":
-        gray_threshold = 178.0
+        gray_threshold = 154.0
         diff_threshold = 1.8
         blur_base_threshold = 96.0
     elif hair_length == "medium":
-        gray_threshold = 168.0
+        gray_threshold = 150.0
         diff_threshold = 2.0
         blur_base_threshold = 100.0
     else: # short
-        gray_threshold = 162.0
+        gray_threshold = 148.0
         diff_threshold = 2.2
         blur_base_threshold = 110.0
 
@@ -6340,8 +6342,8 @@ def _build_center_chest_strand_support_mask(
             continue
         if w > max_width or h < min_height:
             continue
-        # v111: comp_cx - cx 오프셋 허용치 대폭 완화
-        cx_offset_max = max(32, int(face_w * (0.45 if hair_length == "long" else 0.32)))
+        # v111_ablation: Revert cx_offset_max to v110 levels
+        cx_offset_max = max(24, int(face_w * (0.34 if hair_length == "long" else 0.22)))
         if abs(comp_cx - cx) > cx_offset_max:
             continue
         if (y + h) < int(cutoff_y + face_h * 0.14):

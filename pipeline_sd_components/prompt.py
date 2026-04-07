@@ -909,6 +909,16 @@ def _build_prompt(
     material_hint = str(garment_hints.get("material_hint") or "").strip().lower()
     neckline_hint = str(garment_hints.get("neckline_hint") or "").strip().lower()
 
+    # v111_ablation: Simplify/Anchor to plain white smooth front panel
+    garment_priority_parts.append("plain white smooth front panel")
+    garment_negative_parts.extend([
+        "armor-like chest panel",
+        "bib-like front panel",
+        "structured breastplate top",
+        "warped clothing",
+    ])
+    # The rest of the dynamic logic is disabled for this ablation study
+    """
     if color_conf >= 0.45:
         if color_name == "white":
             garment_priority_parts.append("clean white tone")
@@ -934,6 +944,7 @@ def _build_prompt(
             "plunging neckline",
             "wide v-neck blouse",
         ])
+    """
 
     negative_color_hints = garment_hints.get("negative_color_hints")
     if isinstance(negative_color_hints, list) and color_name in {"white", "ivory", "cream", "beige"}:

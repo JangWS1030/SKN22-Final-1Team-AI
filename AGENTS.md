@@ -36,9 +36,3 @@
 - **오류 처리:** 만약 어느 단계에서든 에러나 지연(예: 빌드 실패, Runpod API 타임아웃 등)이 발생하면 즉시 파이프라인을 멈추고, 에러 로그와 함께 나에게 해결 방안을 물어봐.
 - **건너뛰기 금지:** 임의로 단계를 생략하거나 병렬로 처리하지 마. 반드시 순차적으로 실행해야 해.
 
-## Endpoint Recreate Policy
-- RunPod endpoint를 재생성해야 할 때는 새 endpoint가 헬스 체크와 추론 테스트를 모두 통과하기 전까지 기존 endpoint를 삭제하지 마.
-- 새 endpoint 테스트가 성공하기 전까지는 `.env`의 `RUNPOD_ENDPOINT_ID`를 기존 값에서 바꾸지 마. 테스트는 새 endpoint ID를 직접 지정해서 실행해.
-- 새 endpoint 테스트가 성공한 뒤에만 `.env`를 새 endpoint ID로 갱신하고, 기존 endpoint를 삭제해.
-- 새 endpoint 테스트가 실패하면 기존 endpoint와 `.env`는 그대로 유지하고, 실패 로그를 정리해서 다음 조치를 물어봐.
-- endpoint 복제 API가 실패하면 기존 endpoint의 전체 payload를 그대로 재사용하지 말고, 필요한 최소 필드만 사용해서 재생성을 다시 시도해.
