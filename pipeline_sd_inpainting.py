@@ -4408,11 +4408,11 @@ class MirrAISDPipeline:
                                                 )
 
                                         center_fill_gate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
-                                        center_fill_half_w = max(24, int(face_w * 0.24))
+                                        center_fill_half_w = max(34, int(face_w * 0.40))
                                         center_fill_left = max(0, cx - center_fill_half_w)
                                         center_fill_right = min(W, cx + center_fill_half_w)
-                                        center_fill_top = max(0, int(cutoff_y_for_post + face_h * 0.04))
-                                        center_fill_bottom = min(H, int(cutoff_y_for_post + face_h * 1.34))
+                                        center_fill_top = max(0, int(cutoff_y_for_post + face_h * 0.02))
+                                        center_fill_bottom = min(H, int(cutoff_y_for_post + face_h * 1.42))
                                         if (
                                             center_fill_top < center_fill_bottom
                                             and center_fill_left < center_fill_right
@@ -4447,6 +4447,11 @@ class MirrAISDPipeline:
                                             center_fill_u8,
                                             cv2.MORPH_CLOSE,
                                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 17)),
+                                        )
+                                        center_fill_u8 = cv2.dilate(
+                                            center_fill_u8,
+                                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+                                            iterations=1,
                                         )
 
                                         side_center_keepout_u8 = cv2.dilate(
