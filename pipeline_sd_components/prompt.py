@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from pipeline_sd_inpainting import (
+from .config import (
     CLOTH_CLASS_IDX,
     CONTROLNET_MODEL_ID,
     DEFAULT_RUNTIME_LORA_HF_FILENAME,
@@ -37,7 +37,6 @@ from pipeline_sd_inpainting import (
     PROJECT_ROOT,
     SD_INPAINT_MODEL_ID,
     SD_SIZE,
-    MirrAISDPipeline,
     _COMMON_STYLE_BLOCK_NEGATIVE,
     _FEMALE_STYLE_HINTS,
     _FEMALE_SUBJECT_HINTS,
@@ -48,8 +47,9 @@ from pipeline_sd_inpainting import (
     _NEGATIVE_BASE,
     _NO_COLOR_HINTS,
     _SHORT_HAIR_KEYWORDS,
-    logger,
 )
+
+logger = logging.getLogger(__name__)
 
 # Extracted from pipeline_sd_inpainting.py to keep MirrAISDPipeline smaller.
 
@@ -85,7 +85,7 @@ def _infer_subject_gender(
     hairstyle_text: str,
     subject_gender: Optional[str] = None,
 ) -> str:
-    explicit = MirrAISDPipeline._normalize_subject_gender(subject_gender)
+    explicit = _normalize_subject_gender(subject_gender)
     if explicit:
         return explicit
 
@@ -218,12 +218,12 @@ def _normalize_hairstyle_prompt_text(
     raw = " ".join(str(hairstyle_text or "").strip().split())
     if not raw:
         return ""
-    gender_mode = MirrAISDPipeline._infer_subject_gender(raw, subject_gender)
+    gender_mode = _infer_subject_gender(raw, subject_gender)
     if gender_mode == "male":
         if hair_length == "short":
-            return MirrAISDPipeline._normalize_male_short_hairstyle_prompt_text(raw)
+            return _normalize_male_short_hairstyle_prompt_text(raw)
         if hair_length == "medium":
-            return MirrAISDPipeline._normalize_male_medium_hairstyle_prompt_text(raw)
+            return _normalize_male_medium_hairstyle_prompt_text(raw)
     if hair_length != "short":
         return raw
 
@@ -862,12 +862,11 @@ def _build_prompt(
             total_words += word_count
         return ", ".join(compact)
 
-    normalized_color = MirrAISDPipeline._normalize_color_text(color_text)
-    gender_mode = MirrAISDPipeline._infer_subject_gender(
-        hairstyle_text,
-        subject_gender=subject_gender,
+    normalized_color = _normalize_color_text(color_text)
+    gender_mode = _infer_subject_gender(
+        hairstyle_text, subject_gender
     )
-    normalized_style = MirrAISDPipeline._normalize_hairstyle_prompt_text(
+    normalized_style = _normalize_hairstyle_prompt_text(
         hairstyle_text,
         hair_length,
         subject_gender=gender_mode,

@@ -17,6 +17,15 @@ from PIL import Image
 # ── 프로젝트 루트 (pipeline_sd_components/ 의 부모) ───────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+
+def _clean_optional_env_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        cleaned = cleaned[1:-1].strip()
+    return cleaned or None
+
 # ── HuggingFace 모델 ID ────────────────────────────────────────────────────────
 SD_INPAINT_MODEL_ID   = "runwayml/stable-diffusion-inpainting"
 CONTROLNET_MODEL_ID   = "lllyasviel/control_v11p_sd15_canny"
