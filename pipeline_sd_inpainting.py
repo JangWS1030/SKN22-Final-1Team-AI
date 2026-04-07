@@ -1207,6 +1207,47 @@ class MirrAISDPipeline:
             not skip_source_cloth_preclean
             and source_garment_prepass_px >= max(180, int(face_w * face_h * 0.016))
         )
+
+        # SHORT 변환 시 SAM2 하단 ~ source_torso_hair_mask 사이의 gap(배경 위 긴 머리카락 중간 구간)을
+        # column-wise bridge로 계산하고 garment_prepass_mask에 merge → SD가 옷 프롬프트로 덮어씀
+        if hair_length == "short" and not skip_source_cloth_preclean and (
+            source_torso_hair_mask is not None
+            and source_torso_hair_mask.shape == (H, W)
+        ):
+            _sam2_u8 = (np.clip(hair_mask_for_removal.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) if hair_mask_for_removal is not None and hair_mask_for_removal.shape == (H, W) else np.zeros((H, W), dtype=np.uint8)
+            _torso_u8 = (np.clip(source_torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
+            _bridge_u8 = np.zeros((H, W), dtype=np.uint8)
+            for _col in range(W):
+                _sam2_ys = np.where(_sam2_u8[:, _col] > 0)[0]
+                _torso_ys = np.where(_torso_u8[:, _col] > 0)[0]
+                if len(_sam2_ys) == 0 or len(_torso_ys) == 0:
+                    continue
+                _sam2_bottom = int(_sam2_ys.max())
+                _torso_top = int(_torso_ys.min())
+                if _torso_top > _sam2_bottom + 4:
+                    _bridge_u8[_sam2_bottom:_torso_top, _col] = 1
+            if int(_bridge_u8.sum()) > 200:
+                _bridge_f = cv2.GaussianBlur(
+                    _bridge_u8.astype(np.float32),
+                    (0, 0),
+                    sigmaX=5.0,
+                    sigmaY=5.0,
+                )
+                source_garment_prepass_mask = np.maximum(
+                    source_garment_prepass_mask.astype(np.float32),
+                    np.clip(_bridge_f * 0.95, 0.0, 1.0),
+                ).astype(np.float32)
+                source_garment_prepass_px = int(
+                    (np.clip(source_garment_prepass_mask.astype(np.float32), 0.0, 1.0) > 0.08).sum()
+                )
+                if not source_garment_prepass_enabled:
+                    source_garment_prepass_enabled = True
+                logger.info(
+                    "[SDPipeline] sam2-torso bridge merged into garment_prepass_mask: bridge_px=%d total_px=%d",
+                    int(_bridge_u8.sum()),
+                    source_garment_prepass_px,
+                )
+
         _store_mask("pipeline_completed_torso_fill_mask", completed_torso_fill_mask)
         _store_mask("pipeline_source_garment_prepass_mask", source_garment_prepass_mask)
         _store_mask("pipeline_source_shoulder_contour_anchor_mask", source_shoulder_contour_anchor_mask)
@@ -1839,43 +1880,6 @@ class MirrAISDPipeline:
 
             gen_mask = np.clip(gen_mask - protect_mask_for_sd, 0.0, 1.0)
             gen_mask = np.clip(gen_mask - cloth_generation_guard, 0.0, 1.0)
-
-            # SAM2 하단과 source_torso_hair_mask 사이의 gap을 column-wise bridge로 채워
-            # cloth_generation_guard 이후에 추가해야 guard에 의해 잘리지 않음
-            # 배경 위를 지나는 긴 머리카락 중간 구간을 SD 인페인팅 범위에 포함
-            if hair_length == "short" and (
-                hair_mask_for_removal is not None
-                and hair_mask_for_removal.shape == (H, W)
-                and source_torso_hair_mask is not None
-                and source_torso_hair_mask.shape == (H, W)
-            ):
-                sam2_u8 = (np.clip(hair_mask_for_removal.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
-                torso_u8 = (np.clip(source_torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
-                bridge_u8 = np.zeros((H, W), dtype=np.uint8)
-                for col in range(W):
-                    sam2_ys = np.where(sam2_u8[:, col] > 0)[0]
-                    torso_ys = np.where(torso_u8[:, col] > 0)[0]
-                    if len(sam2_ys) == 0 or len(torso_ys) == 0:
-                        continue
-                    sam2_bottom = int(sam2_ys.max())
-                    torso_top = int(torso_ys.min())
-                    if torso_top > sam2_bottom + 4:
-                        bridge_u8[sam2_bottom:torso_top, col] = 1
-                if bridge_u8.sum() > 200:
-                    bridge_f = cv2.GaussianBlur(
-                        bridge_u8.astype(np.float32),
-                        (0, 0),
-                        sigmaX=4.0,
-                        sigmaY=4.0,
-                    )
-                    # protect_mask는 적용하되 cloth_generation_guard는 bypass
-                    bridge_protected = np.clip(bridge_f - protect_mask_for_sd, 0.0, 1.0)
-                    gen_mask = np.maximum(gen_mask, np.clip(bridge_protected * 0.90, 0.0, 1.0))
-                    _store_mask("pipeline_sam2_torso_bridge_mask", bridge_protected)
-                    logger.info(
-                        "[SDPipeline] sam2-torso bridge added to gen_mask: pixels=%d",
-                        int(bridge_u8.sum()),
-                    )
             if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == (H, W):
                 gen_mask = np.maximum(gen_mask, effective_upper_clothes_overwrite_mask).astype(np.float32)
 
