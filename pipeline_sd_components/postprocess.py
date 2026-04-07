@@ -4327,7 +4327,7 @@ def _cleanup_region_with_cloth_restore(
                 cleaned,
                 plain_fill_rgb if plain_fill_rgb is not None else reference_fill_rgb,
                 dark_residual_u8.astype(np.float32) / 255.0,
-                strength=0.98,
+                strength=1.0,
             )
     cleaned = self._overlay_reference_cloth_fill(
         cleaned,
@@ -4649,6 +4649,94 @@ def _build_final_source_cloth_rescue_mask(
                 center_support_u8 = cv2.bitwise_and(center_support_u8, candidate_cloth_u8)
                 if int((center_support_u8 > 0).sum()) >= 24:
                     short_restore_gate_u8 = cv2.bitwise_or(short_restore_gate_u8, center_support_u8)
+        center_dark_column_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+        center_column_half_w = max(24, int(face_w * 0.28))
+        center_column_left = max(0, cx - center_column_half_w)
+        center_column_right = min(W, cx + center_column_half_w)
+        center_column_top = max(top, int(cutoff_y + face_h * 0.02))
+        center_column_bottom = min(bottom, int(cutoff_y + face_h * 1.42))
+        if (
+            center_column_top < center_column_bottom
+            and center_column_left < center_column_right
+        ):
+            center_dark_column_gate_u8[
+                center_column_top:center_column_bottom,
+                center_column_left:center_column_right,
+            ] = 255
+            center_dark_column_u8 = (
+                (
+                    (
+                        (current_gray + 14.0 < source_gray)
+                        | (gray_delta > 12.0)
+                        | (diff_rgb > 11.0)
+                        | (
+                            ((current_blur - current_gray) > 2.0)
+                            & (diff_rgb > 8.5)
+                        )
+                    )
+                    & (current_sat < 152.0)
+                ).astype(np.uint8)
+                * 255
+            )
+            center_dark_column_u8 = cv2.bitwise_and(
+                center_dark_column_u8,
+                center_dark_column_gate_u8,
+            )
+            center_dark_column_u8 = cv2.bitwise_and(
+                center_dark_column_u8,
+                candidate_cloth_u8,
+            )
+            center_dark_column_u8 = cv2.bitwise_and(
+                center_dark_column_u8,
+                removal_u8,
+            )
+            center_dark_column_u8 = cv2.morphologyEx(
+                center_dark_column_u8,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 27)),
+            )
+            center_dark_column_u8 = cv2.dilate(
+                center_dark_column_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 13)),
+                iterations=1,
+            )
+            if int((center_dark_column_u8 > 0).sum()) >= 24:
+                filtered_center_dark_u8 = np.zeros((H, W), dtype=np.uint8)
+                num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+                    center_dark_column_u8,
+                    8,
+                )
+                max_center_width = max(64, int(face_w * 0.34))
+                min_center_height = max(26, int(face_h * 0.18))
+                min_center_area = max(24, int(face_w * face_h * 0.003))
+                max_center_offset = max(18, int(face_w * 0.18))
+                for idx in range(1, num_labels):
+                    x = int(stats[idx, cv2.CC_STAT_LEFT])
+                    y = int(stats[idx, cv2.CC_STAT_TOP])
+                    w = int(stats[idx, cv2.CC_STAT_WIDTH])
+                    h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+                    area = int(stats[idx, cv2.CC_STAT_AREA])
+                    bottom_y = y + h
+                    comp_cx = float(centroids[idx][0])
+                    if area < min_center_area:
+                        continue
+                    if w > max_center_width or h < min_center_height:
+                        continue
+                    if bottom_y < int(cutoff_y + face_h * 0.20):
+                        continue
+                    if abs(comp_cx - cx) > max_center_offset:
+                        continue
+                    filtered_center_dark_u8[labels == idx] = 255
+                if int((filtered_center_dark_u8 > 0).sum()) >= 24:
+                    filtered_center_dark_u8 = cv2.dilate(
+                        filtered_center_dark_u8,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 17)),
+                        iterations=1,
+                    )
+                    short_restore_gate_u8 = cv2.bitwise_or(
+                        short_restore_gate_u8,
+                        filtered_center_dark_u8,
+                    )
         if int((short_restore_gate_u8 > 0).sum()) > 0:
             keep_u8 = cv2.bitwise_and(keep_u8, short_restore_gate_u8)
             pre_tone_keep_u8 = cv2.bitwise_and(pre_tone_keep_u8, short_restore_gate_u8)
