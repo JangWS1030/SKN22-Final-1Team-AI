@@ -5430,6 +5430,19 @@ class MirrAISDPipeline:
                                     neck_preserve_mask=short_cloth_neck_preserve_mask,
                                 )
                         if hair_length == "short":
+                            under_jaw_crop_fallback_u8 = (
+                                (
+                                    np.clip(under_jaw_cloth_refine_mask.astype(np.float32), 0.0, 1.0) > 0.08
+                                ).astype(np.uint8)
+                                * 255
+                            )
+                            if (
+                                int((under_jaw_crop_fallback_u8 > 0).sum()) >= 80
+                                and int((short_under_jaw_crop_refine_mask > 0.08).sum())
+                                < max(72, int((under_jaw_crop_fallback_u8 > 0).sum()) // 3)
+                            ):
+                                short_under_jaw_crop_refine_mask = under_jaw_cloth_refine_mask
+                                short_under_jaw_crop_control_rgb = None
                             short_under_jaw_front_plate_mask = np.zeros(final_bgr.shape[:2], dtype=np.float32)
                             if short_under_jaw_crop_refine_mask is not None:
                                 short_under_jaw_front_plate_mask = self._build_short_under_jaw_front_plate_mask(
