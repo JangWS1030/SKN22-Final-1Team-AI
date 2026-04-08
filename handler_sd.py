@@ -84,19 +84,48 @@ MASK_DEBUG_KEYWORDS = (
 )
 
 _IMPORT_ERROR: Optional[str] = None
+MirrAISDPipeline = None
+SDInpaintConfig = None
 try:
     import cv2
     import numpy as np
     from PIL import Image
-    from pipeline_sd_inpainting import MirrAISDPipeline, SDInpaintConfig
 except Exception as _e:
     _IMPORT_ERROR = f"{type(_e).__name__}: {_e}\n{traceback.format_exc()}"
     logger.error(f"[handler_sd] import 실패:\n{_IMPORT_ERROR}")
 
 
+def _ensure_pipeline_module_imported() -> None:
+    global _IMPORT_ERROR, MirrAISDPipeline, SDInpaintConfig
+
+    if MirrAISDPipeline is not None and SDInpaintConfig is not None:
+        return
+    if _IMPORT_ERROR:
+        raise RuntimeError(_IMPORT_ERROR)
+
+    started = time.time()
+    try:
+        from pipeline_sd_inpainting import (
+            MirrAISDPipeline as _MirrAISDPipeline,
+            SDInpaintConfig as _SDInpaintConfig,
+        )
+    except Exception as _e:
+        _IMPORT_ERROR = f"{type(_e).__name__}: {_e}\n{traceback.format_exc()}"
+        logger.error(f"[handler_sd] pipeline import 실패:\n{_IMPORT_ERROR}")
+        raise RuntimeError(_IMPORT_ERROR) from _e
+
+    MirrAISDPipeline = _MirrAISDPipeline
+    SDInpaintConfig = _SDInpaintConfig
+    logger.info(
+        "[handler_sd] pipeline module import 완료 (%.2fs)",
+        time.time() - started,
+    )
+
+
 def _get_pipeline() -> "MirrAISDPipeline":
     global _PIPELINE
     if _PIPELINE is None:
+        _ensure_pipeline_module_imported()
         logger.info("[handler_sd] 모델 다운로드 확인 중 (cold start)...")
         try:
             from runtime_download import ensure_models_cached
@@ -713,6 +742,13 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             response["intermediates"] = intermediates
         if intermediate_data:
             response["intermediate_data"] = intermediate_data
+        
+        try:
+            resp_json_len = len(json.dumps(response))
+            logger.info(f"[handler_sd] 응답 생성 완료: json_len={resp_json_len}")
+        except:
+            pass
+            
         return response
 
     except Exception as e:
@@ -777,6 +813,18 @@ if __name__ == "__main__":
 
     preload_flag = str(os.environ.get("MIRRAI_PRELOAD_ON_STARTUP", "")).strip().lower()
     should_preload = preload_flag in {"1", "true", "yes", "on"}
+    is_runpod_serverless = bool(os.environ.get("RUNPOD_ENDPOINT_ID"))
+    force_serverless_preload = str(os.environ.get("MIRRAI_FORCE_SERVERLESS_PRELOAD", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if should_preload and is_runpod_serverless and not force_serverless_preload:
+        logger.info(
+            "[handler_sd] serverless startup preload disabled; pipeline will load on first request"
+        )
+        should_preload = False
     if not should_preload:
         logger.info("[handler_sd] startup preload skipped; pipeline will load on first request")
         import runpod

@@ -13,6 +13,7 @@
 ## 핵심 파일
 
 - `handler_sd.py`: RunPod serverless 엔트리포인트 (EP0~EP3 라우팅)
+- `internal_api_app.py`: `/internal/...` HTTP facade 엔트리포인트
 - `pipeline_sd_inpainting.py`: 실제 SD 추론 파이프라인
 - `pipeline_sd_components/`: `pipeline_sd_inpainting.py`에서 분리한 로딩 / 프롬프트 / 후처리 모듈
 - `style_recommender.py`: 얼굴형 + 취향벡터 → 스타일 추천 엔진 (ChromaDB 코사인 유사도)
@@ -32,10 +33,20 @@
 - ControlNet canny
 - IP-Adapter face
 
+### short/medium 의상 전면 처리 순서
+
+- `source_garment_prepass_mask`로 torso-front / chest-center 의상 복원 영역을 먼저 확보
+- `upper_clothes_overwrite`와 short 전용 torso repaint seed를 prepass / guard release에 선반영
+- 이후 본 SD inpainting에서 short/medium silhouette를 생성
+- 마지막에 `short_lower_tail_cleanup`, `short_lower_cloth_hard_override`, `final_source_cloth_rescue` 같은 후처리로 잔존 artifact를 정리
+
+즉 현재 short/medium 경로는 "생성 후 의상 복원만 하는 구조"가 아니라, 의상 전면 복원 마스크를 먼저 열어두고 본 생성과 후처리를 이어가는 구조입니다.
+
 ## 최근 업데이트 반영
 
 - **입력 이미지 표준화**: `enable_input_standardization` 로직 추가로 인물 중심 스튜디오 비율 최적화 지원
 - **단발/중단발 마스크 개선**: 얼굴/목/가슴 영역 세분화를 통한 의상(어깨 선, 밝은 옷 등) 및 피부 보존/복원 로직 대폭 강화
+- **source garment prepass 확장**: short 변환에서 torso hair side-column까지 prepass / bridge / ControlNet suppression 경로에 반영
 - **RunPod 환경 및 모니터링 대응**: `$RUNPOD_POD_ID` 등 웹훅 환경 변수 자동 정규화, API 응답에 빌드 태그 및 노드 메타 정보 추가
 - **디버그 마스크 응답 강화**: 여러 마스크를 분리하여 확인할 수 있도록 핸들러 리턴 구조 개편
 
@@ -84,6 +95,14 @@ python -m pip install -r requirements-trends.txt
 - `docs/rag_pipeline.md`: 통합된 크롤링/RAG 서브시스템 실행 가이드
 - `docs/rag_evaluation.md`: stylist-rag와 no-rag 비교 평가 결과
 - `docs/pipeline_runtime_config.md`: 현재 파이프라인이 실제로 읽는 runtime config 기준 문서
+- `docs/internal_ai_service_api.md`: backend 연동용 내부 AI 서비스 API 계약
+
+## Internal AI Service Base URL
+
+- 개발: `MIRRAI_AI_SERVICE_URL=http://localhost:8000`
+- 운영: `MIRRAI_AI_SERVICE_URL=https://mirrai.shop`
+- backend는 위 base URL 뒤에 `/internal/health`, `/internal/analyze-face`, `/internal/generate-simulations`, `/internal/explain-style`를 붙여 호출합니다.
+- 내부 API는 path versioning 없이 `/internal/...`를 사용하고, 선택적으로 `X-MirrAI-API-Version` 헤더를 받을 수 있습니다.
 
 ## RunPod API 엔드포인트
 

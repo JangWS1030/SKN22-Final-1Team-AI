@@ -1,0 +1,1 @@
+{"build_tag": "v116", "cuda": {"available": true, "device": "NVIDIA GeForce RTX 5090"}, "runpod": {"endpoint_id": "osx3h43c9ujtv8", "gpu_type_id": "ADA_32_PRO", "pod_id": "qctzyzsgtgisw2"}, "status": "ok"}

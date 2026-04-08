@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import socket
 import time
 import uuid
@@ -57,9 +58,15 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "ok",
         "mode": "runpod_diag",
+        "build_tag": os.environ.get("MIRRAI_BUILD_TAG", "unknown"),
         "hostname": socket.gethostname(),
         "pid": os.getpid(),
+        "python_version": sys.version.split()[0],
         "input_keys": sorted(inp.keys()),
+        "runtime": {
+            "handler_file": os.environ.get("RUNPOD_HANDLER_FILE", "handler_sd.py"),
+            "preload_on_startup": os.environ.get("MIRRAI_PRELOAD_ON_STARTUP", ""),
+        },
         "runpod": {
             "endpoint_id": os.environ.get("RUNPOD_ENDPOINT_ID"),
             "pod_id": os.environ.get("RUNPOD_POD_ID"),

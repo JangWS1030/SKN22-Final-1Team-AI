@@ -12,6 +12,7 @@ on:
       - "Dockerfile.sd.app"
       - "entrypoint_sd.sh"
       - "handler_sd.py"
+      - "internal_api_app.py"
       - "handler_runpod_diag.py"
       - "pipeline_sd_inpainting.py"
       - "pipeline_sd_components/**"

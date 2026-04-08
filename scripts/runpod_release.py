@@ -255,7 +255,37 @@ def resolve_target_image(
     return f"{repository}:{image_tag}"
 
 
+def normalize_template_env(env_value: Any) -> dict[str, str]:
+    if isinstance(env_value, dict):
+        return {
+            str(key): str(value)
+            for key, value in env_value.items()
+            if key is not None and value is not None
+        }
+    if isinstance(env_value, list):
+        normalized: dict[str, str] = {}
+        for item in env_value:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key")
+            value = item.get("value")
+            if key is None or value is None:
+                continue
+            normalized[str(key)] = str(value)
+        return normalized
+    return {}
+
+
 def build_template_update_payload(template: dict[str, Any], target_image: str) -> dict[str, Any]:
+    return build_template_update_payload_with_env(template, target_image, handler_file=None)
+
+
+def build_template_update_payload_with_env(
+    template: dict[str, Any],
+    target_image: str,
+    *,
+    handler_file: str | None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {"imageName": target_image}
     passthrough_keys = (
         "name",
@@ -273,7 +303,16 @@ def build_template_update_payload(template: dict[str, Any], target_image: str) -
 
     for key in passthrough_keys:
         if key in template and template[key] is not None:
-            payload[key] = template[key]
+            if key == "env":
+                normalized_env = normalize_template_env(template[key])
+                normalized_env["MIRRAI_PRELOAD_ON_STARTUP"] = "0"
+                if handler_file:
+                    normalized_env["RUNPOD_HANDLER_FILE"] = handler_file
+                else:
+                    normalized_env.pop("RUNPOD_HANDLER_FILE", None)
+                payload[key] = normalized_env
+            else:
+                payload[key] = template[key]
     return payload
 
 
@@ -411,6 +450,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", default=None, help="Full Docker image name to release.")
     parser.add_argument("--image-tag", default=None, help="Docker tag to release with the inferred repository.")
     parser.add_argument("--image-repo", default=None, help="Override Docker repository when using --image-tag.")
+    parser.add_argument(
+        "--handler-file",
+        default=None,
+        help="Override RUNPOD_HANDLER_FILE in the template env for diagnostic/serverless routing.",
+    )
     parser.add_argument("--timeout", type=int, default=1200, help="Total timeout in seconds. Default: 1200.")
     parser.add_argument("--poll-interval", type=int, default=5, help="Polling interval in seconds. Default: 5.")
     parser.add_argument("--skip-health-check", action="store_true", help="Skip handler-level health check.")
@@ -465,7 +509,11 @@ def main() -> int:
         print("[release] target image already active on the bound template. Nothing to change.")
         return 0
 
-    update_payload = build_template_update_payload(template, target_image)
+    update_payload = build_template_update_payload_with_env(
+        template,
+        target_image,
+        handler_file=normalize_optional_value(args.handler_file),
+    )
     if args.dry_run:
         print("[dry-run] template update payload:")
         print(json.dumps(redact_for_display(update_payload), ensure_ascii=False, indent=2))

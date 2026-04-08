@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from pipeline_sd_inpainting import (
+from .config import (
     CLOTH_CLASS_IDX,
     CONTROLNET_MODEL_ID,
     _clean_optional_env_text,
@@ -48,8 +48,9 @@ from pipeline_sd_inpainting import (
     _NEGATIVE_BASE,
     _NO_COLOR_HINTS,
     _SHORT_HAIR_KEYWORDS,
-    logger,
 )
+
+logger = logging.getLogger(__name__)
 
 # Extracted from pipeline_sd_inpainting.py to keep MirrAISDPipeline smaller.
 
