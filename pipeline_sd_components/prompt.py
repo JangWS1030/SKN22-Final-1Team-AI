@@ -878,8 +878,8 @@ def _build_prompt(
     if preserve_source_garment:
         garment_positive_parts.extend([
             "same original upper garment",
-            "connected shoulder cloth",
-            "continuous front garment panel",
+            "natural shoulder garment continuity",
+            "consistent upper garment shape",
             "preserved neckline coverage",
         ])
         garment_negative_parts.extend([
@@ -908,31 +908,27 @@ def _build_prompt(
     material_hint = str(garment_hints.get("material_hint") or "").strip().lower()
     neckline_hint = str(garment_hints.get("neckline_hint") or "").strip().lower()
 
-    # v111_ablation: Simplify/Anchor to plain white smooth front panel
-    garment_priority_parts.append("plain white smooth front panel")
     garment_negative_parts.extend([
         "armor-like chest panel",
         "bib-like front panel",
         "structured breastplate top",
         "warped clothing",
     ])
-    # The rest of the dynamic logic is disabled for this ablation study
-    """
     if color_conf >= 0.45:
         if color_name == "white":
-            garment_priority_parts.append("clean white tone")
+            garment_priority_parts.append("clean white upper garment")
         elif color_name in {"ivory", "cream", "beige"}:
-            garment_priority_parts.append("soft off-white tone")
+            garment_priority_parts.append("soft light upper garment tone")
     if pattern_conf >= 0.68:
         if pattern_type == "solid":
-            garment_priority_parts.append("plain unpatterned shirt")
+            garment_priority_parts.append("plain unpatterned upper garment")
         elif pattern_type == "ribbed":
-            garment_priority_parts.append("subtle cotton texture")
+            garment_priority_parts.append("subtle ribbed fabric texture")
         elif pattern_type == "textured":
             garment_priority_parts.append("light fabric texture")
     if material_conf >= 0.72:
         if material_hint == "smooth fabric":
-            garment_priority_parts.append("soft cotton fabric")
+            garment_priority_parts.append("soft smooth fabric")
         elif material_hint == "ribbed knit":
             garment_priority_parts.append("fine rib texture")
     if neckline_conf >= 0.56 and neckline_hint == "round":
@@ -943,7 +939,6 @@ def _build_prompt(
             "plunging neckline",
             "wide v-neck blouse",
         ])
-    """
 
     negative_color_hints = garment_hints.get("negative_color_hints")
     if isinstance(negative_color_hints, list) and color_name in {"white", "ivory", "cream", "beige"}:
@@ -971,7 +966,7 @@ def _build_prompt(
         seen_negative.add(key)
         deduped_negative_parts.append(str(part).strip())
 
-    garment_positive_hint = ", ".join(deduped_positive_parts[:5])
+    garment_positive_hint = ", ".join(deduped_positive_parts[:3])
     garment_negative_hint = ", ".join(deduped_negative_parts)
     if garment_negative_hint:
         garment_negative_hint += ", "
