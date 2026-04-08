@@ -1285,7 +1285,7 @@ class MirrAISDPipeline:
                 hair_length=hair_length,
                 debug_outputs=(
                     lower_tail_post_debug_masks
-                    if debug_images_common is not None and rank == 0
+                    if debug_images_common is not None
                     else None
                 ),
             )
