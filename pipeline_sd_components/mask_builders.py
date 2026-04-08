@@ -4840,6 +4840,46 @@ def _build_lower_hair_tail_support_mask(
             continue
         keep_u8 = cv2.bitwise_or(keep_u8, comp_u8)
 
+    fallback_seed_u8 = cv2.bitwise_and(hair_u8, corridor_u8)
+    fallback_seed_u8[:max(0, int(y2 + face_h * 0.02)), :] = 0
+    if int((fallback_seed_u8 > 0).sum()) >= 40:
+        fallback_keep_u8 = np.zeros((H, W), dtype=np.uint8)
+        fallback_labels, fallback_cc, fallback_stats, fallback_centroids = cv2.connectedComponentsWithStats(
+            fallback_seed_u8,
+            8,
+        )
+        fallback_min_area = max(36, int(face_w * face_h * 0.0024))
+        fallback_min_height = max(min_height, int(face_h * 0.22))
+        fallback_max_area = max(max_area * 4, int(face_w * face_h * 0.88))
+        face_cx = float(0.5 * (x1 + x2))
+        for idx in range(1, fallback_labels):
+            x = int(fallback_stats[idx, cv2.CC_STAT_LEFT])
+            y = int(fallback_stats[idx, cv2.CC_STAT_TOP])
+            w = int(fallback_stats[idx, cv2.CC_STAT_WIDTH])
+            h = int(fallback_stats[idx, cv2.CC_STAT_HEIGHT])
+            area = int(fallback_stats[idx, cv2.CC_STAT_AREA])
+            if area < fallback_min_area or area > fallback_max_area:
+                continue
+            if h < fallback_min_height:
+                continue
+            if (y + h) < min_tail_bottom:
+                continue
+            comp_cx = float(fallback_centroids[idx][0])
+            is_side_component = abs(comp_cx - face_cx) > max(14, int(face_w * 0.16))
+            is_front_strand = (
+                abs(comp_cx - face_cx) <= max(18, int(face_w * 0.18))
+                and w <= max(34, int(face_w * 0.30))
+                and h >= max(28, int(face_h * 0.18))
+            )
+            if not is_side_component and not is_front_strand:
+                continue
+            if w > max(56, int(face_w * 0.46)) and not is_front_strand:
+                continue
+            comp_u8 = (fallback_cc == idx).astype(np.uint8) * 255
+            fallback_keep_u8 = cv2.bitwise_or(fallback_keep_u8, comp_u8)
+        if int((fallback_keep_u8 > 0).sum()) >= 20:
+            keep_u8 = cv2.bitwise_or(keep_u8, fallback_keep_u8)
+
     if int((keep_u8 > 0).sum()) < 20:
         return np.zeros((H, W), dtype=np.float32)
 
@@ -5267,7 +5307,7 @@ def _build_lower_tail_removal_extension_mask(
 
     filtered_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(support_u8, 8)
-    max_area = max(360, int(face_w * face_h * (0.18 if hair_length == "short" else 0.14)))
+    max_area = max(360, int(face_w * face_h * (0.42 if hair_length == "short" else 0.14)))
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
         y = int(stats[idx, cv2.CC_STAT_TOP])
@@ -5288,15 +5328,22 @@ def _build_lower_tail_removal_extension_mask(
             and w <= max(22, int(face_w * 0.26))
             and h >= max(24, int(face_h * 0.18))
         )
-        if base_overlap < 8 and not is_front_strand:
+        anchored_side_component = (
+            hair_length == "short"
+            and is_side_component
+            and h >= max(28, int(face_h * 0.24))
+            and w <= max(48, int(face_w * 0.44))
+            and area <= max(680, int(face_w * face_h * 0.16))
+        )
+        if base_overlap < 8 and not is_front_strand and not anchored_side_component:
             continue
         if hair_length == "short":
-            if w > max(34, int(face_w * 0.34)) and not is_front_strand:
+            if w > max(48, int(face_w * 0.44)) and not is_front_strand:
                 continue
             if is_side_component:
-                if base_overlap < max(18, int(area * 0.18)) and front_overlap < 12:
+                if base_overlap < max(12, int(area * 0.08)) and front_overlap < 12 and not anchored_side_component:
                     continue
-                if area > max(132, int(face_w * face_h * 0.050)):
+                if area > max(680, int(face_w * face_h * 0.16)):
                     continue
         filtered_u8 = cv2.bitwise_or(filtered_u8, comp_u8)
 
