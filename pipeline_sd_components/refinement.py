@@ -777,6 +777,28 @@ def _restrict_short_removal_to_tail_lanes(
     if center_support_mask is not None and center_support_mask.shape == (H, W):
         center_seed_u8 = (np.clip(center_support_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
 
+    if int((side_seed_u8 > 0).sum()) < 24:
+        removal_side_seed_u8 = np.zeros((H, W), dtype=np.uint8)
+        seed_top = max(0, int(cutoff_y + face_h * 0.08))
+        seed_bottom = min(H, int(cutoff_y + face_h * 1.52))
+        left_outer = max(0, int(x1 - face_w * 0.30))
+        left_inner = min(W, int(x1 + face_w * 0.02))
+        right_inner = max(0, int(x2 - face_w * 0.02))
+        right_outer = min(W, int(x2 + face_w * 0.30))
+        if seed_top < seed_bottom:
+            if left_outer < left_inner:
+                removal_side_seed_u8[seed_top:seed_bottom, left_outer:left_inner] = 255
+            if right_inner < right_outer:
+                removal_side_seed_u8[seed_top:seed_bottom, right_inner:right_outer] = 255
+        removal_side_seed_u8 = cv2.bitwise_and(removal_side_seed_u8, removal_u8)
+        if int((removal_side_seed_u8 > 0).sum()) >= 24:
+            removal_side_seed_u8 = cv2.morphologyEx(
+                removal_side_seed_u8,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 17)),
+            )
+            side_seed_u8 = cv2.bitwise_or(side_seed_u8, removal_side_seed_u8)
+
     if int((side_seed_u8 > 0).sum()) < 24 and int((center_seed_u8 > 0).sum()) < 12:
         return np.clip(removal_mask, 0.0, 1.0).astype(np.float32)
 

@@ -5109,6 +5109,7 @@ def _build_lower_tail_post_support_mask(
     *,
     support_mask: np.ndarray,
     cloth_mask: Optional[np.ndarray],
+    torso_hair_mask: Optional[np.ndarray],
     face_bbox: Tuple[int, int, int, int],
     cutoff_y: int,
     hair_length: str,
@@ -5124,13 +5125,13 @@ def _build_lower_tail_post_support_mask(
 
     support_u8 = (np.clip(support_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
     if int((support_u8 > 0).sum()) < 12:
-        return np.zeros((H, W), dtype=np.float32)
+        support_u8 = np.zeros((H, W), dtype=np.uint8)
 
     corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    x_min = max(0, int(x1 - face_w * (0.98 if hair_length == "short" else 0.92)))
-    x_max = min(W, int(x2 + face_w * (0.98 if hair_length == "short" else 0.92)))
+    x_min = max(0, int(x1 - face_w * (1.08 if hair_length == "short" else 0.92)))
+    x_max = min(W, int(x2 + face_w * (1.08 if hair_length == "short" else 0.92)))
     y_min = max(0, int(cutoff_y + face_h * (0.02 if hair_length == "short" else 0.00)))
-    y_max = min(H, int(cutoff_y + face_h * (0.84 if hair_length == "short" else 0.76)))
+    y_max = min(H, int(cutoff_y + face_h * (1.46 if hair_length == "short" else 0.76)))
     if x_min >= x_max or y_min >= y_max:
         return np.zeros((H, W), dtype=np.float32)
     corridor_u8[y_min:y_max, x_min:x_max] = 255
@@ -5141,7 +5142,7 @@ def _build_lower_tail_post_support_mask(
     center_keepout_u8 = np.zeros((H, W), dtype=np.uint8)
     center_half = max(16, int(face_w * (0.18 if hair_length == "short" else 0.16)))
     keepout_top = max(0, int(cutoff_y - face_h * 0.02))
-    keepout_bottom = min(H, int(cutoff_y + face_h * (0.96 if hair_length == "short" else 0.80)))
+    keepout_bottom = min(H, int(cutoff_y + face_h * (1.18 if hair_length == "short" else 0.80)))
     if keepout_top < keepout_bottom:
         center_keepout_u8[
             keepout_top:keepout_bottom,
@@ -5150,6 +5151,35 @@ def _build_lower_tail_post_support_mask(
         support_u8 = cv2.bitwise_and(support_u8, cv2.bitwise_not(center_keepout_u8))
 
     support_raw_u8 = support_u8.copy()
+    torso_side_support_u8 = np.zeros((H, W), dtype=np.uint8)
+    if hair_length == "short" and torso_hair_mask is not None and torso_hair_mask.shape == (H, W):
+        torso_u8 = (np.clip(torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+        torso_u8 = cv2.bitwise_and(torso_u8, corridor_u8)
+        torso_u8[:max(0, int(cutoff_y + face_h * 0.06)), :] = 0
+        side_lane_u8 = np.zeros((H, W), dtype=np.uint8)
+        lane_top = max(0, int(cutoff_y + face_h * 0.08))
+        lane_bottom = min(H, int(cutoff_y + face_h * 1.52))
+        left_outer = max(0, int(x1 - face_w * 0.30))
+        left_inner = min(W, int(x1 + face_w * 0.02))
+        right_inner = max(0, int(x2 - face_w * 0.02))
+        right_outer = min(W, int(x2 + face_w * 0.30))
+        if lane_top < lane_bottom:
+            if left_outer < left_inner:
+                side_lane_u8[lane_top:lane_bottom, left_outer:left_inner] = 255
+            if right_inner < right_outer:
+                side_lane_u8[lane_top:lane_bottom, right_inner:right_outer] = 255
+        torso_side_support_u8 = cv2.bitwise_and(torso_u8, side_lane_u8)
+        torso_side_support_u8 = cv2.morphologyEx(
+            torso_side_support_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 19)),
+        )
+        torso_side_support_u8 = cv2.dilate(
+            torso_side_support_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 13)),
+            iterations=1,
+        )
+        torso_side_support_u8 = cv2.bitwise_and(torso_side_support_u8, corridor_u8)
 
     if cloth_mask is not None and cloth_mask.shape == (H, W):
         cloth_near_u8 = cv2.dilate(
@@ -5158,6 +5188,18 @@ def _build_lower_tail_post_support_mask(
             iterations=1,
         )
         support_u8 = cv2.bitwise_and(support_u8, cloth_near_u8)
+        if int((torso_side_support_u8 > 0).sum()) > 0:
+            torso_side_support_u8 = cv2.bitwise_and(
+                torso_side_support_u8,
+                cv2.bitwise_or(
+                    cloth_near_u8,
+                    cv2.dilate(
+                        support_raw_u8,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+                        iterations=1,
+                    ),
+                ),
+            )
         if hair_length == "short":
             raw_px = int((support_raw_u8 > 0).sum())
             cloth_px = int((support_u8 > 0).sum())
@@ -5179,6 +5221,8 @@ def _build_lower_tail_post_support_mask(
                         side_deep_u8[deep_top:deep_bottom, right_inner:right_outer] = 255
                 fallback_u8 = cv2.bitwise_and(fallback_u8, side_deep_u8)
                 support_u8 = cv2.bitwise_or(support_u8, fallback_u8)
+    if hair_length == "short" and int((torso_side_support_u8 > 0).sum()) > 0:
+        support_u8 = cv2.bitwise_or(support_u8, torso_side_support_u8)
 
     if int((support_u8 > 0).sum()) < 12:
         return np.zeros((H, W), dtype=np.float32)
@@ -5201,11 +5245,11 @@ def _build_lower_tail_post_support_mask(
 
     filtered_u8 = np.zeros((H, W), dtype=np.uint8)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(support_u8, 8)
-    max_area = max(320, int(face_w * face_h * (0.16 if hair_length == "short" else 0.14)))
-    max_width = max(26, int(face_w * (0.22 if hair_length == "short" else 0.20)))
-    min_height = max(22, int(face_h * (0.16 if hair_length == "short" else 0.14)))
-    min_bottom = int(cutoff_y + face_h * (0.14 if hair_length == "short" else 0.08))
-    max_offset = max(28, int(face_w * 0.82))
+    max_area = max(640, int(face_w * face_h * (0.44 if hair_length == "short" else 0.14)))
+    max_width = max(34, int(face_w * (0.34 if hair_length == "short" else 0.20)))
+    min_height = max(24, int(face_h * (0.22 if hair_length == "short" else 0.14)))
+    min_bottom = int(cutoff_y + face_h * (0.10 if hair_length == "short" else 0.08))
+    max_offset = max(34, int(face_w * 1.04))
     for idx in range(1, num_labels):
         x = int(stats[idx, cv2.CC_STAT_LEFT])
         y = int(stats[idx, cv2.CC_STAT_TOP])

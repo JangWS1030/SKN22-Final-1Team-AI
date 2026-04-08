@@ -1278,6 +1278,7 @@ class MirrAISDPipeline:
             lower_tail_support_for_post = self._build_lower_tail_post_support_mask(
                 support_mask=lower_tail_support_mask,
                 cloth_mask=cloth_mask_dilated,
+                torso_hair_mask=source_torso_hair_mask,
                 face_bbox=face_bbox,
                 cutoff_y=cutoff_y,
                 hair_length=hair_length,
