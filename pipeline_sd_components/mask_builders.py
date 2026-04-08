@@ -5202,29 +5202,60 @@ def _build_lower_tail_post_support_mask(
                     ),
                 ),
             )
-            if hair_length == "short":
-                raw_torso_px = int((torso_side_support_raw_u8 > 0).sum())
-                filtered_torso_px = int((torso_side_support_u8 > 0).sum())
-                if raw_torso_px >= 80 and filtered_torso_px < max(24, int(raw_torso_px * 0.28)):
-                    torso_side_rescue_u8 = torso_side_support_raw_u8.copy()
-                    rescue_corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-                    rescue_top = max(0, int(cutoff_y + face_h * 0.18))
-                    rescue_bottom = min(H, int(cutoff_y + face_h * 1.52))
-                    rescue_left_outer = max(0, int(x1 - face_w * 0.54))
-                    rescue_left_inner = max(rescue_left_outer + 1, int(cx - face_w * 0.14))
-                    rescue_right_inner = min(W - 1, int(cx + face_w * 0.14))
-                    rescue_right_outer = min(W, int(x2 + face_w * 0.54))
-                    if rescue_top < rescue_bottom:
-                        if rescue_left_outer < rescue_left_inner:
-                            rescue_corridor_u8[rescue_top:rescue_bottom, rescue_left_outer:rescue_left_inner] = 255
-                        if rescue_right_inner < rescue_right_outer:
-                            rescue_corridor_u8[rescue_top:rescue_bottom, rescue_right_inner:rescue_right_outer] = 255
-                    torso_side_rescue_u8 = cv2.bitwise_and(torso_side_rescue_u8, rescue_corridor_u8)
-                    torso_side_rescue_u8 = cv2.morphologyEx(
-                        torso_side_rescue_u8,
+            if hair_length == "short" and int((torso_side_support_raw_u8 > 0).sum()) >= 80:
+                rescue_top = max(0, int(cutoff_y + face_h * 0.18))
+                rescue_bottom = min(H, int(cutoff_y + face_h * 1.52))
+                rescue_corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+                rescue_left_outer = max(0, int(x1 - face_w * 0.54))
+                rescue_left_inner = max(rescue_left_outer + 1, int(cx - face_w * 0.14))
+                rescue_right_inner = min(W - 1, int(cx + face_w * 0.14))
+                rescue_right_outer = min(W, int(x2 + face_w * 0.54))
+                if rescue_top < rescue_bottom:
+                    if rescue_left_outer < rescue_left_inner:
+                        rescue_corridor_u8[rescue_top:rescue_bottom, rescue_left_outer:rescue_left_inner] = 255
+                    if rescue_right_inner < rescue_right_outer:
+                        rescue_corridor_u8[rescue_top:rescue_bottom, rescue_right_inner:rescue_right_outer] = 255
+
+                num_torso_labels, torso_labels, torso_stats, torso_centroids = cv2.connectedComponentsWithStats(
+                    (torso_side_support_raw_u8 > 0).astype(np.uint8),
+                    8,
+                )
+                torso_side_rescue_u8 = np.zeros((H, W), dtype=np.uint8)
+                for torso_idx in range(1, num_torso_labels):
+                    comp_area = int(torso_stats[torso_idx, cv2.CC_STAT_AREA])
+                    if comp_area < 80:
+                        continue
+                    comp_width = int(torso_stats[torso_idx, cv2.CC_STAT_WIDTH])
+                    comp_height = int(torso_stats[torso_idx, cv2.CC_STAT_HEIGHT])
+                    comp_bottom = int(torso_stats[torso_idx, cv2.CC_STAT_TOP] + comp_height)
+                    comp_cx = float(torso_centroids[torso_idx][0])
+                    if comp_width > max(52, int(face_w * 0.46)):
+                        continue
+                    if comp_height < max(26, int(face_h * 0.18)):
+                        continue
+                    if comp_bottom < int(cutoff_y + face_h * 0.28):
+                        continue
+                    if abs(comp_cx - cx) < max(16, int(face_w * 0.16)):
+                        continue
+
+                    comp_u8 = np.zeros((H, W), dtype=np.uint8)
+                    comp_u8[torso_labels == torso_idx] = 255
+                    comp_u8 = cv2.bitwise_and(comp_u8, rescue_corridor_u8)
+                    if int((comp_u8 > 0).sum()) < 40:
+                        continue
+
+                    filtered_overlap = int((cv2.bitwise_and(comp_u8, torso_side_support_u8) > 0).sum())
+                    if filtered_overlap >= max(18, int(comp_area * 0.18)):
+                        continue
+
+                    comp_u8 = cv2.morphologyEx(
+                        comp_u8,
                         cv2.MORPH_CLOSE,
                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 17)),
                     )
+                    torso_side_rescue_u8 = cv2.bitwise_or(torso_side_rescue_u8, comp_u8)
+
+                if int((torso_side_rescue_u8 > 0).sum()) > 0:
                     torso_side_support_u8 = cv2.bitwise_or(
                         torso_side_support_u8,
                         torso_side_rescue_u8,
