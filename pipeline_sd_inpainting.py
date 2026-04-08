@@ -3444,11 +3444,21 @@ class MirrAISDPipeline:
                     logger.warning(f"[SDPipeline] 색상 거리 계산 실패(무시): {e}")
 
             tail_penalty: Optional[float] = None
+            short_silhouette_penalty: Optional[float] = None
             if (
                 hair_length == "short"
                 and cutoff_y_for_post is not None
                 and removal_mask_for_post is not None
             ):
+                try:
+                    short_silhouette_penalty = self._estimate_short_silhouette_penalty(
+                        img_rgb=generated_resized_rgb,
+                        face_bbox=face_bbox,
+                        cutoff_y=cutoff_y_for_post,
+                        removal_mask=removal_mask_for_post,
+                    )
+                except Exception as e:
+                    logger.warning(f"[SDPipeline] short silhouette penalty 계산 실패(무시): {e}")
                 try:
                     post_rgb = cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB)
                     tail_penalty = self._estimate_short_tail_penalty(
@@ -3505,16 +3515,18 @@ class MirrAISDPipeline:
                 ),
                 "color_distance": color_distance,
                 "color_score": color_score,
+                "short_silhouette_penalty": short_silhouette_penalty,
                 "tail_penalty": tail_penalty,
                 "accessory_penalty": accessory_penalty,
                 "male_medium_fit_penalty": male_medium_fit_penalty,
                 "gen_idx": gen_idx,
             })
             logger.info(
-                "[SDPipeline] candidate postprocess done: idx=%d/%d seed=%d tail_penalty=%s accessory_penalty=%s",
+                "[SDPipeline] candidate postprocess done: idx=%d/%d seed=%d short_silhouette_penalty=%s tail_penalty=%s accessory_penalty=%s",
                 gen_idx + 1,
                 len(gen_images),
                 int(seed),
+                "none" if short_silhouette_penalty is None else f"{float(short_silhouette_penalty):.4f}",
                 "none" if tail_penalty is None else f"{float(tail_penalty):.4f}",
                 "none" if accessory_penalty is None else f"{float(accessory_penalty):.4f}",
             )
@@ -3555,20 +3567,50 @@ class MirrAISDPipeline:
                     logger.info("[SDPipeline] accessory penalty ranking applied")
 
         if hair_length == "short" and len(candidates) > 1:
+            silhouette_sortable = sum(c["short_silhouette_penalty"] is not None for c in candidates)
             tail_sortable = sum(c["tail_penalty"] is not None for c in candidates)
-            if tail_sortable >= 2:
+            accessory_sortable = sum(c["accessory_penalty"] is not None for c in candidates)
+            if silhouette_sortable >= 2 or tail_sortable >= 2 or accessory_sortable >= 2:
                 candidates.sort(
                     key=lambda c: (
-                        c["accessory_penalty"] is None,
-                        c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                        c["short_silhouette_penalty"] is None,
+                        c["short_silhouette_penalty"] if c["short_silhouette_penalty"] is not None else 1e9,
                         c["tail_penalty"] is None,
                         c["tail_penalty"] if c["tail_penalty"] is not None else 1e9,
+                        c["accessory_penalty"] is None,
+                        c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
                         c["color_distance"] is None,
                         c["color_distance"] if c["color_distance"] is not None else 1e9,
                         c["gen_idx"],
                     )
                 )
-                logger.info("[SDPipeline] short tail penalty ranking applied")
+                logger.info(
+                    "[SDPipeline] short candidate ranking applied (silhouette_sortable=%d tail_sortable=%d accessory_sortable=%d)",
+                    silhouette_sortable,
+                    tail_sortable,
+                    accessory_sortable,
+                )
+
+        if debug_data_common is not None:
+            diag = debug_data_common.setdefault("diagnostics", {})
+            diag["candidate_ranking"] = [
+                {
+                    "final_order": int(idx),
+                    "seed": int(c["seed"]),
+                    "gen_idx": int(c["gen_idx"]),
+                    "short_silhouette_penalty": (
+                        None
+                        if c["short_silhouette_penalty"] is None
+                        else float(c["short_silhouette_penalty"])
+                    ),
+                    "tail_penalty": None if c["tail_penalty"] is None else float(c["tail_penalty"]),
+                    "accessory_penalty": (
+                        None if c["accessory_penalty"] is None else float(c["accessory_penalty"])
+                    ),
+                    "color_distance": None if c["color_distance"] is None else float(c["color_distance"]),
+                }
+                for idx, c in enumerate(candidates)
+            ]
 
         results: List[SDInpaintResult] = []
         for rank, cand in enumerate(candidates[:requested_top_k]):
