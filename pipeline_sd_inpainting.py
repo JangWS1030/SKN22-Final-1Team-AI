@@ -5193,19 +5193,169 @@ class MirrAISDPipeline:
                             under_jaw_reference_rgb = source_cloth_reference_rgb
                             under_jaw_reference_source = "conditioned_source_cloth"
                     if hair_length == "short" and under_jaw_cloth_refine_px >= 140:
-                        under_jaw_reference_rgb, under_jaw_synthetic_plate_mask = (
-                            self._build_short_under_jaw_synthetic_garment_plate(
-                                current_rgb=final_rgb,
-                                source_rgb=under_jaw_reference_rgb,
-                                fill_mask=under_jaw_cloth_refine_mask,
-                                cloth_mask=cloth_reference_mask,
-                                face_bbox=face_bbox,
-                                cutoff_y=cutoff_y_for_post,
-                                preserve_mask=short_cloth_neck_preserve_mask,
-                            )
+                        short_under_jaw_plate_mask = self._build_short_under_jaw_crop_core_mask(
+                            fill_mask=under_jaw_cloth_refine_mask,
+                            cloth_mask=cloth_reference_mask,
+                            face_bbox=face_bbox,
+                            cutoff_y=cutoff_y_for_post,
+                            neck_preserve_mask=short_cloth_neck_preserve_mask,
                         )
-                        if float(under_jaw_synthetic_plate_mask.sum()) > 0.0:
-                            under_jaw_reference_source = "synthetic_plate"
+                        short_under_jaw_plate_u8 = (
+                            (np.clip(short_under_jaw_plate_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
+                            * 255
+                        )
+                        if int((short_under_jaw_plate_u8 > 0).sum()) >= 56:
+                            x1, y1, x2, y2 = face_bbox
+                            face_w = max(int(x2 - x1), 1)
+                            face_h = max(int(y2 - y1), 1)
+                            cx = int(0.5 * (x1 + x2))
+
+                            corridor_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                            top = max(0, int(cutoff_y_for_post + face_h * 0.02))
+                            upper_bottom = min(final_bgr.shape[0], int(cutoff_y_for_post + face_h * 0.28))
+                            lower_bottom = min(final_bgr.shape[0], int(cutoff_y_for_post + face_h * 0.98))
+                            upper_half_w = max(16, int(face_w * 0.20))
+                            lower_half_w = max(24, int(face_w * 0.32))
+                            if top < upper_bottom:
+                                corridor_u8[
+                                    top:upper_bottom,
+                                    max(0, cx - upper_half_w):min(final_bgr.shape[1], cx + upper_half_w),
+                                ] = 255
+                            if upper_bottom < lower_bottom:
+                                corridor_u8[
+                                    upper_bottom:lower_bottom,
+                                    max(0, cx - lower_half_w):min(final_bgr.shape[1], cx + lower_half_w),
+                                ] = 255
+                            cv2.ellipse(
+                                corridor_u8,
+                                (cx, min(final_bgr.shape[0] - 1, max(0, int(cutoff_y_for_post + face_h * 0.52)))),
+                                (max(22, int(face_w * 0.26)), max(12, int(face_h * 0.16))),
+                                0,
+                                0,
+                                360,
+                                255,
+                                thickness=-1,
+                            )
+                            short_under_jaw_plate_u8 = cv2.bitwise_and(short_under_jaw_plate_u8, corridor_u8)
+                            short_under_jaw_plate_u8 = cv2.morphologyEx(
+                                short_under_jaw_plate_u8,
+                                cv2.MORPH_CLOSE,
+                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+                            )
+                            short_under_jaw_plate_u8 = cv2.dilate(
+                                short_under_jaw_plate_u8,
+                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 9)),
+                                iterations=1,
+                            )
+                            if cloth_reference_mask is not None and cloth_reference_mask.shape == final_bgr.shape[:2]:
+                                cloth_plate_u8 = cv2.dilate(
+                                    (np.clip(cloth_reference_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8)
+                                    * 255,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
+                                    iterations=1,
+                                )
+                                short_under_jaw_plate_u8 = cv2.bitwise_and(short_under_jaw_plate_u8, cloth_plate_u8)
+                            if (
+                                short_cloth_neck_preserve_mask is not None
+                                and short_cloth_neck_preserve_mask.shape == final_bgr.shape[:2]
+                            ):
+                                preserve_u8 = (
+                                    (np.clip(short_cloth_neck_preserve_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(
+                                        np.uint8
+                                    )
+                                    * 255
+                                )
+                                short_under_jaw_plate_u8 = cv2.bitwise_and(
+                                    short_under_jaw_plate_u8,
+                                    cv2.bitwise_not(preserve_u8),
+                                )
+                            if int((short_under_jaw_plate_u8 > 0).sum()) >= 56:
+                                under_jaw_synthetic_plate_mask = cv2.GaussianBlur(
+                                    short_under_jaw_plate_u8.astype(np.float32) / 255.0,
+                                    (0, 0),
+                                    sigmaX=3.0,
+                                    sigmaY=3.6,
+                                ).astype(np.float32)
+                                under_jaw_synthetic_plate_mask = np.clip(under_jaw_synthetic_plate_mask, 0.0, 1.0)
+                                visible_cloth_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
+                                if cloth_reference_mask is not None and cloth_reference_mask.shape == final_bgr.shape[:2]:
+                                    visible_cloth_u8 = cv2.bitwise_and(
+                                        (np.clip(cloth_reference_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8)
+                                        * 255,
+                                        cv2.bitwise_not(
+                                            cv2.dilate(
+                                                short_under_jaw_plate_u8,
+                                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+                                                iterations=1,
+                                            )
+                                        ),
+                                    )
+                                    if (
+                                        short_cloth_neck_preserve_mask is not None
+                                        and short_cloth_neck_preserve_mask.shape == final_bgr.shape[:2]
+                                    ):
+                                        preserve_u8 = (
+                                            (
+                                                np.clip(short_cloth_neck_preserve_mask.astype(np.float32), 0.0, 1.0)
+                                                > 0.04
+                                            ).astype(np.uint8)
+                                            * 255
+                                        )
+                                        visible_cloth_u8 = cv2.bitwise_and(
+                                            visible_cloth_u8,
+                                            cv2.bitwise_not(preserve_u8),
+                                        )
+
+                                synthetic_seed_rgb = under_jaw_reference_rgb.copy()
+                                if int((visible_cloth_u8 > 0).sum()) >= 80:
+                                    fill_color = np.median(
+                                        under_jaw_reference_rgb[visible_cloth_u8 > 0],
+                                        axis=0,
+                                    ).astype(np.uint8)
+                                    synthetic_seed_rgb[short_under_jaw_plate_u8 > 0] = fill_color
+
+                                synthetic_plate_bgr = cv2.inpaint(
+                                    cv2.cvtColor(synthetic_seed_rgb, cv2.COLOR_RGB2BGR),
+                                    short_under_jaw_plate_u8,
+                                    5,
+                                    cv2.INPAINT_TELEA,
+                                )
+                                synthetic_plate_rgb = cv2.cvtColor(synthetic_plate_bgr, cv2.COLOR_BGR2RGB)
+                                synthetic_plate_rgb = self._blend_neighbor_cloth_tone(
+                                    synthetic_plate_rgb,
+                                    under_jaw_synthetic_plate_mask,
+                                    cloth_mask=cloth_reference_mask,
+                                    reference_rgb=under_jaw_reference_rgb,
+                                )
+                                synthetic_plate_rgb = self._cv2_refine_cloth_region(
+                                    synthetic_plate_rgb,
+                                    under_jaw_synthetic_plate_mask,
+                                    reference_rgb=under_jaw_reference_rgb,
+                                    reference_mask=cloth_reference_mask,
+                                )
+                                under_jaw_reference_rgb = self._restore_reference_region(
+                                    under_jaw_reference_rgb,
+                                    synthetic_plate_rgb,
+                                    under_jaw_synthetic_plate_mask,
+                                    strength=0.997,
+                                )
+                                under_jaw_reference_rgb = self._overlay_reference_cloth_fill(
+                                    under_jaw_reference_rgb,
+                                    synthetic_plate_rgb,
+                                    under_jaw_synthetic_plate_mask,
+                                    cloth_mask=cloth_reference_mask,
+                                )
+                                if (
+                                    short_cloth_neck_preserve_mask is not None
+                                    and short_cloth_neck_preserve_mask.shape == final_bgr.shape[:2]
+                                ):
+                                    under_jaw_reference_rgb = self._restore_reference_region(
+                                        under_jaw_reference_rgb,
+                                        img_rgb,
+                                        np.clip(short_cloth_neck_preserve_mask.astype(np.float32), 0.0, 1.0),
+                                        strength=0.995,
+                                    )
+                                under_jaw_reference_source = "synthetic_plate"
                     if debug_data_common is not None and rank == 0 and hair_length == "short":
                         debug_data_common["under_jaw_reference_source"] = under_jaw_reference_source
                     short_under_jaw_second_pass_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
