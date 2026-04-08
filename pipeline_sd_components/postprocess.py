@@ -2085,6 +2085,213 @@ def _build_source_conditioned_cloth_base(
         )
     return conditioned
 
+def _build_short_under_jaw_synthetic_garment_plate(
+    self,
+    *,
+    current_rgb: np.ndarray,
+    source_rgb: np.ndarray,
+    fill_mask: np.ndarray,
+    cloth_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+    preserve_mask: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    H, W = current_rgb.shape[:2]
+    if source_rgb.shape[:2] != (H, W) or fill_mask.shape != (H, W):
+        return current_rgb, np.zeros((H, W), dtype=np.float32)
+
+    cloth_mask = self._resize_mask_to_shape(cloth_mask, (H, W))
+    preserve_mask = self._resize_mask_to_shape(preserve_mask, (H, W))
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return current_rgb, np.zeros((H, W), dtype=np.float32)
+
+    conditioned_reference = self._build_source_conditioned_cloth_base(
+        current_rgb=current_rgb,
+        source_rgb=source_rgb,
+        fill_mask=fill_mask,
+        cloth_mask=cloth_mask,
+        hair_length="short",
+        preserve_mask=preserve_mask,
+    )
+
+    plate_fill_mask = np.clip(
+        fill_mask.astype(np.float32)
+        * (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.float32),
+        0.0,
+        1.0,
+    )
+    if preserve_mask is not None and preserve_mask.shape == (H, W):
+        plate_fill_mask = np.clip(
+            plate_fill_mask - np.clip(preserve_mask.astype(np.float32), 0.0, 1.0) * 0.98,
+            0.0,
+            1.0,
+        )
+    plate_fill_u8 = (plate_fill_mask > 0.08).astype(np.uint8) * 255
+    if int((plate_fill_u8 > 0).sum()) < 36:
+        return conditioned_reference, np.zeros((H, W), dtype=np.float32)
+
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
+
+    core_mask = self._build_short_under_jaw_crop_core_mask(
+        fill_mask=plate_fill_mask,
+        cloth_mask=cloth_mask,
+        face_bbox=face_bbox,
+        cutoff_y=cutoff_y,
+        neck_preserve_mask=preserve_mask,
+    )
+    core_u8 = (np.clip(core_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
+
+    corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+    top = max(0, int(cutoff_y + face_h * 0.02))
+    upper_bottom = min(H, int(cutoff_y + face_h * 0.30))
+    lower_bottom = min(H, int(cutoff_y + face_h * 0.98))
+    upper_half_w = max(18, int(face_w * 0.22))
+    lower_half_w = max(28, int(face_w * 0.38))
+    if top < upper_bottom:
+        corridor_u8[top:upper_bottom, max(0, cx - upper_half_w):min(W, cx + upper_half_w)] = 255
+    if upper_bottom < lower_bottom:
+        corridor_u8[upper_bottom:lower_bottom, max(0, cx - lower_half_w):min(W, cx + lower_half_w)] = 255
+    cv2.ellipse(
+        corridor_u8,
+        (cx, min(H - 1, max(0, int(cutoff_y + face_h * 0.54)))),
+        (max(24, int(face_w * 0.30)), max(14, int(face_h * 0.18))),
+        0,
+        0,
+        360,
+        255,
+        thickness=-1,
+    )
+
+    plate_u8 = core_u8 if int((core_u8 > 0).sum()) >= 36 else plate_fill_u8
+    plate_u8 = cv2.bitwise_and(plate_u8, corridor_u8)
+    if int((plate_u8 > 0).sum()) < 36:
+        plate_u8 = cv2.bitwise_and(
+            plate_fill_u8,
+            cv2.dilate(
+                corridor_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+                iterations=1,
+            ),
+        )
+    if int((plate_u8 > 0).sum()) < 36:
+        return conditioned_reference, np.zeros((H, W), dtype=np.float32)
+
+    plate_u8 = cv2.morphologyEx(
+        plate_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+    )
+    plate_u8 = cv2.dilate(
+        plate_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 9)),
+        iterations=1,
+    )
+    cloth_u8 = cv2.dilate(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
+        iterations=1,
+    )
+    plate_u8 = cv2.bitwise_and(plate_u8, cloth_u8)
+    if preserve_mask is not None and preserve_mask.shape == (H, W):
+        preserve_u8 = (np.clip(preserve_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255
+        plate_u8 = cv2.bitwise_and(plate_u8, cv2.bitwise_not(preserve_u8))
+    if int((plate_u8 > 0).sum()) < 36:
+        return conditioned_reference, np.zeros((H, W), dtype=np.float32)
+
+    sample_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+    sample_top = max(0, int(cutoff_y + face_h * 0.14))
+    sample_bottom = min(H, int(cutoff_y + face_h * 1.04))
+    sample_half_w = max(34, int(face_w * 0.58))
+    if sample_top < sample_bottom:
+        sample_gate_u8[sample_top:sample_bottom, max(0, cx - sample_half_w):min(W, cx + sample_half_w)] = 255
+    visible_cloth_u8 = cv2.bitwise_and(
+        (np.clip(cloth_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
+        sample_gate_u8,
+    )
+    visible_cloth_u8 = cv2.bitwise_and(
+        visible_cloth_u8,
+        cv2.bitwise_not(
+            cv2.dilate(
+                plate_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+                iterations=1,
+            )
+        ),
+    )
+    if preserve_mask is not None and preserve_mask.shape == (H, W):
+        preserve_u8 = (np.clip(preserve_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255
+        visible_cloth_u8 = cv2.bitwise_and(visible_cloth_u8, cv2.bitwise_not(preserve_u8))
+
+    synthetic_seed_rgb = conditioned_reference.copy()
+    if int((visible_cloth_u8 > 0).sum()) >= 80:
+        visible_pixels = conditioned_reference[visible_cloth_u8 > 0]
+        fill_color = np.median(visible_pixels, axis=0).astype(np.uint8)
+        synthetic_seed_rgb[plate_u8 > 0] = fill_color
+
+    synthetic_bgr = cv2.inpaint(
+        cv2.cvtColor(synthetic_seed_rgb, cv2.COLOR_RGB2BGR),
+        plate_u8,
+        5,
+        cv2.INPAINT_TELEA,
+    )
+    synthetic_rgb = cv2.cvtColor(synthetic_bgr, cv2.COLOR_BGR2RGB)
+    plate_mask = cv2.GaussianBlur(
+        plate_u8.astype(np.float32) / 255.0,
+        (0, 0),
+        sigmaX=3.0,
+        sigmaY=3.6,
+    ).astype(np.float32)
+    plate_mask = np.clip(plate_mask * 0.998, 0.0, 1.0)
+
+    synthetic_rgb = self._blend_neighbor_cloth_tone(
+        synthetic_rgb,
+        plate_mask,
+        cloth_mask=cloth_mask,
+        reference_rgb=conditioned_reference,
+    )
+    synthetic_rgb = self._cv2_refine_cloth_region(
+        synthetic_rgb,
+        plate_mask,
+        reference_rgb=conditioned_reference,
+        reference_mask=cloth_mask,
+    )
+
+    out = self._restore_reference_region(
+        conditioned_reference,
+        synthetic_rgb,
+        plate_mask,
+        strength=0.998,
+    )
+    out = self._overlay_reference_cloth_fill(
+        out,
+        synthetic_rgb,
+        plate_mask,
+        cloth_mask=cloth_mask,
+    )
+    out = self._blend_neighbor_cloth_tone(
+        out,
+        plate_mask,
+        cloth_mask=cloth_mask,
+        reference_rgb=synthetic_rgb,
+    )
+    out = self._cv2_refine_cloth_region(
+        out,
+        plate_mask,
+        reference_rgb=synthetic_rgb,
+        reference_mask=cloth_mask,
+    )
+    if preserve_mask is not None and preserve_mask.shape == (H, W):
+        out = self._restore_reference_region(
+            out,
+            source_rgb,
+            np.clip(preserve_mask.astype(np.float32), 0.0, 1.0),
+            strength=0.995,
+        )
+    return out, plate_mask
+
 def _build_short_under_jaw_front_plate_mask(
     self,
     *,
@@ -9548,6 +9755,7 @@ def bind_postprocess_methods_to_pipeline(cls) -> None:
     cls._build_short_cloth_generation_silhouette_mask = _build_short_cloth_generation_silhouette_mask
     cls._build_short_cloth_control_map = _build_short_cloth_control_map
     cls._build_source_conditioned_cloth_base = _build_source_conditioned_cloth_base
+    cls._build_short_under_jaw_synthetic_garment_plate = _build_short_under_jaw_synthetic_garment_plate
     cls._build_short_under_jaw_front_plate_mask = _build_short_under_jaw_front_plate_mask
     cls._apply_short_source_cloth_anchor_restore = _apply_short_source_cloth_anchor_restore
     cls._tighten_short_under_jaw_mask_to_center = _tighten_short_under_jaw_mask_to_center

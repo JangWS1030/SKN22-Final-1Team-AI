@@ -5181,8 +5181,10 @@ class MirrAISDPipeline:
                         (np.clip(under_jaw_cloth_refine_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8)
                         * 255
                     )
+                    under_jaw_cloth_refine_px = int((under_jaw_cloth_refine_u8 > 0).sum())
                     under_jaw_reference_rgb = img_rgb
                     under_jaw_reference_source = "raw_source"
+                    under_jaw_synthetic_plate_mask = np.zeros(final_bgr.shape[:2], dtype=np.float32)
                     if hair_length == "short" and "source_cloth_reference_rgb" in locals():
                         if (
                             source_cloth_reference_rgb is not None
@@ -5190,6 +5192,20 @@ class MirrAISDPipeline:
                         ):
                             under_jaw_reference_rgb = source_cloth_reference_rgb
                             under_jaw_reference_source = "conditioned_source_cloth"
+                    if hair_length == "short" and under_jaw_cloth_refine_px >= 140:
+                        under_jaw_reference_rgb, under_jaw_synthetic_plate_mask = (
+                            self._build_short_under_jaw_synthetic_garment_plate(
+                                current_rgb=final_rgb,
+                                source_rgb=under_jaw_reference_rgb,
+                                fill_mask=under_jaw_cloth_refine_mask,
+                                cloth_mask=cloth_reference_mask,
+                                face_bbox=face_bbox,
+                                cutoff_y=cutoff_y_for_post,
+                                preserve_mask=short_cloth_neck_preserve_mask,
+                            )
+                        )
+                        if float(under_jaw_synthetic_plate_mask.sum()) > 0.0:
+                            under_jaw_reference_source = "synthetic_plate"
                     if debug_data_common is not None and rank == 0 and hair_length == "short":
                         debug_data_common["under_jaw_reference_source"] = under_jaw_reference_source
                     short_under_jaw_second_pass_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
@@ -5201,7 +5217,6 @@ class MirrAISDPipeline:
                     short_under_jaw_front_plate_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                     short_under_jaw_insert_u8 = np.zeros(final_bgr.shape[:2], dtype=np.uint8)
                     short_under_jaw_insert_control_map_rgb = np.zeros_like(final_rgb)
-                    under_jaw_cloth_refine_px = int((under_jaw_cloth_refine_u8 > 0).sum())
                     if under_jaw_cloth_refine_px >= 140:
                         under_jaw_generation_mask = under_jaw_cloth_refine_mask
                         short_under_jaw_control_rgb = None
@@ -5210,7 +5225,7 @@ class MirrAISDPipeline:
                         if hair_length == "short":
                             short_under_jaw_generation_silhouette_mask = self._build_short_cloth_generation_silhouette_mask(
                                 current_rgb=final_rgb,
-                                source_rgb=img_rgb,
+                                source_rgb=under_jaw_reference_rgb,
                                 cloth_mask=cloth_reference_mask,
                                 face_bbox=face_bbox,
                                 cutoff_y=cutoff_y_for_post,
@@ -5528,6 +5543,18 @@ class MirrAISDPipeline:
                             * 255,
                             cv2.COLOR_GRAY2BGR,
                         )
+                        if float(under_jaw_synthetic_plate_mask.sum()) > 0.0:
+                            debug_images_common["pipeline_short_under_jaw_synthetic_plate"] = cv2.cvtColor(
+                                under_jaw_reference_rgb,
+                                cv2.COLOR_RGB2BGR,
+                            )
+                            debug_images_common["pipeline_short_under_jaw_synthetic_plate_mask"] = cv2.cvtColor(
+                                (
+                                    np.clip(under_jaw_synthetic_plate_mask.astype(np.float32), 0.0, 1.0) > 0.05
+                                ).astype(np.uint8)
+                                * 255,
+                                cv2.COLOR_GRAY2BGR,
+                            )
                         if hair_length == "short" and float(short_cloth_neck_preserve_mask.sum()) > 0.0:
                             debug_images_common["pipeline_short_cloth_neck_preserve_mask"] = cv2.cvtColor(
                                 (
