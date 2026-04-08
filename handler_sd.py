@@ -34,14 +34,6 @@ face_ratios가 있으면 자동으로 추천 모드 진입.
   }
 }
 
-== 모드 3: 트렌드 데이터 최신화 ==
-{
-  "input": {
-    "action": "refresh_trends",
-    "chromadb_tar_base64": "<base64 tar.gz>"
-  }
-}
-
 출력 스키마:
 {
   "results": [ ... ],
@@ -331,97 +323,6 @@ def _image_to_base64(img_bgr: "np.ndarray", quality: int = 92) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-# ── 트렌드 최신화 ──────────────────────────────────────────────────────────────
-
-def _handle_refresh_trends(inp: Dict[str, Any]) -> Dict[str, Any]:
-    """트렌드 데이터 최신화. ChromaDB 아카이브 수신 또는 파이프라인 실행."""
-    t0 = time.time()
-    try:
-        chromadb_payload = inp.get("chromadb_tar_base64")
-        if chromadb_payload:
-            result = _receive_chromadb_archive(chromadb_payload)
-        else:
-            from rag_pipeline.pipeline import refresh_trends
-            steps = inp.get("steps")
-            if isinstance(steps, str):
-                steps = [s.strip() for s in steps.split(",")]
-            result = refresh_trends(steps=steps)
-        result["elapsed_seconds"] = round(time.time() - t0, 2)
-        return result
-    except Exception as e:
-        tb = traceback.format_exc()
-        logger.error(f"[handler_sd] refresh_trends 오류: {e}\n{tb}")
-        return {"error": f"{type(e).__name__}: {e}", "traceback": tb}
-
-
-def _receive_chromadb_archive(payload_b64: str) -> Dict[str, Any]:
-    """base64 인코딩된 tar.gz ChromaDB 아카이브를 수신하여 교체."""
-    import shutil
-    import tarfile
-    import tempfile
-
-    stores_dir = PROJECT_ROOT / "data" / "rag" / "stores"
-    stores_dir.mkdir(parents=True, exist_ok=True)
-
-    raw = base64.b64decode(payload_b64)
-    size_mb = len(raw) / (1024 * 1024)
-    logger.info(f"[handler_sd] ChromaDB 아카이브 수신: {size_mb:.1f} MB")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tar_path = Path(tmpdir) / "chromadb.tar.gz"
-        tar_path.write_bytes(raw)
-        with tarfile.open(tar_path, "r:gz") as tar:
-            for member in tar.getmembers():
-                if member.name.startswith("/") or ".." in member.name:
-                    raise ValueError(f"안전하지 않은 경로: {member.name}")
-            tar.extractall(path=tmpdir)
-
-        replaced = []
-        for collection_name in ("chromadb_trends", "chromadb_ncs", "chromadb_styles"):
-            src = Path(tmpdir) / collection_name
-            if not src.is_dir():
-                continue
-            dst = stores_dir / collection_name
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
-            replaced.append(collection_name)
-            logger.info(f"[handler_sd] {collection_name} 교체 완료")
-
-    _invalidate_collection_caches(replaced)
-    return {
-        "success": True,
-        "mode": "receive_archive",
-        "replaced_collections": replaced,
-        "archive_size_mb": round(size_mb, 2),
-    }
-
-
-def _invalidate_collection_caches(replaced: list) -> None:
-    """교체된 컬렉션의 메모리 캐시를 무효화."""
-    if "chromadb_styles" in replaced:
-        try:
-            import style_recommender
-            style_recommender._collection_cache = None
-        except Exception:
-            pass
-    if "chromadb_trends" in replaced or "chromadb_ncs" in replaced:
-        try:
-            from rag_pipeline import rag_query
-            if hasattr(rag_query, "_get_collection"):
-                rag_query._get_collection.cache_clear()
-            if hasattr(rag_query, "_get_trend_corpus"):
-                rag_query._get_trend_corpus.cache_clear()
-        except Exception:
-            pass
-        try:
-            from rag_pipeline import ncs_rag_query
-            if hasattr(ncs_rag_query, "_get_collection"):
-                ncs_rag_query._get_collection.cache_clear()
-        except Exception:
-            pass
-
-
 # ── 추천 + RAG 컨텍스트 ────────────────────────────────────────────────────────
 
 def _run_recommendation(face_ratios, preference, preference_text, age, color_text, top_k, weights=None):
@@ -559,10 +460,6 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
     # ── action 라우팅 ─────────────────────────────────────────────────────
     action = str(inp.get("action", "")).strip().lower()
-
-    # 트렌드 데이터 최신화
-    if action == "refresh_trends":
-        return _handle_refresh_trends(inp)
 
     # 헬스체크
     if action == "health_check" or _coerce_bool(inp.get("health_check")):

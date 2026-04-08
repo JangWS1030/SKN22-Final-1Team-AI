@@ -19,7 +19,6 @@ on:
       - "style_recommender.py"
       - "runtime_download.py"
       - "utils/**"
-      - "rag_pipeline/**"
       - "models/__init__.py"
       - "models/face_parsing/**"
       - "models/segface/**"

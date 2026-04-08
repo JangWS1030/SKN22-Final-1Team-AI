@@ -23,7 +23,6 @@ COPY pipeline_sd_inpainting.py ./
 COPY pipeline_sd_components/   pipeline_sd_components/
 COPY runtime_download.py       ./
 COPY utils/                    utils/
-COPY rag_pipeline/             rag_pipeline/
 COPY models/__init__.py        models/__init__.py
 COPY models/segface/           models/segface/
 COPY data/                     data/

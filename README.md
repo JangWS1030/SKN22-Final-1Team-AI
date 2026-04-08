@@ -315,97 +315,13 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 
 ### EP3. 트렌드 데이터 최신화
 
-트렌드 크롤링/정제/벡터DB 갱신. 두 가지 모드를 지원합니다.
+트렌드 크롤링/정제/벡터DB 갱신은 RunPod SD runtime entrypoint에서 더 이상 처리하지 않습니다.
 
-#### 모드 A: RunPod 내부 파이프라인 실행
+- `handler_sd.py`는 `refresh_trends` / `chromadb_tar_base64` 입력을 지원하지 않습니다.
+- 트렌드/RAG 갱신은 별도 파이프라인으로 관리합니다.
+- 관련 코드는 `rag_pipeline/`, `requirements-trends.txt`, `docs/rag_pipeline.md`를 기준으로 실행합니다.
 
-```json
-{
-  "input": {
-    "action": "refresh_trends",
-    "steps": ["crawl", "refine", "llm_refine", "vectorize", "rebuild_styles"]
-  }
-}
-```
-
-`steps` 생략 시 전체 실행. 사용 가능한 단계:
-
-| 단계 | 설명 |
-|------|------|
-| `crawl` | 28개 패션 사이트 웹 크롤링 |
-| `refine` | 크롤링 데이터 텍스트 정제 |
-| `llm_refine` | Gemini 기반 요약/구조화 |
-| `vectorize` | ChromaDB 트렌드 벡터DB 갱신 |
-| `rebuild_styles` | 스타일 추천 컬렉션 리빌드 |
-| `analyze` | 키워드 분석 (선택) |
-
-#### 모드 B: Django에서 빌드한 ChromaDB 수신 (권장)
-
-Django 서버(CPU)에서 크롤링 + 정제 + 벡터화까지 수행한 뒤, ChromaDB 파일을 tar.gz로 압축하여 전송합니다.
-RunPod에서는 압축 해제 + 컬렉션 핫 리로드만 수행하므로 GPU 비용이 들지 않습니다.
-
-```json
-{
-  "input": {
-    "action": "refresh_trends",
-    "chromadb_tar_base64": "<base64 encoded tar.gz>"
-  }
-}
-```
-
-아카이브 내부 구조:
-```
-chromadb_trends/    (트렌드 벡터DB)
-chromadb_ncs/       (NCS 시술 벡터DB)
-chromadb_styles/    (스타일 추천 컬렉션, 선택)
-```
-
-Django 측 전송 예시:
-```python
-import base64, tarfile, io
-
-buf = io.BytesIO()
-with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-    tar.add("data/rag/stores/chromadb_trends", arcname="chromadb_trends")
-    tar.add("data/rag/stores/chromadb_ncs", arcname="chromadb_ncs")
-    tar.add("data/rag/stores/chromadb_styles", arcname="chromadb_styles")
-
-payload = {
-    "input": {
-        "action": "refresh_trends",
-        "chromadb_tar_base64": base64.b64encode(buf.getvalue()).decode()
-    }
-}
-# requests.post(RUNPOD_URL, json=payload, headers=...)
-```
-
-**Response (모드 A)**
-```json
-{
-  "success": true,
-  "steps_requested": ["crawl", "refine", "llm_refine", "vectorize", "rebuild_styles"],
-  "steps_completed": ["crawl", "refine", "llm_refine", "vectorize", "rebuild_styles"],
-  "steps_failed": [],
-  "details": {
-    "crawl": {"status": "ok", "elapsed_seconds": 120.5},
-    "vectorize": {"status": "ok", "document_count": 85, "elapsed_seconds": 3.2},
-    "rebuild_styles": {"status": "ok", "style_count": 15, "elapsed_seconds": 1.1}
-  },
-  "total_elapsed_seconds": 180.3,
-  "elapsed_seconds": 180.5
-}
-```
-
-**Response (모드 B)**
-```json
-{
-  "success": true,
-  "mode": "receive_archive",
-  "replaced_collections": ["chromadb_trends", "chromadb_ncs", "chromadb_styles"],
-  "archive_size_mb": 4.2,
-  "elapsed_seconds": 2.1
-}
-```
+즉, RunPod SD runtime은 생성/추천 추론에 집중하고, ChromaDB 구축/교체는 외부 백엔드 또는 별도 작업 파이프라인에서 수행하는 구조입니다.
 
 ---
 
