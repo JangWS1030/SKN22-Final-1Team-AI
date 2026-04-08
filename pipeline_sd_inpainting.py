@@ -167,6 +167,7 @@ class MirrAISDPipeline:
         lora_path: Optional[str] = None,
         lora_scale: Optional[float] = None,
         sd_prompt_data: Optional[Dict[str, Any]] = None,
+        white_tshirt_experiment: bool = False,
     ) -> List[SDInpaintResult]:
         """
         헤어 스타일 변환 실행.
@@ -223,6 +224,7 @@ class MirrAISDPipeline:
                 "hairstyle_text": requested_hairstyle_text,
                 "color_text": requested_color_text,
                 "sd_prompt_data_provided": bool(sd_prompt_data and sd_prompt_data.get("sd_positive")),
+                "white_tshirt_experiment": bool(white_tshirt_experiment),
             }
 
         def _store_mask(name: str, mask: Optional[np.ndarray]) -> None:
@@ -2419,6 +2421,7 @@ class MirrAISDPipeline:
                             cloth_mask=cloth_mask_dilated,
                             hair_length=hair_length,
                             seed=fill_seed,
+                            white_tshirt_experiment=white_tshirt_experiment,
                         )
                         logger.info("[SDPipeline] bg_fill_mode=sd: 제거 영역 SD 보정 완료")
                     except Exception as e:
@@ -2455,6 +2458,7 @@ class MirrAISDPipeline:
                         hair_length=hair_length,
                         seed=source_garment_seed,
                         refine_mode="garment",
+                        white_tshirt_experiment=white_tshirt_experiment,
                     )
                     source_garment_prepass_applied = True
                     source_garment_prepass_apply_mode = "sd"
@@ -3188,6 +3192,7 @@ class MirrAISDPipeline:
             subject_gender=subject_gender_mode,
             sd_prompt_data=sd_prompt_data,
             source_garment_hints=source_garment_prompt_hints,
+            white_tshirt_experiment=white_tshirt_experiment,
         )
         generation_ip_scale, generation_control_scale = self._resolve_generation_conditioning(
             hair_length
@@ -3779,6 +3784,7 @@ class MirrAISDPipeline:
                             hair_length=hair_length,
                             seed=int(cand["seed"]) + 1701,
                             refine_mode="cloth",
+                            white_tshirt_experiment=white_tshirt_experiment,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                         post_cloth_refine_applied = True
@@ -4130,6 +4136,7 @@ class MirrAISDPipeline:
                             hair_length=hair_length,
                             seed=int(cand["seed"]) + 1739,
                             refine_mode="cloth",
+                            white_tshirt_experiment=white_tshirt_experiment,
                         )
                     if 100 <= shoulder_refine_px < 8000:
                         final_rgb = self._cv2_refine_cloth_region(
@@ -4237,6 +4244,7 @@ class MirrAISDPipeline:
                                 hair_length=hair_length,
                                 seed=int(cand["seed"]) + 1787,
                                 refine_mode="cloth",
+                                white_tshirt_experiment=white_tshirt_experiment,
                             )
                         if hair_length == "short":
                             side_column_cleanup_trace: List[Tuple[str, np.ndarray]] = []
@@ -4973,6 +4981,7 @@ class MirrAISDPipeline:
                             hair_length=hair_length,
                             seed=int(cand["seed"]) + 2411,
                             refine_mode="garment",
+                            white_tshirt_experiment=white_tshirt_experiment,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                         garment_repaint_applied = True

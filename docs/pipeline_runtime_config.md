@@ -43,6 +43,8 @@
 
 - `guidance_scale`
   - `sd_prompt_data.sd_guidance`가 있으면 외부 입력을 사용하고, 없으면 `_build_prompt()` 내부 로직으로 결정
+- `white_tshirt_experiment`
+  - `true`면 메인 generation prompt와 garment/cloth refine prompt가 모두 `plain white t-shirt` 고정 힌트를 사용하고 source garment hint는 무시
 - `face_crop_padding`
   - `_crop_face()` 내부의 고정 비율 사용
 - `enable_xformers`

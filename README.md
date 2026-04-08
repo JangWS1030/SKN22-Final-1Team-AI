@@ -153,6 +153,7 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
     "image":               "<base64 or URL>",
     "hairstyle_text":      "wolf cut, layered bangs",
     "color_text":          "ash brown",
+    "white_tshirt_experiment": false,
     "top_k":               3,
     "return_base64":       true,
     "return_intermediates": false,
@@ -169,6 +170,7 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 | `image` | string | O | base64 인코딩 이미지 또는 URL |
 | `hairstyle_text` | string | O* | 헤어스타일 설명 (영문/한글) |
 | `color_text` | string | | 헤어 색상 |
+| `white_tshirt_experiment` | bool | | `true`면 메인 generation / garment refine 모두 plain white t-shirt 기준으로 고정 |
 | `top_k` | int | | 결과 수 (1~5, 기본 3) |
 | `return_base64` | bool | | 결과 이미지 base64 포함 (기본 true) |
 | `return_intermediates` | bool | | 디버그 중간 산출물 포함 |
@@ -448,6 +450,7 @@ push 시 현재 기준으로 아래 워크플로가 동작합니다.
 - 기본 입력은 요청에 들어온 `hairstyle_text`, `color_text` 그대로 사용
 - 백엔드가 `sd_prompt_data`를 함께 보내면 해당 `sd_positive` / `sd_negative` / `sd_guidance`를 우선 사용
 - `sd_prompt_data`가 없으면 파이프라인이 `hairstyle_text`와 `color_text`를 기반으로 폴백 SD 프롬프트를 구성
+- `white_tshirt_experiment=true`면 source garment hint를 무시하고 메인 generation과 garment/cloth refine 모두 `plain white t-shirt` 기준 prompt를 사용
 - `color_text`는 사용자가 명시한 경우에만 실제 색상 타깃으로 적용
 
 ## 검증 기준

@@ -285,7 +285,8 @@
     "preference": 0.4
   },
   "color_text": "natural black",
-  "top_k": 3
+  "top_k": 3,
+  "white_tshirt_experiment": true
 }
 ```
 

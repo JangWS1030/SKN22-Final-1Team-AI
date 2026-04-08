@@ -16,7 +16,12 @@ import numpy as np
 import torch
 from PIL import Image
 
-from .config import SD_SIZE, _COMMON_STYLE_BLOCK_NEGATIVE
+from .config import (
+    SD_SIZE,
+    _COMMON_STYLE_BLOCK_NEGATIVE,
+    _WHITE_TSHIRT_NEGATIVE_HINTS,
+    _WHITE_TSHIRT_POSITIVE_HINTS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +257,7 @@ def _sd_refine_removed_region(
     hair_length: str,
     seed: int,
     refine_mode: str = "generic",
+    white_tshirt_experiment: bool = False,
 ) -> np.ndarray:
     """
     긴머리 제거 후 남는 어색한 영역(목/어깨/배경)을 SD로 한 번 더 정리.
@@ -270,44 +276,70 @@ def _sd_refine_removed_region(
         fill_mask,
         mask_edge_suppression=0.45,
     )
+    white_tshirt_positive = ", ".join(_WHITE_TSHIRT_POSITIVE_HINTS[:2])
+    white_tshirt_negative = ", ".join(_WHITE_TSHIRT_NEGATIVE_HINTS)
 
     if refine_mode == "garment":
-        fill_prompt = (
-            "professional portrait photo, restore the same original outfit, "
-            "clean connected shoulder cloth, continuous cardigan blouse shirt or jacket fabric, "
-            "preserve neckline collar seams and buttons, realistic garment folds and texture, "
-            "no hair strands on clothes, photorealistic details"
-        )
+        if white_tshirt_experiment:
+            fill_prompt = (
+                "professional portrait photo, restore a plain white t-shirt, "
+                "simple white crew-neck t-shirt, clean connected shoulder cloth, "
+                "preserve clean white cotton fabric continuity, natural tee folds and seams, "
+                "no hair strands on clothes, photorealistic details"
+            )
+        else:
+            fill_prompt = (
+                "professional portrait photo, restore the same original outfit, "
+                "clean connected shoulder cloth, continuous cardigan blouse shirt or jacket fabric, "
+                "preserve neckline collar seams and buttons, realistic garment folds and texture, "
+                "no hair strands on clothes, photorealistic details"
+            )
         fill_guidance = 6.2 if hair_length == "short" else 6.6
         fill_negative = (
+            f"{white_tshirt_negative}, " if white_tshirt_experiment else ""
+        ) + (
             "hair strands on clothes, loose dangling hair, long hair, black blob, disconnected clothing, "
             "broken neckline, missing collar, missing buttons, warped garment, melted fabric, exposed shoulder skin, "
             "deformed neck, artifacts, blurry, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
     elif refine_mode == "cloth":
-        fill_prompt = (
-            "professional portrait photo, preserve the original shirt or blouse shape, "
-            "realistic clothing fabric texture continuity, coherent folds and seams, "
-            "clean neck and shoulders, no hair strands in masked region, photorealistic details"
-        )
+        if white_tshirt_experiment:
+            fill_prompt = (
+                "professional portrait photo, preserve a plain white t-shirt shape, "
+                f"{white_tshirt_positive}, realistic white cotton fabric texture continuity, "
+                "coherent tee folds and seams, clean neck and shoulders, "
+                "no hair strands in masked region, photorealistic details"
+            )
+        else:
+            fill_prompt = (
+                "professional portrait photo, preserve the original shirt or blouse shape, "
+                "realistic clothing fabric texture continuity, coherent folds and seams, "
+                "clean neck and shoulders, no hair strands in masked region, photorealistic details"
+            )
         fill_guidance = 6.8 if hair_length == "short" else 7.0
         fill_negative = (
+            f"{white_tshirt_negative}, " if white_tshirt_experiment else ""
+        ) + (
             "hair strands, loose dangling hair, long hair, blur, blurry cloth, smudged cloth, "
             "melted fabric, duplicate collar, broken neckline, extra folds, extra buttons, "
             "warped shirt, warped blouse, deformed neck, artifacts, cartoon, painting, "
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
     elif refine_mode == "short_tail" and hair_length == "short":
+        garment_phrase = "same plain white t-shirt preserved" if white_tshirt_experiment else "same shirt or blouse preserved"
+        cloth_phrase = "realistic white cotton tee texture continuity" if white_tshirt_experiment else "realistic clothing fabric texture continuity"
         fill_prompt = (
             "professional portrait photo, neat compact short jaw-length bob haircut, "
             "clean side silhouette above the shoulders, visible neck and shoulders, "
-            "same shirt or blouse preserved, realistic clothing fabric texture continuity, "
+            f"{garment_phrase}, {cloth_phrase}, "
             "clean neckline, no hair below jawline, no shoulder-length side hair, "
             "no dangling strands in masked region, photorealistic details"
         )
         fill_guidance = 8.2
         fill_negative = (
+            f"{white_tshirt_negative}, " if white_tshirt_experiment else ""
+        ) + (
             "long hair, shoulder-length hair, medium hair, lob haircut, hair below jawline, "
             "hair touching shoulders, dangling side tails, loose strands, extra hair mass, "
             "warped shirt, warped blouse, melted fabric, deformed neck, artifacts, blurry, "
@@ -315,15 +347,19 @@ def _sd_refine_removed_region(
             f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
         )
     elif hair_length == "short":
+        garment_phrase = "same plain white t-shirt preserved" if white_tshirt_experiment else "same shirt or blouse preserved"
+        cloth_phrase = "realistic white cotton tee texture continuity" if white_tshirt_experiment else "realistic clothing fabric texture continuity"
         fill_prompt = (
             "professional portrait photo, clean natural neck and shoulders, "
-            "same shirt or blouse preserved, realistic clothing fabric texture continuity, "
+            f"{garment_phrase}, {cloth_phrase}, "
             "coherent neckline, collar and sleeve folds, coherent background, "
             "short-hair silhouette maintained, no long hair below jawline, "
             "no loose dangling strands in masked region, photorealistic details"
         )
         fill_guidance = 7.1
         fill_negative = (
+            f"{white_tshirt_negative}, " if white_tshirt_experiment else ""
+        ) + (
             "long hair, hair below chin, hair below shoulders, loose hair strands, "
             "wavy hair, straight long hair, wig, ponytail, braid, bangs, side locks, "
             "deformed neck, artifacts, blurry, smudged texture, melted details, cartoon, painting, "

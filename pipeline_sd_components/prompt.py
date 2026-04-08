@@ -47,6 +47,8 @@ from .config import (
     _NEGATIVE_BASE,
     _NO_COLOR_HINTS,
     _SHORT_HAIR_KEYWORDS,
+    _WHITE_TSHIRT_NEGATIVE_HINTS,
+    _WHITE_TSHIRT_POSITIVE_HINTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -834,6 +836,7 @@ def _build_prompt(
     subject_gender: Optional[str] = None,
     sd_prompt_data: Optional[Dict[str, Any]] = None,
     source_garment_hints: Optional[Dict[str, Any]] = None,
+    white_tshirt_experiment: bool = False,
 ) -> Tuple[str, str, float]:
     """
     Returns:
@@ -875,7 +878,10 @@ def _build_prompt(
     garment_priority_parts: List[str] = []
     garment_positive_parts: List[str] = []
     garment_negative_parts: List[str] = []
-    if preserve_source_garment:
+    if white_tshirt_experiment:
+        garment_positive_parts.extend(list(_WHITE_TSHIRT_POSITIVE_HINTS))
+        garment_negative_parts.extend(list(_WHITE_TSHIRT_NEGATIVE_HINTS))
+    elif preserve_source_garment:
         garment_positive_parts.extend([
             "same original upper garment",
             "natural shoulder garment continuity",
@@ -898,54 +904,62 @@ def _build_prompt(
         ])
 
     garment_hints = source_garment_hints if isinstance(source_garment_hints, dict) else {}
-    garment_conf = garment_hints.get("confidence") if isinstance(garment_hints.get("confidence"), dict) else {}
-    color_conf = float(garment_conf.get("color", 0.0) or 0.0)
-    pattern_conf = float(garment_conf.get("pattern", 0.0) or 0.0)
-    material_conf = float(garment_conf.get("material", 0.0) or 0.0)
-    neckline_conf = float(garment_conf.get("neckline", 0.0) or 0.0)
-    color_name = str(garment_hints.get("color_name") or "").strip().lower()
-    pattern_type = str(garment_hints.get("pattern_type") or "").strip().lower()
-    material_hint = str(garment_hints.get("material_hint") or "").strip().lower()
-    neckline_hint = str(garment_hints.get("neckline_hint") or "").strip().lower()
+    if not white_tshirt_experiment:
+        garment_conf = garment_hints.get("confidence") if isinstance(garment_hints.get("confidence"), dict) else {}
+        color_conf = float(garment_conf.get("color", 0.0) or 0.0)
+        pattern_conf = float(garment_conf.get("pattern", 0.0) or 0.0)
+        material_conf = float(garment_conf.get("material", 0.0) or 0.0)
+        neckline_conf = float(garment_conf.get("neckline", 0.0) or 0.0)
+        color_name = str(garment_hints.get("color_name") or "").strip().lower()
+        pattern_type = str(garment_hints.get("pattern_type") or "").strip().lower()
+        material_hint = str(garment_hints.get("material_hint") or "").strip().lower()
+        neckline_hint = str(garment_hints.get("neckline_hint") or "").strip().lower()
 
-    garment_negative_parts.extend([
-        "armor-like chest panel",
-        "bib-like front panel",
-        "structured breastplate top",
-        "warped clothing",
-    ])
-    if color_conf >= 0.45:
-        if color_name == "white":
-            garment_priority_parts.append("clean white upper garment")
-        elif color_name in {"ivory", "cream", "beige"}:
-            garment_priority_parts.append("soft light upper garment tone")
-    if pattern_conf >= 0.68:
-        if pattern_type == "solid":
-            garment_priority_parts.append("plain unpatterned upper garment")
-        elif pattern_type == "ribbed":
-            garment_priority_parts.append("subtle ribbed fabric texture")
-        elif pattern_type == "textured":
-            garment_priority_parts.append("light fabric texture")
-    if material_conf >= 0.72:
-        if material_hint == "smooth fabric":
-            garment_priority_parts.append("soft smooth fabric")
-        elif material_hint == "ribbed knit":
-            garment_priority_parts.append("fine rib texture")
-    if neckline_conf >= 0.56 and neckline_hint == "round":
-        garment_priority_parts.append("round crew neckline")
-    elif neckline_conf >= 0.72 and neckline_hint == "v-neck":
+        garment_negative_parts.extend([
+            "armor-like chest panel",
+            "bib-like front panel",
+            "structured breastplate top",
+            "warped clothing",
+        ])
+        if color_conf >= 0.45:
+            if color_name == "white":
+                garment_priority_parts.append("clean white upper garment")
+            elif color_name in {"ivory", "cream", "beige"}:
+                garment_priority_parts.append("soft light upper garment tone")
+        if pattern_conf >= 0.68:
+            if pattern_type == "solid":
+                garment_priority_parts.append("plain unpatterned upper garment")
+            elif pattern_type == "ribbed":
+                garment_priority_parts.append("subtle ribbed fabric texture")
+            elif pattern_type == "textured":
+                garment_priority_parts.append("light fabric texture")
+        if material_conf >= 0.72:
+            if material_hint == "smooth fabric":
+                garment_priority_parts.append("soft smooth fabric")
+            elif material_hint == "ribbed knit":
+                garment_priority_parts.append("fine rib texture")
+        if neckline_conf >= 0.56 and neckline_hint == "round":
+            garment_priority_parts.append("round crew neckline")
+        elif neckline_conf >= 0.72 and neckline_hint == "v-neck":
+            garment_negative_parts.extend([
+                "deep v-neck",
+                "plunging neckline",
+                "wide v-neck blouse",
+            ])
+
+        negative_color_hints = garment_hints.get("negative_color_hints")
+        if isinstance(negative_color_hints, list) and color_name in {"white", "ivory", "cream", "beige"}:
+            for item in negative_color_hints:
+                text = str(item).strip()
+                if text:
+                    garment_negative_parts.append(text)
+    else:
         garment_negative_parts.extend([
             "deep v-neck",
             "plunging neckline",
-            "wide v-neck blouse",
+            "wide neckline",
+            "warped clothing",
         ])
-
-    negative_color_hints = garment_hints.get("negative_color_hints")
-    if isinstance(negative_color_hints, list) and color_name in {"white", "ivory", "cream", "beige"}:
-        for item in negative_color_hints:
-            text = str(item).strip()
-            if text:
-                garment_negative_parts.append(text)
 
     garment_positive_parts = garment_priority_parts + garment_positive_parts
 
@@ -967,7 +981,7 @@ def _build_prompt(
         deduped_negative_parts.append(str(part).strip())
 
     garment_positive_hint = ", ".join(deduped_positive_parts[:3])
-    if hair_length == "short":
+    if hair_length == "short" and not white_tshirt_experiment:
         short_garment_parts = [
             part for part in deduped_positive_parts
             if part in {"same original upper garment"}

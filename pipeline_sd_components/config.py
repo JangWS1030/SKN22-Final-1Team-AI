@@ -70,6 +70,32 @@ _COMMON_STYLE_BLOCK_NEGATIVE = (
     "dangling lower side tails, loose side tendrils touching clothing, side locks touching shoulders or clothing"
 )
 
+_WHITE_TSHIRT_POSITIVE_HINTS = (
+    "plain white t-shirt",
+    "simple white crew-neck t-shirt",
+    "clean white cotton tee",
+)
+
+_WHITE_TSHIRT_NEGATIVE_HINTS = (
+    "patterned shirt",
+    "printed shirt",
+    "graphic tee",
+    "logo",
+    "text on shirt",
+    "striped shirt",
+    "checkered shirt",
+    "jacket",
+    "cardigan",
+    "hoodie",
+    "coat",
+    "blouse",
+    "dress shirt",
+    "open neckline",
+    "deep v-neck",
+    "plunging neckline",
+    "exposed chest",
+)
+
 # ── 헤어 길이 키워드 ────────────────────────────────────────────────────────────
 _SHORT_HAIR_KEYWORDS = frozenset([
     "short", "bob", "pixie", "buzz", "hush", "crop", "cropped",

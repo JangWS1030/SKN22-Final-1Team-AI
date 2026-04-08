@@ -4,10 +4,11 @@ MirrAI SD Inpainting — RunPod Serverless Handler
 
 == 모드 1: 직접 지정 (기존) ==
 {
-  "input": {
+    "input": {
     "image":          "<base64 or URL>",   // 필수
     "hairstyle_text": "wolf cut, layered", // 헤어스타일 설명
     "color_text":     "auburn",            // 헤어 색상 (선택)
+    "white_tshirt_experiment": false,      // 선택: 흰색 티셔츠 고정 의상 프롬프트
     "sd_prompt_data": {                    // 선택: 백엔드에서 전달하는 SD 프롬프트
       "sd_positive": "short bob cut, compact side silhouette",
       "sd_negative": "long curtain hair, chest-length front hair",
@@ -374,6 +375,7 @@ def _fetch_rag_context_for_styles(recommendations) -> Optional[str]:
 def _generate_per_recommendation(
     pipeline, img_bgr, recommendations, color_text,
     return_intermediates, mask_refine_mode, subject_gender, lora_path, lora_scale, rag_context,
+    white_tshirt_experiment: bool = False,
 ):
     """추천된 각 스타일마다 1장씩 생성."""
     all_results = []
@@ -413,6 +415,7 @@ def _generate_per_recommendation(
                 lora_path=lora_path,
                 lora_scale=lora_scale,
                 sd_prompt_data=sd_prompt_data,
+                white_tshirt_experiment=white_tshirt_experiment,
             )
             for r in results:
                 r.rank = idx
@@ -499,6 +502,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         mask_refine_mode = str(inp.get("mask_refine_mode", "")).strip().lower() or None
         subject_gender = str(inp.get("subject_gender", inp.get("gender", ""))).strip() or None
         sd_prompt_data = _extract_sd_prompt_data(inp)
+        white_tshirt_experiment = _coerce_bool(inp.get("white_tshirt_experiment"), default=False)
         lora_path = str(inp.get("lora_path", "")).strip() or None
         lora_scale = float(inp.get("lora_scale", 1.0))
 
@@ -541,7 +545,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}, "
             f"mask_refine_mode={mask_refine_mode or 'default'}, "
             f"recommend_mode={is_recommend_mode}, subject_gender={subject_gender or 'auto'}, "
-            f"sd_prompt_data={'yes' if sd_prompt_data else 'no'}"
+            f"sd_prompt_data={'yes' if sd_prompt_data else 'no'}, "
+            f"white_tshirt_experiment={white_tshirt_experiment}"
         )
 
         # ── 파이프라인 실행 ───────────────────────────────────────────────────
@@ -562,6 +567,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 lora_path=lora_path,
                 lora_scale=lora_scale,
                 rag_context=rag_context_str,
+                white_tshirt_experiment=white_tshirt_experiment,
             )
         else:
             results = pipeline.run(
@@ -575,6 +581,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 lora_path=lora_path,
                 lora_scale=lora_scale,
                 sd_prompt_data=sd_prompt_data,
+                white_tshirt_experiment=white_tshirt_experiment,
             )
 
         # ── 결과 직렬화 ───────────────────────────────────────────────────────
