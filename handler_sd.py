@@ -8,6 +8,11 @@ MirrAI SD Inpainting — RunPod Serverless Handler
     "image":          "<base64 or URL>",   // 필수
     "hairstyle_text": "wolf cut, layered", // 헤어스타일 설명
     "color_text":     "auburn",            // 헤어 색상 (선택)
+    "sd_prompt_data": {                    // 선택: 백엔드에서 전달하는 SD 프롬프트
+      "sd_positive": "short bob cut, compact side silhouette",
+      "sd_negative": "long curtain hair, chest-length front hair",
+      "sd_guidance": 8.5
+    },
     "top_k":          3,                   // 결과 수 (1~5, 기본 3)
     "mask_refine_mode": "sam2",            // "sam2" | "segface_priority" | "segface_only"
     "return_base64":  true,
@@ -170,6 +175,31 @@ def _coerce_bool(v: Any, default: bool = False) -> bool:
     if isinstance(v, bool):
         return v
     return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _extract_sd_prompt_data(inp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    raw = inp.get("sd_prompt_data")
+    if not isinstance(raw, dict):
+        return None
+
+    positive = str(raw.get("sd_positive", "")).strip()
+    if not positive:
+        return None
+
+    data: Dict[str, Any] = {"sd_positive": positive}
+
+    negative = str(raw.get("sd_negative", "")).strip()
+    if negative:
+        data["sd_negative"] = negative
+
+    guidance = raw.get("sd_guidance")
+    if guidance not in (None, ""):
+        try:
+            data["sd_guidance"] = float(guidance)
+        except Exception:
+            logger.warning("[handler_sd] invalid sd_guidance ignored: %r", guidance)
+
+    return data
 
 
 def _is_mask_debug_image(name: str) -> bool:
@@ -571,6 +601,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         bg_fill_mode   = str(inp.get("bg_fill_mode", "cv2")).strip()  # "cv2" | "sd"
         mask_refine_mode = str(inp.get("mask_refine_mode", "")).strip().lower() or None
         subject_gender = str(inp.get("subject_gender", inp.get("gender", ""))).strip() or None
+        sd_prompt_data = _extract_sd_prompt_data(inp)
         lora_path = str(inp.get("lora_path", "")).strip() or None
         lora_scale = float(inp.get("lora_scale", 1.0))
 
@@ -612,7 +643,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             f"[handler_sd] 입력: {w}×{h}, "
             f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}, "
             f"mask_refine_mode={mask_refine_mode or 'default'}, "
-            f"recommend_mode={is_recommend_mode}, subject_gender={subject_gender or 'auto'}"
+            f"recommend_mode={is_recommend_mode}, subject_gender={subject_gender or 'auto'}, "
+            f"sd_prompt_data={'yes' if sd_prompt_data else 'no'}"
         )
 
         # ── 파이프라인 실행 ───────────────────────────────────────────────────
@@ -645,6 +677,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 subject_gender=subject_gender,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
+                sd_prompt_data=sd_prompt_data,
             )
 
         # ── 결과 직렬화 ───────────────────────────────────────────────────────

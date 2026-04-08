@@ -84,10 +84,6 @@ try:
     from utils.env_loader import load_project_dotenv
 except Exception:
     load_project_dotenv = None
-try:
-    from utils.trend_prompt import resolve_generation_request
-except Exception:
-    resolve_generation_request = None
 
 if load_project_dotenv is not None:
     load_project_dotenv()
@@ -177,11 +173,11 @@ class MirrAISDPipeline:
 
         Args:
             image:          입력 이미지 (BGR numpy)
-            hairstyle_text: 사용자 헤어스타일 텍스트 (런타임에 llm_refined_trends 기반 보강)
+            hairstyle_text: 사용자/백엔드에서 전달한 헤어스타일 텍스트
             color_text:     헤어 컬러 텍스트
             top_k:          반환 결과 수 (기본 3)
             return_intermediates: 중간 산출물 디버그 이미지 포함 여부
-            sd_prompt_data: DB에서 가져온 SD 프롬프트 데이터
+            sd_prompt_data: 백엔드/상위 레이어에서 전달한 SD 프롬프트 데이터
                             {"sd_positive", "sd_negative", "sd_guidance"}
 
         Returns:
@@ -204,40 +200,8 @@ class MirrAISDPipeline:
         img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         requested_hairstyle_text = " ".join(str(hairstyle_text or "").strip().split())
         requested_color_text = self._normalize_color_text(color_text)
-        trend_request = None
         effective_hairstyle_text = requested_hairstyle_text
         effective_color_text = requested_color_text
-        if resolve_generation_request is not None and (requested_hairstyle_text or requested_color_text):
-            try:
-                trend_request = resolve_generation_request(
-                    requested_hairstyle_text,
-                    requested_color_text,
-                    top_k=3,
-                )
-                resolved_style = " ".join(
-                    str(trend_request.resolved_hairstyle_text or "").strip().split()
-                )
-                resolved_color = self._normalize_color_text(trend_request.resolved_color_text)
-                if resolved_style:
-                    effective_hairstyle_text = resolved_style
-                if resolved_color:
-                    effective_color_text = resolved_color
-                logger.info(
-                    "[SDPipeline] trend resolution: requested_style='%s' -> resolved_style='%s', matches=%d",
-                    requested_hairstyle_text,
-                    effective_hairstyle_text,
-                    len(trend_request.matches),
-                )
-                if trend_request.matches:
-                    logger.info(
-                        "[SDPipeline] top trend match: %s (score=%.3f, source=%s)",
-                        trend_request.matches[0].trend_name,
-                        trend_request.matches[0].score,
-                        trend_request.matches[0].source,
-                    )
-            except Exception as e:
-                logger.warning(f"[SDPipeline] trend resolution skipped: {e}")
-                trend_request = None
         normalized_color_text = self._normalize_color_text(effective_color_text)
         subject_gender_mode = self._infer_subject_gender(
             effective_hairstyle_text,
@@ -255,8 +219,11 @@ class MirrAISDPipeline:
         debug_data_common: Optional[Dict[str, Any]] = {} if return_intermediates else None
         if debug_data_common is not None:
             debug_data_common["subject_gender"] = subject_gender_mode
-        if debug_data_common is not None and trend_request is not None:
-            debug_data_common["trend_resolution"] = trend_request.to_debug_dict()
+            debug_data_common["prompt_input"] = {
+                "hairstyle_text": requested_hairstyle_text,
+                "color_text": requested_color_text,
+                "sd_prompt_data_provided": bool(sd_prompt_data and sd_prompt_data.get("sd_positive")),
+            }
 
         def _store_mask(name: str, mask: Optional[np.ndarray]) -> None:
             if debug_images_common is None or mask is None:

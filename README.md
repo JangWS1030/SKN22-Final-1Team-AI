@@ -525,12 +525,13 @@ push 시 현재 기준으로 아래 워크플로가 동작합니다.
 
 기존 RunPod SD 서비스 경로와 충돌하지 않도록 완전히 분리된 네임스페이스로 넣었습니다. 자세한 사용법은 `docs/rag_pipeline.md`를 보면 됩니다.
 
-## 생성 프롬프트와 트렌드 데이터
+## 생성 프롬프트 입력
 
-런타임 헤어 생성은 `data/llm_refined_trends.json`를 기준으로 요청한 `hairstyle_text`를 해석합니다.
+런타임 헤어 생성은 더 이상 `data/llm_refined_trends.json`를 기준으로 `hairstyle_text`를 내부에서 재해석하지 않습니다.
 
-- 한국어/영문 스타일명을 트렌드 레코드와 매칭
-- 매칭된 `hairstyle_text` 키워드로 SAM2 힌트, 길이 분류, SD 프롬프트를 보강
+- 기본 입력은 요청에 들어온 `hairstyle_text`, `color_text` 그대로 사용
+- 백엔드가 `sd_prompt_data`를 함께 보내면 해당 `sd_positive` / `sd_negative` / `sd_guidance`를 우선 사용
+- `sd_prompt_data`가 없으면 파이프라인이 `hairstyle_text`와 `color_text`를 기반으로 폴백 SD 프롬프트를 구성
 - `color_text`는 사용자가 명시한 경우에만 실제 색상 타깃으로 적용
 
 ## 검증 기준

@@ -42,7 +42,7 @@
 아래 값들은 더 이상 `SDInpaintConfig`로 받지 않고 파이프라인 내부 로직으로 고정되어 있습니다.
 
 - `guidance_scale`
-  - `_build_prompt()`에서 헤어 길이별로 내부 결정
+  - `sd_prompt_data.sd_guidance`가 있으면 외부 입력을 사용하고, 없으면 `_build_prompt()` 내부 로직으로 결정
 - `face_crop_padding`
   - `_crop_face()` 내부의 고정 비율 사용
 - `enable_xformers`
@@ -69,4 +69,4 @@
 - `--lora-path`
 - `--lora-scale`
 
-`guidance_scale`은 benchmark CLI에서 직접 받지 않습니다. 현재 파이프라인은 prompt 길이 분류 결과에 따라 guidance를 내부에서 계산합니다.
+`guidance_scale`은 benchmark CLI에서 직접 받지 않습니다. 현재 파이프라인은 외부 `sd_prompt_data`가 있으면 그 값을 쓰고, 없으면 prompt 길이 분류 결과에 따라 내부에서 계산합니다.
