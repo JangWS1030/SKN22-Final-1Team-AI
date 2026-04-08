@@ -33,10 +33,20 @@
 - ControlNet canny
 - IP-Adapter face
 
+### short/medium 의상 전면 처리 순서
+
+- `source_garment_prepass_mask`로 torso-front / chest-center 의상 복원 영역을 먼저 확보
+- `upper_clothes_overwrite`와 short 전용 torso repaint seed를 prepass / guard release에 선반영
+- 이후 본 SD inpainting에서 short/medium silhouette를 생성
+- 마지막에 `short_lower_tail_cleanup`, `short_lower_cloth_hard_override`, `final_source_cloth_rescue` 같은 후처리로 잔존 artifact를 정리
+
+즉 현재 short/medium 경로는 "생성 후 의상 복원만 하는 구조"가 아니라, 의상 전면 복원 마스크를 먼저 열어두고 본 생성과 후처리를 이어가는 구조입니다.
+
 ## 최근 업데이트 반영
 
 - **입력 이미지 표준화**: `enable_input_standardization` 로직 추가로 인물 중심 스튜디오 비율 최적화 지원
 - **단발/중단발 마스크 개선**: 얼굴/목/가슴 영역 세분화를 통한 의상(어깨 선, 밝은 옷 등) 및 피부 보존/복원 로직 대폭 강화
+- **source garment prepass 확장**: short 변환에서 torso hair side-column까지 prepass / bridge / ControlNet suppression 경로에 반영
 - **RunPod 환경 및 모니터링 대응**: `$RUNPOD_POD_ID` 등 웹훅 환경 변수 자동 정규화, API 응답에 빌드 태그 및 노드 메타 정보 추가
 - **디버그 마스크 응답 강화**: 여러 마스크를 분리하여 확인할 수 있도록 핸들러 리턴 구조 개편
 

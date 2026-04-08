@@ -807,6 +807,8 @@ class MirrAISDPipeline:
         source_garment_prepass_mask: Optional[np.ndarray] = None
         source_garment_prepass_enabled = False
         source_garment_prepass_applied = False
+        source_garment_prepass_apply_mode = ""
+        source_garment_prepass_error = ""
         disable_short_postprocess_experiment = False
         if disable_short_postprocess_experiment:
             logger.info("[SDPipeline] short postprocess disabled for experiment")
@@ -2464,6 +2466,7 @@ class MirrAISDPipeline:
                         refine_mode="garment",
                     )
                     source_garment_prepass_applied = True
+                    source_garment_prepass_apply_mode = "sd"
                     logger.info(
                         "[SDPipeline] source garment prepass applied: pixels=%d seed=%d",
                         source_garment_prepass_px,
@@ -2495,12 +2498,44 @@ class MirrAISDPipeline:
                             source_shoulder_contour_anchor_px,
                         )
                 except Exception as e:
+                    source_garment_prepass_error = f"{type(e).__name__}: {e}"
                     logger.warning(f"[SDPipeline] source garment prepass 실패(무시): {e}")
+                    try:
+                        img_rgb_cleaned = self._cv2_refine_cloth_region(
+                            img_rgb_cleaned,
+                            source_garment_prepass_mask,
+                            reference_rgb=img_rgb,
+                            reference_mask=cloth_mask_dilated,
+                        )
+                        source_garment_prepass_applied = True
+                        source_garment_prepass_apply_mode = "cv2_fallback"
+                        logger.info(
+                            "[SDPipeline] source garment prepass fallback applied: pixels=%d mode=%s",
+                            source_garment_prepass_px,
+                            source_garment_prepass_apply_mode,
+                        )
+                    except Exception as fallback_e:
+                        fallback_message = f"{type(fallback_e).__name__}: {fallback_e}"
+                        source_garment_prepass_error = (
+                            f"{source_garment_prepass_error} | fallback={fallback_message}"
+                        )
+                        logger.warning(
+                            "[SDPipeline] source garment prepass fallback 실패(무시): %s",
+                            fallback_e,
+                        )
                 if debug_data_common is not None:
                     debug_data_common.setdefault("source_cloth_preclean", {})
+                    debug_data_common["source_cloth_preclean"]["garment_prepass_attempted"] = True
                     debug_data_common["source_cloth_preclean"]["garment_prepass_applied"] = bool(
                         source_garment_prepass_applied
                     )
+                    debug_data_common["source_cloth_preclean"]["garment_prepass_apply_mode"] = (
+                        source_garment_prepass_apply_mode
+                    )
+                    if source_garment_prepass_error:
+                        debug_data_common["source_cloth_preclean"]["garment_prepass_error"] = (
+                            source_garment_prepass_error
+                        )
                     debug_data_common["source_cloth_preclean"]["shoulder_contour_restore_applied"] = bool(
                         source_shoulder_contour_anchor_px >= 80 and source_garment_prepass_applied
                     )
@@ -3003,6 +3038,14 @@ class MirrAISDPipeline:
                     canny_suppress,
                     self._dilate_mask_with_px(hair_mask_for_sd.astype(np.float32), 25),
                 )
+                if (
+                    isinstance(source_garment_prepass_mask, np.ndarray)
+                    and source_garment_prepass_mask.shape == canny_suppress.shape
+                ):
+                    canny_suppress = np.maximum(
+                        canny_suppress,
+                        self._dilate_mask_with_px(source_garment_prepass_mask.astype(np.float32), 17),
+                    )
                 if (
                     lower_tail_support_mask is not None
                     and lower_tail_support_mask.shape == canny_suppress.shape
