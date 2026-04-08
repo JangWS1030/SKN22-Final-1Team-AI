@@ -176,6 +176,8 @@ class SDInpaintConfig:
     short_generation_controlnet_scale_cap: float = 0.04
     short_internal_candidate_count: int = 3
     short_generation_conditioning_cleanup_min_px: int = 180
+    short_generation_plain_cloth_stabilize: bool = True
+    short_generation_freeze_skip_shoulder_refine: bool = True
 
     # Canny edge 파라미터
     canny_low: int  = 80
