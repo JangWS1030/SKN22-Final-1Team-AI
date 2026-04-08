@@ -5311,6 +5311,9 @@ def _build_lower_tail_post_support_mask(
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(support_u8, 8)
     max_area = max(640, int(face_w * face_h * (0.44 if hair_length == "short" else 0.14)))
     max_width = max(34, int(face_w * (0.34 if hair_length == "short" else 0.20)))
+    rescue_max_width = max_width
+    if hair_length == "short" and int((torso_side_rescue_u8 > 0).sum()) > 0:
+        rescue_max_width = max(max_width, max(44, int(face_w * 0.42)))
     min_height = max(24, int(face_h * (0.22 if hair_length == "short" else 0.14)))
     min_bottom = int(cutoff_y + face_h * (0.10 if hair_length == "short" else 0.08))
     max_offset = max(34, int(face_w * 1.04))
@@ -5323,9 +5326,14 @@ def _build_lower_tail_post_support_mask(
         comp_mask = labels == idx
         comp_xs = np.where(comp_mask)[1]
         comp_cx = float(comp_xs.mean()) if comp_xs.size else float(x + (w * 0.5))
+        allowed_max_width = max_width
+        if rescue_max_width > max_width:
+            rescue_overlap = int((torso_side_rescue_u8[comp_mask] > 0).sum())
+            if rescue_overlap >= max(24, int(area * 0.08)):
+                allowed_max_width = rescue_max_width
         if area < 8 or area > max_area:
             continue
-        if w > max_width or h < min_height:
+        if w > allowed_max_width or h < min_height:
             continue
         if (y + h) < min_bottom:
             continue
