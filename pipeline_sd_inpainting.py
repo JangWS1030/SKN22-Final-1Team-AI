@@ -4506,6 +4506,11 @@ class MirrAISDPipeline:
             ):
                 try:
                     side_column_restore_applied = False
+                    side_column_restore_skipped_for_freeze = bool(
+                        hair_length == "short"
+                        and short_torso_generation_freeze_active
+                        and getattr(self.config, "short_generation_freeze_skip_side_column_restore", False)
+                    )
                     final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
                     final_hair_mask, _, _ = self._segface_hair_mask(final_rgb, face_bbox)
                     side_column_debug_info: Dict[str, Any] = {}
@@ -4561,7 +4566,7 @@ class MirrAISDPipeline:
                         (np.clip(side_column_restore_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
                     )
                     side_column_px = int((side_column_restore_u8 > 0).sum())
-                    if side_column_px >= 160:
+                    if side_column_px >= 160 and not side_column_restore_skipped_for_freeze:
                         if hair_length != "short":
                             final_rgb = self._sd_refine_removed_region(
                                 base_rgb=final_rgb,
@@ -4657,6 +4662,11 @@ class MirrAISDPipeline:
                         )
                 except Exception as e:
                     logger.warning(f"[SDPipeline] side column cloth restore failed (ignored): {e}")
+                if debug_data_common is not None and rank == 0:
+                    debug_data_common.setdefault("short_postprocess", {})
+                    debug_data_common["short_postprocess"]["side_column_cloth_restore_skipped_for_freeze"] = bool(
+                        side_column_restore_skipped_for_freeze
+                    )
             if (
                 hair_length == "short"
                 and cloth_mask_dilated is not None
