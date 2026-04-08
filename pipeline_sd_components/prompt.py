@@ -1036,12 +1036,14 @@ def _build_prompt(
         guidance = 10.9
     elif hair_length == "short":
         pos_suffix = (
-            ", short jaw-length bob, visible neck, above shoulders, no long tails"
+            ", short jaw-length bob, hair ending at the jawline, compact side contour, visible neck, above shoulders, no long tails, no hair on chest"
         )
         neg_prefix = (
             "very long hair, medium hair, medium length hair, medium-length hair, shoulder-length hair, "
             "shoulder grazing hair, shoulder-grazing hair, collarbone-length hair, lob, "
             "flowing long hair, hair below shoulders, waist-length hair, side long locks over chest, "
+            "center-part curtain hair, center-part long hair, curtain bangs with long side panels, "
+            "long straight front panels, long face-framing panels, chest-covering curtain hair, "
             "long hush cut, long wolf cut, mullet tails, long layers below jawline, "
             "hair touching shoulders, hair covering collar, chest-length strands, neckline covered by hair, "
             "hair below jawline, hair below neckline, dangling lower tails, long side tails, nape tails, "
@@ -1049,7 +1051,7 @@ def _build_prompt(
             "overly voluminous hair, puffy hair, oversized bob, wide helmet shape, bulky side volume, "
             "blunt horizontal cut line, helmet hair, bowl-shaped edge, "
         )
-        guidance = 11.2
+        guidance = 11.8
     elif hair_length == "medium" and gender_mode == "male":
         pos_suffix = (
             ", masculine medium cut, balanced forehead, centered volume, no side sweep, no jewelry"

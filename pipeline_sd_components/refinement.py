@@ -21,6 +21,25 @@ from .config import SD_SIZE, _COMMON_STYLE_BLOCK_NEGATIVE
 logger = logging.getLogger(__name__)
 
 
+def _resolve_generation_conditioning(
+    self,
+    hair_length: str,
+) -> Tuple[float, float]:
+    if hair_length == "short":
+        ip_scale = float(self.config.short_generation_ip_adapter_scale)
+        control_scale = min(
+            float(self.config.controlnet_conditioning_scale),
+            float(self.config.short_generation_controlnet_scale_cap),
+        )
+    elif hair_length == "medium":
+        ip_scale = 0.18
+        control_scale = min(self.config.controlnet_conditioning_scale, 0.20)
+    else:
+        ip_scale = self.config.ip_adapter_scale
+        control_scale = self.config.controlnet_conditioning_scale
+    return float(ip_scale), float(control_scale)
+
+
 def _generate(
     self,
     img_512: Image.Image,
@@ -39,18 +58,9 @@ def _generate(
     diffusers는 generator를 리스트로 받으면 num_images_per_prompt 개의
     이미지를 각자 다른 seed로 한 번의 파이프라인 실행에 처리함.
     """
-    # 숏컷/중단발 변환 시 IP-Adapter scale을 낮춤
-    # → 원본 긴머리 identity가 생성에 과도하게 영향주는 것 방지
-    if hair_length == "short":
-        ip_scale = 0.01
-        control_scale = min(self.config.controlnet_conditioning_scale, 0.08)
-    elif hair_length == "medium":
-        ip_scale = 0.18
-        control_scale = min(self.config.controlnet_conditioning_scale, 0.20)
-    else:
-        ip_scale = self.config.ip_adapter_scale  # long은 기본값 유지
-        control_scale = self.config.controlnet_conditioning_scale
-
+    # 숏컷/중단발 변환 시 IP-Adapter / ControlNet 비중을 낮춰
+    # 원본 긴머리 실루엣 고착을 줄인다.
+    ip_scale, control_scale = self._resolve_generation_conditioning(hair_length)
     self._sd_pipe.set_ip_adapter_scale(ip_scale)
     logger.info(
         f"[SDPipeline] ip_adapter_scale={ip_scale}, "
@@ -1338,6 +1348,7 @@ def unload(self) -> None:
 
 def bind_refinement_methods_to_pipeline(cls) -> None:
     """정제/복원/합성 메서드를 MirrAISDPipeline에 바인딩."""
+    cls._resolve_generation_conditioning = _resolve_generation_conditioning
     cls._generate = _generate
     cls._cv2_refine_cloth_region = staticmethod(_cv2_refine_cloth_region)
     cls._sd_refine_removed_region = _sd_refine_removed_region

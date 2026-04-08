@@ -818,6 +818,13 @@ class MirrAISDPipeline:
                 disable_short_postprocess_experiment
             )
         if hair_length == "short":
+            short_internal_target = max(
+                int(requested_top_k),
+                int(self.config.short_internal_candidate_count),
+            )
+            if len(seeds) < short_internal_target:
+                extra = short_internal_target - len(seeds)
+                seeds.extend(random.randint(0, 2**31 - 1) for _ in range(extra))
             logger.info(
                 f"[SDPipeline] short internal candidate count: requested={requested_top_k}, internal={len(seeds)}"
             )
@@ -3198,9 +3205,29 @@ class MirrAISDPipeline:
             sd_prompt_data=sd_prompt_data,
             source_garment_hints=source_garment_prompt_hints,
         )
+        generation_ip_scale, generation_control_scale = self._resolve_generation_conditioning(
+            hair_length
+        )
         logger.info(f"[SDPipeline] 프롬프트: {prompt}")
         logger.info(f"[SDPipeline] 네거티브: {neg_prompt}")
         logger.info(f"[SDPipeline] guidance_scale: {guidance}")
+        logger.info(
+            "[SDPipeline] generation conditioning: ip_adapter_scale=%.4f controlnet_scale=%.4f internal_candidates=%d",
+            generation_ip_scale,
+            generation_control_scale,
+            len(seeds),
+        )
+        if debug_data_common is not None:
+            debug_data_common["generation_prompt"] = {
+                "positive": prompt,
+                "negative": neg_prompt,
+                "guidance_scale": float(guidance),
+            }
+            debug_data_common["generation_conditioning"] = {
+                "ip_adapter_scale": float(generation_ip_scale),
+                "controlnet_scale": float(generation_control_scale),
+                "internal_candidate_count": int(len(seeds)),
+            }
 
         # ── Step 7: SD Inpainting ─────────────────────────────────────────────
         gen_images = self._generate(

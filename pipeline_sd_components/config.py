@@ -146,6 +146,9 @@ class SDInpaintConfig:
     num_inference_steps: int = 30
     controlnet_conditioning_scale: float = 0.3   # 낮춰야 텍스트 프롬프트가 먹힘
     ip_adapter_scale: float = 0.35               # 너무 강하면 원본 헤어 유지해버림
+    short_generation_ip_adapter_scale: float = 0.0
+    short_generation_controlnet_scale_cap: float = 0.04
+    short_internal_candidate_count: int = 3
 
     # Canny edge 파라미터
     canny_low: int  = 80
