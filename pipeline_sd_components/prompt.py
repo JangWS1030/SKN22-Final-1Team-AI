@@ -967,6 +967,13 @@ def _build_prompt(
         deduped_negative_parts.append(str(part).strip())
 
     garment_positive_hint = ", ".join(deduped_positive_parts[:3])
+    if hair_length == "short":
+        short_garment_parts = [
+            part for part in deduped_positive_parts
+            if part in {"same original upper garment"}
+        ]
+        if short_garment_parts:
+            garment_positive_hint = ", ".join(short_garment_parts)
     garment_negative_hint = ", ".join(deduped_negative_parts)
     if garment_negative_hint:
         garment_negative_hint += ", "
@@ -1031,7 +1038,7 @@ def _build_prompt(
         guidance = 10.9
     elif hair_length == "short":
         pos_suffix = (
-            ", short jaw-length bob, hair ending at the jawline, compact side contour, visible neck, above shoulders, no long tails, no hair on chest"
+            ", precise cropped chin-length bob, hair ending above the jawline, tucked inward ends at the jawline, compact cheek-hugging side silhouette, clear jaw contour, exposed lower neck, above shoulders, no strands below chin, no long tails, no hair on chest, no curtain side panels"
         )
         neg_prefix = (
             "very long hair, medium hair, medium length hair, medium-length hair, shoulder-length hair, "
@@ -1039,14 +1046,15 @@ def _build_prompt(
             "flowing long hair, hair below shoulders, waist-length hair, side long locks over chest, "
             "center-part curtain hair, center-part long hair, curtain bangs with long side panels, "
             "long straight front panels, long face-framing panels, chest-covering curtain hair, "
+            "long vertical side panels, elongated front curtains, dangling front sheets, long front curtains over cheeks, "
             "long hush cut, long wolf cut, mullet tails, long layers below jawline, "
             "hair touching shoulders, hair covering collar, chest-length strands, neckline covered by hair, "
-            "hair below jawline, hair below neckline, dangling lower tails, long side tails, nape tails, "
+            "hair below jawline, hair below neckline, dangling lower tails, long side tails, nape tails, side columns below chin, "
             "strands touching clothes, side locks on shoulders, hair covering blouse, "
             "overly voluminous hair, puffy hair, oversized bob, wide helmet shape, bulky side volume, "
             "blunt horizontal cut line, helmet hair, bowl-shaped edge, "
         )
-        guidance = 11.8
+        guidance = 12.2
     elif hair_length == "medium" and gender_mode == "male":
         pos_suffix = (
             ", masculine medium cut, balanced forehead, centered volume, no side sweep, no jewelry"
@@ -1091,6 +1099,8 @@ def _build_prompt(
     positive_parts = [
         primary_positive,
     ]
+    if hair_length == "short":
+        positive_parts.append("strict short bob silhouette, hair mass ending above the neckline")
     if color_pos_hint:
         positive_parts.append(color_pos_hint)
     positive_parts.extend([
