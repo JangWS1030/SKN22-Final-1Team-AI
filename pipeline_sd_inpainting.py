@@ -907,6 +907,9 @@ class MirrAISDPipeline:
         effective_upper_clothes_overwrite_mask = np.zeros((H, W), dtype=np.float32)
         effective_upper_clothes_overwrite_core_mask = np.zeros((H, W), dtype=np.float32)
         overwrite_core_restore_mask_for_debug = np.zeros((H, W), dtype=np.float32)
+        short_torso_generation_freeze_mask = np.zeros((H, W), dtype=np.float32)
+        short_torso_generation_freeze_px = 0
+        short_torso_generation_freeze_active = False
         gen_mask_before_upper_overwrite = np.zeros((H, W), dtype=np.float32)
         gen_mask_after_upper_overwrite = np.zeros((H, W), dtype=np.float32)
         gen_mask_after_initial_core = np.zeros((H, W), dtype=np.float32)
@@ -989,10 +992,11 @@ class MirrAISDPipeline:
             )
             upper_clothes_overwrite_px = int((upper_clothes_overwrite_u8 > 0).sum())
             if upper_clothes_overwrite_px >= int(self.config.upper_clothes_overwrite_min_px):
-                cloth_generation_guard_release_mask = np.maximum(
-                    cloth_generation_guard_release_mask.astype(np.float32),
-                    np.clip(upper_clothes_overwrite_mask.astype(np.float32), 0.0, 1.0),
-                ).astype(np.float32)
+                if hair_length != "short":
+                    cloth_generation_guard_release_mask = np.maximum(
+                        cloth_generation_guard_release_mask.astype(np.float32),
+                        np.clip(upper_clothes_overwrite_mask.astype(np.float32), 0.0, 1.0),
+                    ).astype(np.float32)
                 source_garment_prepass_mask = np.maximum(
                     source_garment_prepass_mask.astype(np.float32),
                     np.clip(upper_clothes_overwrite_mask.astype(np.float32) * overwrite_prepass_alpha, 0.0, 1.0),
@@ -1060,21 +1064,22 @@ class MirrAISDPipeline:
                         np.clip(upper_clothes_overwrite_core_mask.astype(np.float32) * overwrite_core_alpha, 0.0, 1.0),
                     ).astype(np.float32)
                 if short_upper_body_repaint_px >= 16:
-                    repaint_release_u8 = cv2.dilate(
-                        short_upper_body_repaint_u8,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 27)),
-                        iterations=1,
-                    )
-                    repaint_release_f = cv2.GaussianBlur(
-                        repaint_release_u8.astype(np.float32) / 255.0,
-                        (0, 0),
-                        sigmaX=4.0,
-                        sigmaY=6.0,
-                    )
-                    cloth_generation_guard_release_mask = np.maximum(
-                        cloth_generation_guard_release_mask.astype(np.float32),
-                        np.clip(repaint_release_f.astype(np.float32), 0.0, 1.0),
-                    ).astype(np.float32)
+                    if hair_length != "short":
+                        repaint_release_u8 = cv2.dilate(
+                            short_upper_body_repaint_u8,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 27)),
+                            iterations=1,
+                        )
+                        repaint_release_f = cv2.GaussianBlur(
+                            repaint_release_u8.astype(np.float32) / 255.0,
+                            (0, 0),
+                            sigmaX=4.0,
+                            sigmaY=6.0,
+                        )
+                        cloth_generation_guard_release_mask = np.maximum(
+                            cloth_generation_guard_release_mask.astype(np.float32),
+                            np.clip(repaint_release_f.astype(np.float32), 0.0, 1.0),
+                        ).astype(np.float32)
                     source_garment_prepass_mask = np.maximum(
                         source_garment_prepass_mask.astype(np.float32),
                         np.clip(short_upper_body_repaint_mask.astype(np.float32) * overwrite_prepass_alpha, 0.0, 1.0),
@@ -1104,51 +1109,52 @@ class MirrAISDPipeline:
                 0.0,
                 1.0,
             ).astype(np.float32)
-            cloth_generation_guard_release_mask = np.maximum(
-                cloth_generation_guard_release_mask.astype(np.float32),
-                effective_upper_clothes_overwrite_mask.astype(np.float32),
-            ).astype(np.float32)
-            cloth_generation_guard_release_mask = np.maximum(
-                cloth_generation_guard_release_mask.astype(np.float32),
-                effective_upper_clothes_overwrite_core_mask.astype(np.float32),
-            ).astype(np.float32)
-            cloth_generation_guard_release_mask = np.maximum(
-                cloth_generation_guard_release_mask.astype(np.float32),
-                np.clip(completed_torso_fill_mask.astype(np.float32) * 0.92, 0.0, 1.0),
-            ).astype(np.float32)
-            cloth_generation_guard_release_mask = np.maximum(
-                cloth_generation_guard_release_mask.astype(np.float32),
-                np.clip(source_garment_prepass_mask.astype(np.float32) * 0.96, 0.0, 1.0),
-            ).astype(np.float32)
-            if float(cloth_generation_guard_release_mask.sum()) > 0.0:
-                release_expand_px = max(8, int(getattr(self.config, "overwrite_cloth_guard_expand_px", 24)))
-                release_u8 = (
-                    np.clip(cloth_generation_guard_release_mask.astype(np.float32), 0.0, 1.0) > 0.04
-                ).astype(np.uint8) * 255
-                release_u8 = cv2.dilate(
-                    release_u8,
-                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (release_expand_px, release_expand_px)),
-                    iterations=1,
-                )
-                release_sigma_x = max(2.2, float(release_expand_px) * 0.28)
-                release_sigma_y = max(2.8, float(release_expand_px) * 0.36)
-                release_f = cv2.GaussianBlur(
-                    release_u8.astype(np.float32) / 255.0,
-                    (0, 0),
-                    sigmaX=release_sigma_x,
-                    sigmaY=release_sigma_y,
+            if hair_length != "short":
+                cloth_generation_guard_release_mask = np.maximum(
+                    cloth_generation_guard_release_mask.astype(np.float32),
+                    effective_upper_clothes_overwrite_mask.astype(np.float32),
                 ).astype(np.float32)
-                guard_residual = float(np.clip(getattr(self.config, "overwrite_cloth_guard_residual", 0.12), 0.0, 0.70))
-                guard_keep_factor = np.clip(
-                    1.0 - np.clip(release_f, 0.0, 1.0) * (1.0 - guard_residual),
-                    0.0,
-                    1.0,
+                cloth_generation_guard_release_mask = np.maximum(
+                    cloth_generation_guard_release_mask.astype(np.float32),
+                    effective_upper_clothes_overwrite_core_mask.astype(np.float32),
                 ).astype(np.float32)
-                cloth_generation_guard = np.clip(
-                    cloth_mask_dilated.astype(np.float32) * guard_keep_factor,
-                    0.0,
-                    1.0,
+                cloth_generation_guard_release_mask = np.maximum(
+                    cloth_generation_guard_release_mask.astype(np.float32),
+                    np.clip(completed_torso_fill_mask.astype(np.float32) * 0.92, 0.0, 1.0),
                 ).astype(np.float32)
+                cloth_generation_guard_release_mask = np.maximum(
+                    cloth_generation_guard_release_mask.astype(np.float32),
+                    np.clip(source_garment_prepass_mask.astype(np.float32) * 0.96, 0.0, 1.0),
+                ).astype(np.float32)
+                if float(cloth_generation_guard_release_mask.sum()) > 0.0:
+                    release_expand_px = max(8, int(getattr(self.config, "overwrite_cloth_guard_expand_px", 24)))
+                    release_u8 = (
+                        np.clip(cloth_generation_guard_release_mask.astype(np.float32), 0.0, 1.0) > 0.04
+                    ).astype(np.uint8) * 255
+                    release_u8 = cv2.dilate(
+                        release_u8,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (release_expand_px, release_expand_px)),
+                        iterations=1,
+                    )
+                    release_sigma_x = max(2.2, float(release_expand_px) * 0.28)
+                    release_sigma_y = max(2.8, float(release_expand_px) * 0.36)
+                    release_f = cv2.GaussianBlur(
+                        release_u8.astype(np.float32) / 255.0,
+                        (0, 0),
+                        sigmaX=release_sigma_x,
+                        sigmaY=release_sigma_y,
+                    ).astype(np.float32)
+                    guard_residual = float(np.clip(getattr(self.config, "overwrite_cloth_guard_residual", 0.12), 0.0, 0.70))
+                    guard_keep_factor = np.clip(
+                        1.0 - np.clip(release_f, 0.0, 1.0) * (1.0 - guard_residual),
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
+                    cloth_generation_guard = np.clip(
+                        cloth_mask_dilated.astype(np.float32) * guard_keep_factor,
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
         hair_mask = np.clip(hair_mask - cloth_generation_guard, 0.0, 1.0)
         _store_mask("segface_cloth_mask_dilated", cloth_mask_dilated)
         _store_mask("pipeline_cloth_generation_guard_release_mask", cloth_generation_guard_release_mask)
@@ -1190,9 +1196,49 @@ class MirrAISDPipeline:
         source_garment_prepass_bridge_px = int(source_garment_prepass_state["bridge_px"])
         source_garment_prepass_bridge_applied = bool(source_garment_prepass_state["bridge_applied"])
         source_garment_prepass_bridge_min_px = int(source_garment_prepass_state["bridge_min_px"])
+        if hair_length == "short" and source_garment_prepass_enabled:
+            short_torso_generation_freeze_mask = np.maximum(
+                short_torso_generation_freeze_mask.astype(np.float32),
+                np.clip(source_garment_prepass_mask.astype(np.float32), 0.0, 1.0),
+            ).astype(np.float32)
+            if effective_upper_clothes_overwrite_mask.shape == (H, W):
+                short_torso_generation_freeze_mask = np.maximum(
+                    short_torso_generation_freeze_mask.astype(np.float32),
+                    np.clip(effective_upper_clothes_overwrite_mask.astype(np.float32), 0.0, 1.0),
+                ).astype(np.float32)
+            if effective_upper_clothes_overwrite_core_mask.shape == (H, W):
+                short_torso_generation_freeze_mask = np.maximum(
+                    short_torso_generation_freeze_mask.astype(np.float32),
+                    np.clip(effective_upper_clothes_overwrite_core_mask.astype(np.float32), 0.0, 1.0),
+                ).astype(np.float32)
+            if short_upper_body_repaint_seed_mask.shape == (H, W):
+                short_torso_generation_freeze_mask = np.maximum(
+                    short_torso_generation_freeze_mask.astype(np.float32),
+                    np.clip(short_upper_body_repaint_seed_mask.astype(np.float32) * 0.92, 0.0, 1.0),
+                ).astype(np.float32)
+            if cloth_mask_dilated.shape == (H, W):
+                freeze_cloth_gate = self._dilate_mask_with_px(
+                    cloth_mask_dilated.astype(np.float32),
+                    13,
+                )
+                freeze_cloth_gate = np.maximum(
+                    freeze_cloth_gate.astype(np.float32),
+                    np.clip(source_garment_prepass_mask.astype(np.float32), 0.0, 1.0),
+                ).astype(np.float32)
+                short_torso_generation_freeze_mask = np.clip(
+                    short_torso_generation_freeze_mask.astype(np.float32)
+                    * np.clip(freeze_cloth_gate.astype(np.float32), 0.0, 1.0),
+                    0.0,
+                    1.0,
+                ).astype(np.float32)
+            short_torso_generation_freeze_px = self._count_active_mask_px(
+                short_torso_generation_freeze_mask
+            )
+            short_torso_generation_freeze_active = short_torso_generation_freeze_px >= 120
 
         _store_mask("pipeline_completed_torso_fill_mask", completed_torso_fill_mask)
         _store_mask("pipeline_source_garment_prepass_mask", source_garment_prepass_mask)
+        _store_mask("pipeline_short_torso_generation_freeze_mask", short_torso_generation_freeze_mask)
         _store_mask(
             "pipeline_source_garment_prepass_bridge_mask",
             source_garment_prepass_state.get("bridge_mask"),
@@ -1214,6 +1260,12 @@ class MirrAISDPipeline:
             )
             debug_data_common["source_cloth_preclean"]["garment_prepass_bridge_applied"] = bool(
                 source_garment_prepass_bridge_applied
+            )
+            debug_data_common["source_cloth_preclean"]["torso_generation_freeze_px"] = (
+                short_torso_generation_freeze_px
+            )
+            debug_data_common["source_cloth_preclean"]["torso_generation_freeze_active"] = bool(
+                short_torso_generation_freeze_active
             )
             debug_data_common["source_cloth_preclean"]["shoulder_contour_anchor_px"] = (
                 source_shoulder_contour_anchor_px
@@ -1238,6 +1290,9 @@ class MirrAISDPipeline:
         shoulder_cloth_release_for_post: Optional[np.ndarray] = None
         artifact_cleanup_mask_for_post: Optional[np.ndarray] = None
         lower_tail_support_for_post: Optional[np.ndarray] = None
+        short_generation_conditioning_cleanup_mask = np.zeros((H, W), dtype=np.float32)
+        short_generation_conditioning_cleanup_px = 0
+        short_generation_conditioning_cleanup_applied = False
         below_bob_generation_block_for_post: Optional[np.ndarray] = None
         below_bob_cloth_restore_for_post: Optional[np.ndarray] = None
         shoulder_hair_forbid_for_post: Optional[np.ndarray] = None
@@ -1854,7 +1909,11 @@ class MirrAISDPipeline:
 
             gen_mask = np.clip(gen_mask - protect_mask_for_sd, 0.0, 1.0)
             gen_mask = np.clip(gen_mask - cloth_generation_guard, 0.0, 1.0)
-            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == (H, W):
+            if (
+                use_upper_clothes_overwrite
+                and effective_upper_clothes_overwrite_mask.shape == (H, W)
+                and not short_torso_generation_freeze_active
+            ):
                 gen_mask = np.maximum(gen_mask, effective_upper_clothes_overwrite_mask).astype(np.float32)
 
             if hair_length == "short":
@@ -1937,7 +1996,11 @@ class MirrAISDPipeline:
                     iterations=1,
                 )
             gen_mask_before_upper_overwrite = gen_mask.astype(np.float32).copy()
-            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == (H, W):
+            if (
+                use_upper_clothes_overwrite
+                and effective_upper_clothes_overwrite_mask.shape == (H, W)
+                and not short_torso_generation_freeze_active
+            ):
                 overwrite_restore_mask = effective_upper_clothes_overwrite_mask.astype(np.float32)
                 if protect_mask_for_sd.shape == (H, W):
                     overwrite_restore_mask = np.clip(
@@ -1947,7 +2010,11 @@ class MirrAISDPipeline:
                     )
                 gen_mask = np.maximum(gen_mask.astype(np.float32), overwrite_restore_mask).astype(np.float32)
             gen_mask_after_upper_overwrite = gen_mask.astype(np.float32).copy()
-            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == (H, W):
+            if (
+                use_upper_clothes_overwrite
+                and effective_upper_clothes_overwrite_core_mask.shape == (H, W)
+                and not short_torso_generation_freeze_active
+            ):
                 core_restore_mask = effective_upper_clothes_overwrite_core_mask.astype(np.float32)
                 if protect_mask_for_sd.shape == (H, W):
                     core_restore_mask = np.clip(
@@ -1996,7 +2063,11 @@ class MirrAISDPipeline:
                 _store_mask("pipeline_bangs_generation_soft_mask", soft_bangs_generation_mask)
                 _store_mask("pipeline_bangs_composite_release_mask", composite_bangs_release_mask)
             gen_mask_before_final_core = gen_mask.astype(np.float32).copy()
-            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == (H, W):
+            if (
+                use_upper_clothes_overwrite
+                and effective_upper_clothes_overwrite_core_mask.shape == (H, W)
+                and not short_torso_generation_freeze_active
+            ):
                 core_restore_mask = effective_upper_clothes_overwrite_core_mask.astype(np.float32)
                 if protect_mask_for_sd.shape == (H, W):
                     core_restore_mask = np.clip(
@@ -2009,6 +2080,13 @@ class MirrAISDPipeline:
                     core_restore_mask.astype(np.float32),
                 ).astype(np.float32)
                 gen_mask = np.maximum(gen_mask.astype(np.float32), core_restore_mask).astype(np.float32)
+            if short_torso_generation_freeze_active and short_torso_generation_freeze_mask.shape == (H, W):
+                gen_mask = np.clip(
+                    gen_mask.astype(np.float32)
+                    - short_torso_generation_freeze_mask.astype(np.float32) * 1.45,
+                    0.0,
+                    1.0,
+                ).astype(np.float32)
             gen_mask_after_final_core = gen_mask.astype(np.float32).copy()
             _store_mask("pipeline_short_removal_mask", removal_mask_for_post)
             _store_mask("pipeline_short_generation_seed_mask", short_generation_seed_mask_for_debug)
@@ -2842,18 +2920,97 @@ class MirrAISDPipeline:
                     )
                 _store_mask("pipeline_short_regen_tail_mask", regen_tail_mask)
 
+            if hair_length == "short" and cutoff_y_for_post is not None:
+                try:
+                    short_generation_conditioning_cleanup_mask = (
+                        self._build_short_generation_conditioning_cleanup_mask(
+                            source_garment_prepass_mask=source_garment_prepass_mask,
+                            upper_body_repaint_seed_mask=short_upper_body_repaint_seed_mask,
+                            removal_mask=removal_mask_for_post,
+                            source_torso_hair_mask=source_torso_hair_mask,
+                            cloth_mask=cloth_mask_dilated,
+                            protect_mask=protect_mask_for_sd,
+                            face_bbox=face_bbox,
+                            cutoff_y=int(cutoff_y_for_post),
+                            hair_length=hair_length,
+                        )
+                    )
+                    short_generation_conditioning_cleanup_px = self._count_active_mask_px(
+                        short_generation_conditioning_cleanup_mask
+                    )
+                    if self._should_apply_cleanup_mask(
+                        "short_generation_conditioning_cleanup",
+                        short_generation_conditioning_cleanup_px,
+                        hair_length,
+                    ):
+                        short_generation_conditioning_cleanup_u8 = self._mask_to_u8(
+                            short_generation_conditioning_cleanup_mask,
+                            threshold=0.08,
+                        )
+                        img_rgb_cleaned = self._lama_inpaint(
+                            img_rgb_cleaned,
+                            short_generation_conditioning_cleanup_u8,
+                        )
+                        img_rgb_cleaned = self._cv2_cleanup_dark_tail_blob(
+                            img_rgb_cleaned,
+                            short_generation_conditioning_cleanup_u8,
+                        )
+                        img_rgb_cleaned = self._blend_neighbor_cloth_tone(
+                            img_rgb_cleaned,
+                            short_generation_conditioning_cleanup_mask,
+                            cloth_mask=cloth_mask_dilated,
+                            reference_rgb=img_rgb_cleaned,
+                        )
+                        img_rgb_cleaned = self._cv2_refine_cloth_region(
+                            img_rgb_cleaned,
+                            short_generation_conditioning_cleanup_mask,
+                            reference_rgb=img_rgb_cleaned,
+                            reference_mask=cloth_mask_dilated,
+                        )
+                        short_generation_conditioning_cleanup_applied = True
+                        logger.info(
+                            "[SDPipeline] short generation conditioning cleanup applied: pixels=%d",
+                            short_generation_conditioning_cleanup_px,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "[SDPipeline] short generation conditioning cleanup failed (ignored): %s",
+                        e,
+                    )
+                if debug_data_common is not None:
+                    debug_data_common.setdefault("source_cloth_preclean", {})
+                    debug_data_common["source_cloth_preclean"]["generation_conditioning_cleanup_px"] = (
+                        short_generation_conditioning_cleanup_px
+                    )
+                    debug_data_common["source_cloth_preclean"]["generation_conditioning_cleanup_applied"] = bool(
+                        short_generation_conditioning_cleanup_applied
+                    )
+                _store_mask(
+                    "pipeline_short_generation_conditioning_cleanup_mask",
+                    short_generation_conditioning_cleanup_mask,
+                )
+                _store_rgb("cv2_background_conditioning_cleaned_rgb", img_rgb_cleaned)
+
             _store_rgb("cv2_background_cleaned_rgb", img_rgb_cleaned)
             _store_mask("pipeline_short_generation_mask", gen_mask)
 
             composite_hair_mask = gen_mask.astype(np.float32)
             hair_mask_for_sd = composite_hair_mask.copy()
-            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_mask.shape == (H, W):
+            if (
+                use_upper_clothes_overwrite
+                and effective_upper_clothes_overwrite_mask.shape == (H, W)
+                and not short_torso_generation_freeze_active
+            ):
                 hair_mask_for_sd = np.maximum(
                     hair_mask_for_sd,
                     effective_upper_clothes_overwrite_mask.astype(np.float32),
                 ).astype(np.float32)
             hair_mask_for_sd_before_core = hair_mask_for_sd.copy()
-            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == (H, W):
+            if (
+                use_upper_clothes_overwrite
+                and effective_upper_clothes_overwrite_core_mask.shape == (H, W)
+                and not short_torso_generation_freeze_active
+            ):
                 hair_mask_for_sd = np.maximum(
                     hair_mask_for_sd,
                     effective_upper_clothes_overwrite_core_mask.astype(np.float32),
@@ -3297,13 +3454,25 @@ class MirrAISDPipeline:
                     composite_mask = np.maximum(composite_mask, np.clip(hair_mask_for_removal.astype(np.float32) * 1.05, 0.0, 1.0))
                 if removal_mask_for_post is not None and removal_mask_for_post.shape == (H, W):
                     composite_mask = np.maximum(composite_mask, np.clip(removal_mask_for_post.astype(np.float32) * 1.05, 0.0, 1.0))
+                if short_torso_generation_freeze_active and short_torso_generation_freeze_mask.shape == (H, W):
+                    composite_mask = np.clip(
+                        composite_mask.astype(np.float32)
+                        - short_torso_generation_freeze_mask.astype(np.float32) * 1.20,
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
 
             garment_composite_mask = None
-            if use_upper_clothes_overwrite and effective_upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape:
+            if (
+                not short_torso_generation_freeze_active
+                and use_upper_clothes_overwrite
+                and effective_upper_clothes_overwrite_core_mask.shape == hair_mask_for_sd.shape
+            ):
                 if float(effective_upper_clothes_overwrite_core_mask.sum()) > 0.0:
                     garment_composite_mask = effective_upper_clothes_overwrite_core_mask.astype(np.float32)
             if (
                 garment_composite_mask is None
+                and not short_torso_generation_freeze_active
                 and use_upper_clothes_overwrite
                 and effective_upper_clothes_overwrite_mask.shape == hair_mask_for_sd.shape
                 and source_garment_prepass_mask.shape == hair_mask_for_sd.shape

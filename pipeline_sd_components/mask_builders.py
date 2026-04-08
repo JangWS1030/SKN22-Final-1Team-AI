@@ -3252,6 +3252,207 @@ def _build_preclean_cloth_hair_cleanup_mask(
         sigmaY=6.2 if hair_length == "short" else 3.4,
     ).astype(np.float32)
 
+
+def _build_short_generation_conditioning_cleanup_mask(
+    self,
+    *,
+    source_garment_prepass_mask: Optional[np.ndarray],
+    upper_body_repaint_seed_mask: Optional[np.ndarray],
+    removal_mask: Optional[np.ndarray],
+    source_torso_hair_mask: Optional[np.ndarray],
+    cloth_mask: Optional[np.ndarray],
+    protect_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    cutoff_y: int,
+    hair_length: str,
+) -> np.ndarray:
+    base_shape = None
+    for mask in (
+        cloth_mask,
+        source_garment_prepass_mask,
+        upper_body_repaint_seed_mask,
+        removal_mask,
+        source_torso_hair_mask,
+        protect_mask,
+    ):
+        if isinstance(mask, np.ndarray):
+            base_shape = mask.shape[:2]
+            break
+    if base_shape is None:
+        return np.zeros((1, 1), dtype=np.float32)
+    if hair_length != "short":
+        return np.zeros(base_shape, dtype=np.float32)
+
+    H, W = base_shape
+    if cloth_mask is None or cloth_mask.shape != (H, W):
+        return np.zeros((H, W), dtype=np.float32)
+    if source_garment_prepass_mask is not None and source_garment_prepass_mask.shape != (H, W):
+        source_garment_prepass_mask = None
+    if upper_body_repaint_seed_mask is not None and upper_body_repaint_seed_mask.shape != (H, W):
+        upper_body_repaint_seed_mask = None
+    if removal_mask is not None and removal_mask.shape != (H, W):
+        removal_mask = None
+    if source_torso_hair_mask is not None and source_torso_hair_mask.shape != (H, W):
+        source_torso_hair_mask = None
+    if protect_mask is not None and protect_mask.shape != (H, W):
+        protect_mask = None
+
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+
+    corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+    top = max(0, int(max(y2 + face_h * 0.04, cutoff_y - face_h * 0.02)))
+    bottom = min(H, int(cutoff_y + face_h * 1.28))
+    left = max(0, int(x1 - face_w * 1.08))
+    right = min(W, int(x2 + face_w * 1.08))
+    if top >= bottom or left >= right:
+        return np.zeros((H, W), dtype=np.float32)
+    corridor_u8[top:bottom, left:right] = 255
+
+    cloth_u8 = self._mask_to_u8(cloth_mask, threshold=0.04)
+    if int((cloth_u8 > 0).sum()) < 80:
+        return np.zeros((H, W), dtype=np.float32)
+    cloth_near_u8 = cv2.dilate(
+        cloth_u8,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (max(17, int(face_w * 0.42)), max(19, int(face_h * 0.30))),
+        ),
+        iterations=1,
+    )
+    cloth_core_u8 = cv2.dilate(
+        cloth_u8,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (max(9, int(face_w * 0.20)), max(11, int(face_h * 0.16))),
+        ),
+        iterations=1,
+    )
+
+    anchor_u8 = np.zeros((H, W), dtype=np.uint8)
+    candidate_u8 = np.zeros((H, W), dtype=np.uint8)
+    for mask, threshold, kernel in (
+        (source_garment_prepass_mask, 0.08, (11, 17)),
+        (upper_body_repaint_seed_mask, 0.08, (9, 13)),
+    ):
+        if mask is None:
+            continue
+        part_u8 = self._mask_to_u8(mask, threshold=threshold)
+        if int((part_u8 > 0).sum()) == 0:
+            continue
+        part_u8 = cv2.dilate(
+            part_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, kernel),
+            iterations=1,
+        )
+        part_u8 = cv2.bitwise_and(part_u8, corridor_u8)
+        anchor_u8 = cv2.bitwise_or(anchor_u8, part_u8)
+        candidate_u8 = cv2.bitwise_or(candidate_u8, cv2.bitwise_and(part_u8, cloth_core_u8))
+
+    if removal_mask is not None:
+        removal_u8 = self._mask_to_u8(removal_mask, threshold=0.08)
+        if int((removal_u8 > 0).sum()) > 0:
+            removal_u8 = cv2.bitwise_and(removal_u8, cloth_near_u8)
+            removal_u8 = cv2.bitwise_and(removal_u8, corridor_u8)
+            removal_u8 = cv2.morphologyEx(
+                removal_u8,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 13)),
+            )
+            anchor_u8 = cv2.bitwise_or(anchor_u8, removal_u8)
+            candidate_u8 = cv2.bitwise_or(candidate_u8, removal_u8)
+
+    if source_torso_hair_mask is not None:
+        torso_hair_u8 = self._mask_to_u8(source_torso_hair_mask, threshold=0.08)
+        if int((torso_hair_u8 > 0).sum()) > 0:
+            torso_hair_u8 = cv2.bitwise_and(torso_hair_u8, cloth_near_u8)
+            torso_hair_u8 = cv2.bitwise_and(torso_hair_u8, corridor_u8)
+            if int((anchor_u8 > 0).sum()) > 0:
+                torso_gate_u8 = cv2.dilate(
+                    anchor_u8,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 27)),
+                    iterations=1,
+                )
+                torso_hair_u8 = cv2.bitwise_and(torso_hair_u8, torso_gate_u8)
+            candidate_u8 = cv2.bitwise_or(candidate_u8, torso_hair_u8)
+
+    if int((anchor_u8 > 0).sum()) > 0:
+        fill_support_u8 = cv2.bitwise_and(
+            cloth_core_u8,
+            cv2.dilate(
+                anchor_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 25)),
+                iterations=1,
+            ),
+        )
+        candidate_u8 = cv2.bitwise_or(candidate_u8, fill_support_u8)
+
+        anchor_ys, anchor_xs = np.where(anchor_u8 > 0)
+        if anchor_xs.size > 0 and anchor_ys.size > 0:
+            anchor_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+            anchor_left = max(0, int(np.percentile(anchor_xs, 2)) - max(14, int(face_w * 0.24)))
+            anchor_right = min(W, int(np.percentile(anchor_xs, 98)) + max(14, int(face_w * 0.24)))
+            anchor_top = max(top, int(anchor_ys.min()) - max(8, int(face_h * 0.10)))
+            anchor_bottom = min(bottom, int(anchor_ys.max()) + max(12, int(face_h * 0.18)))
+            if anchor_top < anchor_bottom and anchor_left < anchor_right:
+                anchor_gate_u8[anchor_top:anchor_bottom, anchor_left:anchor_right] = 255
+                candidate_u8 = cv2.bitwise_and(candidate_u8, anchor_gate_u8)
+
+    candidate_u8 = cv2.bitwise_and(candidate_u8, corridor_u8)
+    candidate_u8 = cv2.bitwise_and(candidate_u8, cloth_near_u8)
+
+    if protect_mask is not None:
+        protect_u8 = self._mask_to_u8(protect_mask, threshold=0.10)
+        if int((protect_u8 > 0).sum()) > 0:
+            protect_u8 = cv2.dilate(
+                protect_u8,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
+                iterations=1,
+            )
+            candidate_u8 = cv2.bitwise_and(candidate_u8, cv2.bitwise_not(protect_u8))
+
+    if int((candidate_u8 > 0).sum()) < 80:
+        return np.zeros((H, W), dtype=np.float32)
+
+    candidate_u8 = cv2.morphologyEx(
+        candidate_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 21)),
+    )
+    candidate_u8 = cv2.dilate(
+        candidate_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+        iterations=1,
+    )
+    candidate_u8 = cv2.bitwise_and(candidate_u8, cloth_near_u8)
+
+    filtered_u8 = np.zeros((H, W), dtype=np.uint8)
+    min_area = max(48, int(face_w * face_h * 0.0012))
+    min_height = max(14, int(face_h * 0.12))
+    max_width = max(96, int(face_w * 1.26))
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        (candidate_u8 > 0).astype(np.uint8),
+        8,
+    )
+    for label in range(1, num_labels):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        width = int(stats[label, cv2.CC_STAT_WIDTH])
+        height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        if area < min_area or height < min_height or width > max_width:
+            continue
+        filtered_u8[labels == label] = 255
+
+    if int((filtered_u8 > 0).sum()) < 80:
+        return np.zeros((H, W), dtype=np.float32)
+
+    return cv2.GaussianBlur(
+        filtered_u8.astype(np.float32) / 255.0,
+        (0, 0),
+        sigmaX=4.0,
+        sigmaY=5.2,
+    ).astype(np.float32)
+
 def _build_residual_strand_cleanup_mask(
     self,
     img_rgb: np.ndarray,
@@ -7503,6 +7704,7 @@ def _get_cleanup_apply_min_px(
     hair_length: str,
 ) -> int:
     defaults = {
+        "short_generation_conditioning_cleanup": 180,
         "short_final_side_lane_refine": 140,
         "short_lower_tail_cleanup": 80,
         "dark_lane_cleanup": 40,
@@ -7516,6 +7718,7 @@ def _get_cleanup_apply_min_px(
         "controlnet_garment_repaint": 120,
     }
     config_fields = {
+        "short_generation_conditioning_cleanup": "short_generation_conditioning_cleanup_min_px",
         "short_final_side_lane_refine": "short_final_side_lane_refine_min_px",
         "short_lower_tail_cleanup": "short_lower_tail_cleanup_min_px",
         "dark_lane_cleanup": "dark_lane_cleanup_min_px",
@@ -8845,6 +9048,7 @@ def bind_mask_builder_methods_to_pipeline(cls) -> None:
     cls._build_short_below_bob_generation_block_mask = _build_short_below_bob_generation_block_mask
     cls._build_preclean_side_column_cleanup_mask = _build_preclean_side_column_cleanup_mask
     cls._build_preclean_cloth_hair_cleanup_mask = _build_preclean_cloth_hair_cleanup_mask
+    cls._build_short_generation_conditioning_cleanup_mask = _build_short_generation_conditioning_cleanup_mask
     cls._build_residual_strand_cleanup_mask = _build_residual_strand_cleanup_mask
     cls._build_final_hair_lane_cleanup_mask = _build_final_hair_lane_cleanup_mask
     cls._build_short_bob_tail_suppress_mask = _build_short_bob_tail_suppress_mask
