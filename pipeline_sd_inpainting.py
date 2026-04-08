@@ -737,6 +737,12 @@ class MirrAISDPipeline:
         logger.info(
             f"[SDPipeline] 헤어 길이 분류: {hair_length}, subject_gender={subject_gender_mode}"
         )
+        effective_hairstyle_lower = str(effective_hairstyle_text or "").strip().lower()
+        short_bangs_requested = any(
+            token in effective_hairstyle_lower
+            for token in ("bang", "fringe", "앞머리", "시스루")
+        )
+        short_no_bangs_target = bool(hair_length == "short" and not short_bangs_requested)
         source_cloth_preclean_analysis = self._analyze_source_cloth_preclean_need(
             source_hair_mask=hair_mask_base,
             cloth_mask=cloth_mask,
@@ -865,12 +871,24 @@ class MirrAISDPipeline:
             landmark_debug_data=landmark_debug_data,
             hair_length=hair_length,
         )
+        no_bangs_forehead_lama_preclean_seed_mask = np.zeros((H, W), dtype=np.float32)
+        if (
+            short_no_bangs_target
+            and bool(getattr(self.config, "short_no_bangs_disable_bangs_recovery", True))
+        ):
+            no_bangs_forehead_lama_preclean_seed_mask = np.maximum(
+                np.clip(bangs_restore_for_removal.astype(np.float32), 0.0, 1.0),
+                np.clip(bangs_restore_for_sd.astype(np.float32), 0.0, 1.0),
+            ).astype(np.float32)
+            bangs_restore_for_removal = np.zeros((H, W), dtype=np.float32)
+            bangs_restore_for_sd = np.zeros((H, W), dtype=np.float32)
         if float(bangs_restore_for_removal.sum()) > 0.0:
             hair_mask_for_removal = np.maximum(hair_mask_for_removal, bangs_restore_for_removal).astype(np.float32)
         if float(bangs_restore_for_sd.sum()) > 0.0:
             hair_mask = np.maximum(hair_mask, bangs_restore_for_sd).astype(np.float32)
         # short/medium 긴머리 제거 단계에서는 "옷 위로 떨어진 머리카락"도 지워야 하므로
         # cloth 제거 전 마스크를 별도로 보관한다.
+        _store_mask("pipeline_no_bangs_forehead_lama_preclean_seed_mask", no_bangs_forehead_lama_preclean_seed_mask)
         _store_mask("pipeline_bangs_recovery_mask_removal", bangs_restore_for_removal)
         _store_mask("pipeline_bangs_recovery_mask_generation", bangs_restore_for_sd)
         _store_mask("pipeline_hair_mask_face_protected", hair_mask_for_removal)
@@ -1299,6 +1317,9 @@ class MirrAISDPipeline:
         short_generation_white_tshirt_conditioning_fill_mask = np.zeros((H, W), dtype=np.float32)
         short_generation_white_tshirt_conditioning_fill_px = 0
         short_generation_white_tshirt_conditioning_fill_applied = False
+        no_bangs_forehead_lama_preclean_mask = np.zeros((H, W), dtype=np.float32)
+        no_bangs_forehead_lama_preclean_px = 0
+        no_bangs_forehead_lama_preclean_applied = False
         shoulder_cloth_refine_skipped_for_freeze = False
         below_bob_generation_block_for_post: Optional[np.ndarray] = None
         below_bob_cloth_restore_for_post: Optional[np.ndarray] = None
@@ -3126,6 +3147,33 @@ class MirrAISDPipeline:
                                 "[SDPipeline] short white-tshirt conditioning fill applied: pixels=%d",
                                 short_generation_white_tshirt_conditioning_fill_px,
                             )
+                    if (
+                        short_no_bangs_target
+                        and bool(getattr(self.config, "short_no_bangs_forehead_lama_preclean", True))
+                        and no_bangs_forehead_lama_preclean_seed_mask.shape == (H, W)
+                    ):
+                        no_bangs_forehead_lama_preclean_u8 = cv2.dilate(
+                            self._mask_to_u8(
+                                no_bangs_forehead_lama_preclean_seed_mask,
+                                threshold=0.08,
+                            ),
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 11)),
+                            iterations=1,
+                        )
+                        no_bangs_forehead_lama_preclean_mask = (
+                            no_bangs_forehead_lama_preclean_u8.astype(np.float32) / 255.0
+                        )
+                        no_bangs_forehead_lama_preclean_px = int((no_bangs_forehead_lama_preclean_u8 > 0).sum())
+                        if no_bangs_forehead_lama_preclean_px >= 24:
+                            img_rgb_cleaned = self._lama_inpaint(
+                                img_rgb_cleaned,
+                                no_bangs_forehead_lama_preclean_u8,
+                            )
+                            no_bangs_forehead_lama_preclean_applied = True
+                            logger.info(
+                                "[SDPipeline] short no-bangs forehead LaMa preclean applied: pixels=%d",
+                                no_bangs_forehead_lama_preclean_px,
+                            )
                 except Exception as e:
                     logger.warning(
                         "[SDPipeline] short generation conditioning cleanup failed (ignored): %s",
@@ -3145,6 +3193,12 @@ class MirrAISDPipeline:
                     debug_data_common["source_cloth_preclean"]["white_tshirt_conditioning_fill_applied"] = bool(
                         short_generation_white_tshirt_conditioning_fill_applied
                     )
+                    debug_data_common["source_cloth_preclean"]["no_bangs_forehead_lama_preclean_px"] = int(
+                        no_bangs_forehead_lama_preclean_px
+                    )
+                    debug_data_common["source_cloth_preclean"]["no_bangs_forehead_lama_preclean_applied"] = bool(
+                        no_bangs_forehead_lama_preclean_applied
+                    )
                     debug_data_common["source_cloth_preclean"]["short_generation_tail_release_px"] = int(
                         short_generation_tail_release_px
                     )
@@ -3155,6 +3209,10 @@ class MirrAISDPipeline:
                 _store_mask(
                     "pipeline_short_generation_white_tshirt_conditioning_fill_mask",
                     short_generation_white_tshirt_conditioning_fill_mask,
+                )
+                _store_mask(
+                    "pipeline_no_bangs_forehead_lama_preclean_mask",
+                    no_bangs_forehead_lama_preclean_mask,
                 )
                 _store_rgb("cv2_background_conditioning_cleaned_rgb", img_rgb_cleaned)
 
