@@ -5151,6 +5151,7 @@ def _build_lower_tail_post_support_mask(
         support_u8 = cv2.bitwise_and(support_u8, cv2.bitwise_not(center_keepout_u8))
 
     support_raw_u8 = support_u8.copy()
+    torso_side_support_raw_u8 = np.zeros((H, W), dtype=np.uint8)
     torso_side_support_u8 = np.zeros((H, W), dtype=np.uint8)
     if hair_length == "short" and torso_hair_mask is not None and torso_hair_mask.shape == (H, W):
         torso_u8 = (np.clip(torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
@@ -5168,18 +5169,19 @@ def _build_lower_tail_post_support_mask(
                 side_lane_u8[lane_top:lane_bottom, left_outer:left_inner] = 255
             if right_inner < right_outer:
                 side_lane_u8[lane_top:lane_bottom, right_inner:right_outer] = 255
-        torso_side_support_u8 = cv2.bitwise_and(torso_u8, side_lane_u8)
-        torso_side_support_u8 = cv2.morphologyEx(
-            torso_side_support_u8,
+        torso_side_support_raw_u8 = cv2.bitwise_and(torso_u8, side_lane_u8)
+        torso_side_support_raw_u8 = cv2.morphologyEx(
+            torso_side_support_raw_u8,
             cv2.MORPH_CLOSE,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 19)),
         )
-        torso_side_support_u8 = cv2.dilate(
-            torso_side_support_u8,
+        torso_side_support_raw_u8 = cv2.dilate(
+            torso_side_support_raw_u8,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 13)),
             iterations=1,
         )
-        torso_side_support_u8 = cv2.bitwise_and(torso_side_support_u8, corridor_u8)
+        torso_side_support_raw_u8 = cv2.bitwise_and(torso_side_support_raw_u8, corridor_u8)
+        torso_side_support_u8 = torso_side_support_raw_u8.copy()
 
     if cloth_mask is not None and cloth_mask.shape == (H, W):
         cloth_near_u8 = cv2.dilate(
@@ -5200,6 +5202,33 @@ def _build_lower_tail_post_support_mask(
                     ),
                 ),
             )
+            if hair_length == "short":
+                raw_torso_px = int((torso_side_support_raw_u8 > 0).sum())
+                filtered_torso_px = int((torso_side_support_u8 > 0).sum())
+                if raw_torso_px >= 80 and filtered_torso_px < max(24, int(raw_torso_px * 0.28)):
+                    torso_side_rescue_u8 = torso_side_support_raw_u8.copy()
+                    rescue_corridor_u8 = np.zeros((H, W), dtype=np.uint8)
+                    rescue_top = max(0, int(cutoff_y + face_h * 0.18))
+                    rescue_bottom = min(H, int(cutoff_y + face_h * 1.52))
+                    rescue_left_outer = max(0, int(x1 - face_w * 0.54))
+                    rescue_left_inner = max(rescue_left_outer + 1, int(cx - face_w * 0.14))
+                    rescue_right_inner = min(W - 1, int(cx + face_w * 0.14))
+                    rescue_right_outer = min(W, int(x2 + face_w * 0.54))
+                    if rescue_top < rescue_bottom:
+                        if rescue_left_outer < rescue_left_inner:
+                            rescue_corridor_u8[rescue_top:rescue_bottom, rescue_left_outer:rescue_left_inner] = 255
+                        if rescue_right_inner < rescue_right_outer:
+                            rescue_corridor_u8[rescue_top:rescue_bottom, rescue_right_inner:rescue_right_outer] = 255
+                    torso_side_rescue_u8 = cv2.bitwise_and(torso_side_rescue_u8, rescue_corridor_u8)
+                    torso_side_rescue_u8 = cv2.morphologyEx(
+                        torso_side_rescue_u8,
+                        cv2.MORPH_CLOSE,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 17)),
+                    )
+                    torso_side_support_u8 = cv2.bitwise_or(
+                        torso_side_support_u8,
+                        torso_side_rescue_u8,
+                    )
         if hair_length == "short":
             raw_px = int((support_raw_u8 > 0).sum())
             cloth_px = int((support_u8 > 0).sum())
