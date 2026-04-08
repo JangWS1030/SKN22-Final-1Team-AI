@@ -1244,6 +1244,7 @@ class MirrAISDPipeline:
         center_chest_strand_mask = np.zeros((H, W), dtype=np.float32)
         center_chest_strand_removal_mask = np.zeros((H, W), dtype=np.float32)
         shoulder_cross_bridge_for_post = np.zeros((H, W), dtype=np.float32)
+        lower_tail_post_debug_masks: Dict[str, np.ndarray] = {}
         if hair_length in ("short", "medium"):
             head_x1, head_y1, head_x2, head_y2, cutoff_y = self._estimate_head_generation_box(
                 image_shape=(H, W),
@@ -1282,6 +1283,11 @@ class MirrAISDPipeline:
                 face_bbox=face_bbox,
                 cutoff_y=cutoff_y,
                 hair_length=hair_length,
+                debug_outputs=(
+                    lower_tail_post_debug_masks
+                    if debug_images_common is not None and rank == 0
+                    else None
+                ),
             )
             center_chest_strand_mask = self._build_center_chest_strand_support_mask(
                 img_rgb=img_rgb,
@@ -1302,6 +1308,8 @@ class MirrAISDPipeline:
             _store_mask("pipeline_torso_cloth_preserve_mask", torso_cloth_preserve_for_post)
             _store_mask("pipeline_lower_tail_support_post_mask", lower_tail_support_for_post)
             _store_mask("pipeline_center_chest_strand_mask", center_chest_strand_mask)
+            for name, mask in lower_tail_post_debug_masks.items():
+                _store_mask(f"pipeline_{name}", mask)
             if isinstance(subject_shoulder_bridge_mask, np.ndarray) and subject_shoulder_bridge_mask.shape == (H, W):
                 face_h = max(int(face_bbox[3] - face_bbox[1]), 1)
                 shoulder_hair_forbid_for_post = np.clip(

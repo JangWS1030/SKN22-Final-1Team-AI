@@ -5113,6 +5113,7 @@ def _build_lower_tail_post_support_mask(
     face_bbox: Tuple[int, int, int, int],
     cutoff_y: int,
     hair_length: str,
+    debug_outputs: Optional[Dict[str, np.ndarray]] = None,
 ) -> np.ndarray:
     if hair_length not in ("short", "medium"):
         return np.zeros_like(support_mask, dtype=np.float32)
@@ -5151,13 +5152,16 @@ def _build_lower_tail_post_support_mask(
         support_u8 = cv2.bitwise_and(support_u8, cv2.bitwise_not(center_keepout_u8))
 
     support_raw_u8 = support_u8.copy()
+    cloth_near_u8 = np.zeros((H, W), dtype=np.uint8)
+    side_lane_u8 = np.zeros((H, W), dtype=np.uint8)
     torso_side_support_raw_u8 = np.zeros((H, W), dtype=np.uint8)
     torso_side_support_u8 = np.zeros((H, W), dtype=np.uint8)
+    torso_side_support_cloth_gated_u8 = np.zeros((H, W), dtype=np.uint8)
+    torso_side_rescue_u8 = np.zeros((H, W), dtype=np.uint8)
     if hair_length == "short" and torso_hair_mask is not None and torso_hair_mask.shape == (H, W):
         torso_u8 = (np.clip(torso_hair_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255
         torso_u8 = cv2.bitwise_and(torso_u8, corridor_u8)
         torso_u8[:max(0, int(cutoff_y + face_h * 0.06)), :] = 0
-        side_lane_u8 = np.zeros((H, W), dtype=np.uint8)
         lane_top = max(0, int(cutoff_y + face_h * 0.08))
         lane_bottom = min(H, int(cutoff_y + face_h * 1.52))
         left_outer = max(0, int(x1 - face_w * 0.30))
@@ -5202,6 +5206,7 @@ def _build_lower_tail_post_support_mask(
                     ),
                 ),
             )
+            torso_side_support_cloth_gated_u8 = torso_side_support_u8.copy()
             if hair_length == "short" and int((torso_side_support_raw_u8 > 0).sum()) >= 80:
                 rescue_top = max(0, int(cutoff_y + face_h * 0.18))
                 rescue_bottom = min(H, int(cutoff_y + face_h * 1.52))
@@ -5220,7 +5225,6 @@ def _build_lower_tail_post_support_mask(
                     (torso_side_support_raw_u8 > 0).astype(np.uint8),
                     8,
                 )
-                torso_side_rescue_u8 = np.zeros((H, W), dtype=np.uint8)
                 for torso_idx in range(1, num_torso_labels):
                     comp_area = int(torso_stats[torso_idx, cv2.CC_STAT_AREA])
                     if comp_area < 80:
@@ -5341,6 +5345,22 @@ def _build_lower_tail_post_support_mask(
         iterations=1,
     )
     filtered_u8 = cv2.bitwise_and(filtered_u8, corridor_u8)
+    if debug_outputs is not None:
+        debug_outputs["lower_tail_post_support_corridor_mask"] = corridor_u8.astype(np.float32) / 255.0
+        debug_outputs["lower_tail_post_support_center_keepout_mask"] = center_keepout_u8.astype(np.float32) / 255.0
+        debug_outputs["lower_tail_post_support_support_raw_mask"] = support_raw_u8.astype(np.float32) / 255.0
+        debug_outputs["lower_tail_post_support_side_lane_mask"] = side_lane_u8.astype(np.float32) / 255.0
+        debug_outputs["lower_tail_post_support_cloth_near_mask"] = cloth_near_u8.astype(np.float32) / 255.0
+        debug_outputs["lower_tail_post_support_torso_side_raw_mask"] = (
+            torso_side_support_raw_u8.astype(np.float32) / 255.0
+        )
+        debug_outputs["lower_tail_post_support_torso_side_cloth_gated_mask"] = (
+            torso_side_support_cloth_gated_u8.astype(np.float32) / 255.0
+        )
+        debug_outputs["lower_tail_post_support_torso_side_rescue_mask"] = (
+            torso_side_rescue_u8.astype(np.float32) / 255.0
+        )
+        debug_outputs["lower_tail_post_support_filtered_mask"] = filtered_u8.astype(np.float32) / 255.0
     return (filtered_u8 > 0).astype(np.float32)
 
 def _build_lower_tail_removal_extension_mask(
