@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from .config import SD_SIZE
+from .config import SD_SIZE, _COMMON_STYLE_BLOCK_NEGATIVE
 
 logger = logging.getLogger(__name__)
 
