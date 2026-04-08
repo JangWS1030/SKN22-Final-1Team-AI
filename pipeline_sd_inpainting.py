@@ -1296,6 +1296,9 @@ class MirrAISDPipeline:
         short_generation_conditioning_cleanup_mask = np.zeros((H, W), dtype=np.float32)
         short_generation_conditioning_cleanup_px = 0
         short_generation_conditioning_cleanup_applied = False
+        short_generation_white_tshirt_conditioning_fill_mask = np.zeros((H, W), dtype=np.float32)
+        short_generation_white_tshirt_conditioning_fill_px = 0
+        short_generation_white_tshirt_conditioning_fill_applied = False
         shoulder_cloth_refine_skipped_for_freeze = False
         below_bob_generation_block_for_post: Optional[np.ndarray] = None
         below_bob_cloth_restore_for_post: Optional[np.ndarray] = None
@@ -3067,6 +3070,62 @@ class MirrAISDPipeline:
                             "[SDPipeline] short generation conditioning cleanup applied: pixels=%d",
                             short_generation_conditioning_cleanup_px,
                         )
+                    if (
+                        white_tshirt_experiment
+                        and short_torso_generation_freeze_active
+                        and cloth_mask_dilated is not None
+                        and cloth_mask_dilated.shape == (H, W)
+                        and bool(getattr(self.config, "short_generation_white_tshirt_conditioning_fill", True))
+                    ):
+                        short_generation_white_tshirt_conditioning_fill_mask = np.maximum(
+                            np.clip(short_generation_conditioning_cleanup_mask.astype(np.float32), 0.0, 1.0),
+                            np.clip(short_torso_generation_freeze_mask.astype(np.float32) * 0.96, 0.0, 1.0),
+                        ).astype(np.float32)
+                        if source_garment_prepass_mask.shape == (H, W):
+                            short_generation_white_tshirt_conditioning_fill_mask = np.maximum(
+                                short_generation_white_tshirt_conditioning_fill_mask,
+                                np.clip(source_garment_prepass_mask.astype(np.float32) * 0.92, 0.0, 1.0),
+                            ).astype(np.float32)
+                        short_generation_white_tshirt_conditioning_fill_mask = np.clip(
+                            short_generation_white_tshirt_conditioning_fill_mask
+                            * self._dilate_mask_with_px(cloth_mask_dilated.astype(np.float32), 13),
+                            0.0,
+                            1.0,
+                        ).astype(np.float32)
+                        if protect_mask_for_sd.shape == (H, W):
+                            short_generation_white_tshirt_conditioning_fill_mask = np.clip(
+                                short_generation_white_tshirt_conditioning_fill_mask
+                                - protect_mask_for_sd.astype(np.float32) * 0.84,
+                                0.0,
+                                1.0,
+                            ).astype(np.float32)
+                        short_generation_white_tshirt_conditioning_fill_px = self._count_active_mask_px(
+                            short_generation_white_tshirt_conditioning_fill_mask
+                        )
+                        if short_generation_white_tshirt_conditioning_fill_px >= 180:
+                            plain_fill_rgb = img_rgb_cleaned.copy()
+                            fill_bool = self._mask_to_u8(
+                                short_generation_white_tshirt_conditioning_fill_mask,
+                                threshold=0.08,
+                            ) > 0
+                            plain_fill_rgb[fill_bool] = np.array([242, 243, 239], dtype=np.uint8)
+                            img_rgb_cleaned = self._restore_reference_region(
+                                img_rgb_cleaned,
+                                plain_fill_rgb,
+                                short_generation_white_tshirt_conditioning_fill_mask,
+                                strength=float(
+                                    getattr(
+                                        self.config,
+                                        "short_generation_white_tshirt_fill_strength",
+                                        0.992,
+                                    )
+                                ),
+                            )
+                            short_generation_white_tshirt_conditioning_fill_applied = True
+                            logger.info(
+                                "[SDPipeline] short white-tshirt conditioning fill applied: pixels=%d",
+                                short_generation_white_tshirt_conditioning_fill_px,
+                            )
                 except Exception as e:
                     logger.warning(
                         "[SDPipeline] short generation conditioning cleanup failed (ignored): %s",
@@ -3080,12 +3139,22 @@ class MirrAISDPipeline:
                     debug_data_common["source_cloth_preclean"]["generation_conditioning_cleanup_applied"] = bool(
                         short_generation_conditioning_cleanup_applied
                     )
+                    debug_data_common["source_cloth_preclean"]["white_tshirt_conditioning_fill_px"] = int(
+                        short_generation_white_tshirt_conditioning_fill_px
+                    )
+                    debug_data_common["source_cloth_preclean"]["white_tshirt_conditioning_fill_applied"] = bool(
+                        short_generation_white_tshirt_conditioning_fill_applied
+                    )
                     debug_data_common["source_cloth_preclean"]["short_generation_tail_release_px"] = int(
                         short_generation_tail_release_px
                     )
                 _store_mask(
                     "pipeline_short_generation_conditioning_cleanup_mask",
                     short_generation_conditioning_cleanup_mask,
+                )
+                _store_mask(
+                    "pipeline_short_generation_white_tshirt_conditioning_fill_mask",
+                    short_generation_white_tshirt_conditioning_fill_mask,
                 )
                 _store_rgb("cv2_background_conditioning_cleaned_rgb", img_rgb_cleaned)
 
@@ -3303,6 +3372,30 @@ class MirrAISDPipeline:
                     canny_suppress = np.maximum(
                         canny_suppress,
                         self._dilate_mask_with_px(lower_tail_support_mask.astype(np.float32), 21),
+                    )
+                if (
+                    short_torso_generation_freeze_active
+                    and short_torso_generation_freeze_mask.shape == canny_suppress.shape
+                ):
+                    canny_suppress = np.maximum(
+                        canny_suppress,
+                        self._dilate_mask_with_px(short_torso_generation_freeze_mask.astype(np.float32), 19),
+                    )
+                if short_generation_conditioning_cleanup_mask.shape == canny_suppress.shape:
+                    canny_suppress = np.maximum(
+                        canny_suppress,
+                        self._dilate_mask_with_px(short_generation_conditioning_cleanup_mask.astype(np.float32), 17),
+                    )
+                if (
+                    short_generation_white_tshirt_conditioning_fill_applied
+                    and short_generation_white_tshirt_conditioning_fill_mask.shape == canny_suppress.shape
+                ):
+                    canny_suppress = np.maximum(
+                        canny_suppress,
+                        self._dilate_mask_with_px(
+                            short_generation_white_tshirt_conditioning_fill_mask.astype(np.float32),
+                            21,
+                        ),
                     )
         sd_input_debug: Optional[Dict[str, np.ndarray]] = {} if return_intermediates else None
         img_512, mask_512, canny_512, scale, pad = self._prepare_sd_inputs(

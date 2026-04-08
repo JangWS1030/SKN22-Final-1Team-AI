@@ -179,6 +179,8 @@ class SDInpaintConfig:
     short_generation_plain_cloth_stabilize: bool = True
     short_generation_freeze_skip_shoulder_refine: bool = True
     short_generation_freeze_skip_side_column_restore: bool = True
+    short_generation_white_tshirt_conditioning_fill: bool = True
+    short_generation_white_tshirt_fill_strength: float = 0.992
 
     # Canny edge 파라미터
     canny_low: int  = 80
