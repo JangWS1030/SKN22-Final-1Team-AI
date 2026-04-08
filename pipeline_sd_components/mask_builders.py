@@ -6001,6 +6001,7 @@ def _build_upper_clothes_overwrite_mask(
 def _build_source_garment_prepass_mask(
     self,
     *,
+    hair_length: Optional[str],
     source_torso_hair_mask: Optional[np.ndarray],
     source_cloth_overlap_mask: Optional[np.ndarray],
     cloth_mask: Optional[np.ndarray],
@@ -6144,6 +6145,136 @@ def _build_source_garment_prepass_mask(
         ).astype(np.uint8) * 255
         cloth_u8 = cv2.bitwise_and(cloth_u8, corridor_u8)
 
+    torso_hair_support_u8 = np.zeros((H, W), dtype=np.uint8)
+    if hair_length == "short" and int((torso_hair_u8 > 0).sum()) > 0:
+        torso_support_gate_u8 = cv2.bitwise_or(candidate_u8, completed_u8)
+        if int((torso_support_gate_u8 > 0).sum()) > 0:
+            torso_support_gate_u8 = cv2.dilate(
+                torso_support_gate_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (
+                        _odd_size(
+                            face_w
+                            * float(
+                                self.config.source_garment_prepass_torso_support_expand_x_ratio
+                            ),
+                            15,
+                        ),
+                        _odd_size(
+                            face_h
+                            * float(
+                                self.config.source_garment_prepass_torso_support_expand_y_ratio
+                            ),
+                            11,
+                        ),
+                    ),
+                ),
+                iterations=1,
+            )
+
+        cloth_support_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+        if int((cloth_u8 > 0).sum()) > 0:
+            cloth_support_gate_u8 = cv2.dilate(
+                cloth_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (
+                        _odd_size(
+                            face_w
+                            * float(
+                                self.config.source_garment_prepass_cloth_expand_x_ratio
+                            ),
+                            17,
+                        ),
+                        _odd_size(
+                            face_h
+                            * float(
+                                self.config.source_garment_prepass_cloth_expand_y_ratio
+                            ),
+                            13,
+                        ),
+                    ),
+                ),
+                iterations=1,
+            )
+
+        overlap_support_gate_u8 = np.zeros((H, W), dtype=np.uint8)
+        if int((overlap_u8 > 0).sum()) > 0:
+            overlap_support_gate_u8 = cv2.dilate(
+                overlap_u8,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (_odd_size(face_w * 0.08, 11), _odd_size(face_h * 0.10, 11)),
+                ),
+                iterations=1,
+            )
+
+        torso_hair_support_gate_u8 = cv2.bitwise_or(
+            torso_support_gate_u8,
+            cloth_support_gate_u8,
+        )
+        torso_hair_support_gate_u8 = cv2.bitwise_or(
+            torso_hair_support_gate_u8,
+            overlap_support_gate_u8,
+        )
+        if int((torso_hair_support_gate_u8 > 0).sum()) > 0:
+            torso_hair_seed_u8 = cv2.bitwise_and(
+                torso_hair_u8,
+                torso_hair_support_gate_u8,
+            )
+            filtered_torso_hair_support_u8 = np.zeros((H, W), dtype=np.uint8)
+            min_torso_hair_area = max(
+                18,
+                int(
+                    face_w
+                    * face_h
+                    * float(self.config.source_garment_prepass_torso_hair_min_area_ratio)
+                ),
+            )
+            min_torso_hair_bottom = support_y1 + int(support_h * 0.12)
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                (torso_hair_seed_u8 > 0).astype(np.uint8),
+                8,
+            )
+            for label in range(1, num_labels):
+                y = int(stats[label, cv2.CC_STAT_TOP])
+                h = int(stats[label, cv2.CC_STAT_HEIGHT])
+                area = int(stats[label, cv2.CC_STAT_AREA])
+                if area < min_torso_hair_area:
+                    continue
+
+                component_u8 = np.zeros((H, W), dtype=np.uint8)
+                component_u8[labels == label] = 255
+                bottom = y + h - 1
+                if bottom < min_torso_hair_bottom:
+                    continue
+
+                support_pixels = int(
+                    np.logical_and(component_u8 > 0, torso_hair_support_gate_u8 > 0).sum()
+                )
+                cloth_pixels = int(
+                    np.logical_and(component_u8 > 0, cloth_support_gate_u8 > 0).sum()
+                )
+                if support_pixels <= 0:
+                    continue
+                if int((cloth_support_gate_u8 > 0).sum()) > 0 and cloth_pixels <= 0:
+                    continue
+                filtered_torso_hair_support_u8 = cv2.bitwise_or(
+                    filtered_torso_hair_support_u8,
+                    component_u8,
+                )
+
+            if int((filtered_torso_hair_support_u8 > 0).sum()) > 0:
+                torso_hair_support_u8 = cv2.morphologyEx(
+                    filtered_torso_hair_support_u8,
+                    cv2.MORPH_CLOSE,
+                    cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE,
+                        (_odd_size(face_w * 0.020, 5), _odd_size(face_h * 0.024, 5)),
+                    ),
+                )
+
     extra_filtered_u8 = np.zeros((H, W), dtype=np.uint8)
     if int((extra_u8 > 0).sum()) > 0:
         overlap_gate_u8 = np.zeros((H, W), dtype=np.uint8)
@@ -6272,6 +6403,7 @@ def _build_source_garment_prepass_mask(
         overlap_seed_u8 = filtered_overlap_seed_u8
 
     garment_u8 = cv2.bitwise_or(extra_filtered_u8, overlap_seed_u8)
+    garment_u8 = cv2.bitwise_or(garment_u8, torso_hair_support_u8)
 
     if int((garment_u8 > 0).sum()) > 0:
         garment_u8 = cv2.morphologyEx(
@@ -6322,7 +6454,14 @@ def _build_source_garment_prepass_mask(
         extra_pixels = int(
             np.logical_and(component_u8 > 0, extra_filtered_u8 > 0).sum()
         )
-        if overlap_pixels <= 0 and extra_pixels <= 0:
+        torso_hair_support_pixels = int(
+            np.logical_and(component_u8 > 0, torso_hair_support_u8 > 0).sum()
+        )
+        if (
+            overlap_pixels <= 0
+            and extra_pixels <= 0
+            and torso_hair_support_pixels <= 0
+        ):
             continue
         filtered_garment_u8 = cv2.bitwise_or(filtered_garment_u8, component_u8)
     garment_u8 = filtered_garment_u8
@@ -7161,6 +7300,211 @@ def _resize_mask_to_shape(mask: Optional[np.ndarray], shape: Tuple[int, int]) ->
         (W, H),
         interpolation=cv2.INTER_NEAREST,
     ).astype(np.float32)
+
+
+@staticmethod
+def _mask_to_u8(mask: Optional[np.ndarray], threshold: float = 0.08) -> np.ndarray:
+    if not isinstance(mask, np.ndarray):
+        return np.zeros((0, 0), dtype=np.uint8)
+    cutoff = float(np.clip(threshold, 0.0, 1.0))
+    return (np.clip(mask.astype(np.float32), 0.0, 1.0) > cutoff).astype(np.uint8) * 255
+
+
+@staticmethod
+def _count_active_mask_px(mask: Optional[np.ndarray], threshold: float = 0.08) -> int:
+    if not isinstance(mask, np.ndarray) or mask.size == 0:
+        return 0
+    cutoff = float(np.clip(threshold, 0.0, 1.0))
+    return int((np.clip(mask.astype(np.float32), 0.0, 1.0) > cutoff).sum())
+
+
+def _get_cleanup_apply_min_px(
+    self,
+    stage_name: str,
+    hair_length: str,
+) -> int:
+    defaults = {
+        "short_final_side_lane_refine": 140,
+        "short_lower_tail_cleanup": 80,
+        "dark_lane_cleanup": 40,
+        "final_hair_lane_cleanup": 40,
+        "short_bob_tail_suppress": 60,
+        "short_lower_garment_cleanup": 140,
+        "short_lower_cloth_hard_override": 96,
+        "residual_strand_cleanup": 16,
+        "final_source_cloth_rescue": 120,
+        "short_subject_cloth_cleanup": 120,
+        "controlnet_garment_repaint": 120,
+    }
+    config_fields = {
+        "short_final_side_lane_refine": "short_final_side_lane_refine_min_px",
+        "short_lower_tail_cleanup": "short_lower_tail_cleanup_min_px",
+        "dark_lane_cleanup": "dark_lane_cleanup_min_px",
+        "final_hair_lane_cleanup": "final_hair_lane_cleanup_min_px",
+        "short_bob_tail_suppress": "short_bob_tail_suppress_min_px",
+        "short_lower_garment_cleanup": "short_lower_garment_cleanup_min_px",
+        "short_lower_cloth_hard_override": "short_lower_cloth_hard_override_min_px",
+        "residual_strand_cleanup": "residual_strand_cleanup_min_px",
+        "final_source_cloth_rescue": "final_source_cloth_rescue_min_px",
+        "short_subject_cloth_cleanup": "short_subject_cloth_cleanup_min_px",
+        "controlnet_garment_repaint": "controlnet_garment_repaint_min_px",
+    }
+    default_value = int(defaults.get(stage_name, 0))
+    field_name = config_fields.get(stage_name)
+    if field_name is None:
+        return max(default_value, 0)
+    value = getattr(self.config, field_name, default_value)
+    return max(int(value), 0)
+
+
+def _should_apply_cleanup_mask(
+    self,
+    stage_name: str,
+    active_px: int,
+    hair_length: str,
+) -> bool:
+    min_px = self._get_cleanup_apply_min_px(stage_name, hair_length)
+    return int(active_px) >= int(min_px)
+
+
+def _build_short_sam2_torso_bridge_mask(
+    self,
+    *,
+    hair_mask_for_removal: Optional[np.ndarray],
+    source_torso_hair_mask: Optional[np.ndarray],
+) -> np.ndarray:
+    base_shape = None
+    for mask in (source_torso_hair_mask, hair_mask_for_removal):
+        if isinstance(mask, np.ndarray):
+            base_shape = mask.shape[:2]
+            break
+    if base_shape is None:
+        return np.zeros((1, 1), dtype=np.float32)
+
+    H, W = base_shape
+    if source_torso_hair_mask is None or source_torso_hair_mask.shape != (H, W):
+        return np.zeros((H, W), dtype=np.float32)
+    if hair_mask_for_removal is not None and hair_mask_for_removal.shape != (H, W):
+        hair_mask_for_removal = None
+
+    sam2_u8 = self._mask_to_u8(hair_mask_for_removal, threshold=0.08)
+    torso_u8 = self._mask_to_u8(source_torso_hair_mask, threshold=0.08)
+    if int((torso_u8 > 0).sum()) == 0:
+        return np.zeros((H, W), dtype=np.float32)
+
+    bridge_u8 = np.zeros((H, W), dtype=np.uint8)
+    min_gap_px = max(
+        1,
+        int(getattr(self.config, "source_garment_prepass_bridge_min_gap_px", 4)),
+    )
+    for col in range(W):
+        sam2_ys = np.where(sam2_u8[:, col] > 0)[0]
+        torso_ys = np.where(torso_u8[:, col] > 0)[0]
+        if len(sam2_ys) == 0 or len(torso_ys) == 0:
+            continue
+        sam2_bottom = int(sam2_ys.max())
+        torso_top = int(torso_ys.min())
+        if torso_top > sam2_bottom + min_gap_px:
+            bridge_u8[sam2_bottom:torso_top, col] = 255
+    return (bridge_u8 > 0).astype(np.float32)
+
+
+def _finalize_source_garment_prepass(
+    self,
+    *,
+    source_garment_prepass_mask: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    hair_length: str,
+    skip_source_cloth_preclean: bool,
+    hair_mask_for_removal: Optional[np.ndarray] = None,
+    source_torso_hair_mask: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    base_shape = None
+    for mask in (source_garment_prepass_mask, source_torso_hair_mask, hair_mask_for_removal):
+        if isinstance(mask, np.ndarray):
+            base_shape = mask.shape[:2]
+            break
+    if base_shape is None:
+        return {
+            "mask": np.zeros((1, 1), dtype=np.float32),
+            "px": 0,
+            "enabled": False,
+            "min_px": 0,
+            "bridge_px": 0,
+            "bridge_applied": False,
+            "bridge_min_px": 0,
+            "bridge_mask": np.zeros((1, 1), dtype=np.float32),
+        }
+
+    H, W = base_shape
+    prepass_mask = np.zeros((H, W), dtype=np.float32)
+    if isinstance(source_garment_prepass_mask, np.ndarray) and source_garment_prepass_mask.shape == (H, W):
+        prepass_mask = np.clip(source_garment_prepass_mask.astype(np.float32), 0.0, 1.0)
+
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    min_px = max(
+        int(getattr(self.config, "source_garment_prepass_min_px", 180)),
+        int(
+            face_w
+            * face_h
+            * float(getattr(self.config, "source_garment_prepass_min_face_area_ratio", 0.016))
+        ),
+    )
+    prepass_px = self._count_active_mask_px(prepass_mask, threshold=0.08)
+    enabled = (not skip_source_cloth_preclean) and prepass_px >= min_px
+
+    bridge_mask = np.zeros((H, W), dtype=np.float32)
+    bridge_px = 0
+    bridge_applied = False
+    bridge_min_px = max(
+        1,
+        int(getattr(self.config, "source_garment_prepass_bridge_min_px", 200)),
+    )
+    if hair_length == "short" and not skip_source_cloth_preclean:
+        bridge_mask = self._build_short_sam2_torso_bridge_mask(
+            hair_mask_for_removal=hair_mask_for_removal,
+            source_torso_hair_mask=source_torso_hair_mask,
+        )
+        bridge_px = self._count_active_mask_px(bridge_mask, threshold=0.5)
+        if bridge_px >= bridge_min_px:
+            sigma = max(
+                float(getattr(self.config, "source_garment_prepass_bridge_sigma", 5.0)),
+                0.1,
+            )
+            alpha = float(
+                np.clip(getattr(self.config, "source_garment_prepass_bridge_alpha", 0.95), 0.0, 1.0)
+            )
+            bridge_soft = cv2.GaussianBlur(
+                np.clip(bridge_mask.astype(np.float32), 0.0, 1.0),
+                (0, 0),
+                sigmaX=sigma,
+                sigmaY=sigma,
+            ).astype(np.float32)
+            prepass_mask = np.maximum(
+                prepass_mask,
+                np.clip(bridge_soft * alpha, 0.0, 1.0),
+            ).astype(np.float32)
+            prepass_px = self._count_active_mask_px(prepass_mask, threshold=0.08)
+            enabled = True
+            bridge_applied = True
+            logger.info(
+                "[SDPipeline] sam2-torso bridge merged into garment_prepass_mask: bridge_px=%d total_px=%d",
+                bridge_px,
+                prepass_px,
+            )
+
+    return {
+        "mask": prepass_mask.astype(np.float32),
+        "px": int(prepass_px),
+        "enabled": bool(enabled),
+        "min_px": int(min_px),
+        "bridge_px": int(bridge_px),
+        "bridge_applied": bool(bridge_applied),
+        "bridge_min_px": int(bridge_min_px),
+        "bridge_mask": bridge_mask.astype(np.float32),
+    }
 
 
 def _sanitize_cloth_mask(
@@ -8350,7 +8694,13 @@ def bind_mask_builder_methods_to_pipeline(cls) -> None:
     cls._estimate_head_generation_box = _estimate_head_generation_box
     cls._mask_ratio = staticmethod(_mask_ratio)
     cls._resize_mask_to_shape = staticmethod(_resize_mask_to_shape)
+    cls._mask_to_u8 = staticmethod(_mask_to_u8)
+    cls._count_active_mask_px = staticmethod(_count_active_mask_px)
+    cls._get_cleanup_apply_min_px = _get_cleanup_apply_min_px
+    cls._should_apply_cleanup_mask = _should_apply_cleanup_mask
     cls._sanitize_cloth_mask = _sanitize_cloth_mask
+    cls._build_short_sam2_torso_bridge_mask = _build_short_sam2_torso_bridge_mask
+    cls._finalize_source_garment_prepass = _finalize_source_garment_prepass
     cls._build_subject_cloth_anchor_mask = _build_subject_cloth_anchor_mask
     cls._build_subject_torso_anchor_mask = _build_subject_torso_anchor_mask
     cls._build_subject_shoulder_bridge_mask = _build_subject_shoulder_bridge_mask
