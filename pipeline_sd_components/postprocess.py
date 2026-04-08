@@ -681,52 +681,38 @@ def _sd_refine_removed_region(
 
     def _under_jaw_negative(*, include_bare_skin_gap: bool = False) -> str:
         return _join_negative_terms(
-            "hair strands, loose dangling hair, dangling side locks, side locks touching shoulders or clothing",
-            "dark streaks, dark bib, black patch, black cloth shadow",
-            "vertical black stripe, u-shaped dark notch under chin, deep shadow under chin",
+            "hair strands, dangling side locks",
+            "dark patch, vertical black stripe, u-shaped dark notch under chin",
             garment_negative,
-            "smudged cloth, melted fabric, warped garment",
-            "broken neckline, duplicate collar, extra folds, extra buttons",
-            "exposed chest cutout",
+            "broken neckline, duplicate collar",
             "bare skin gap" if include_bare_skin_gap else "",
-            "deformed neck, artifacts, blurry, cartoon, painting",
-            "earring, earrings, necklace, loose side tendrils touching clothing",
         )
 
     if refine_mode == "under_jaw_cloth":
         fill_prompt = (
-            f"professional studio portrait photo, regenerate a similar {garment_subject} under the jaw, "
-            "keep the same garment family, neckline and collar behavior, realistic fabric texture continuity, "
-            "natural folds and seams, continuous clothing coverage under the jaw, clean neck and shoulders, "
-            "no hair strands in masked region, no dark patch under the neck, no empty chest cutout, "
-            "photorealistic clothing details"
+            f"continuous {garment_subject} under the chin, clean neckline, natural fabric folds, "
+            "consistent collar shape, clean shoulders, photorealistic"
         )
         fill_guidance = 6.9 if hair_length == "short" else 6.8
         fill_negative = _under_jaw_negative(include_bare_skin_gap=True)
     elif refine_mode == "short_cloth_crop" and hair_length == "short":
         fill_prompt = (
-            f"professional studio portrait photo, regenerate only the short-hair under-jaw central {garment_subject} region, "
-            "preserve the same neckline, central placket or fold direction, continuous cloth coverage directly below the chin, "
-            "clean neck and shoulders, no hollow chest cutout, no dark patch, no hair strands in masked region, "
-            "photorealistic clothing details"
+            f"central {garment_subject} under the chin, clean neckline, natural fabric folds, "
+            "consistent center seam, photorealistic"
         )
         fill_guidance = 7.4
         fill_negative = _under_jaw_negative()
     elif refine_mode == "short_cloth_insert" and hair_length == "short":
         fill_prompt = (
-            f"professional studio portrait photo, freshly regenerate only the short-hair under-jaw {garment_subject} insert, "
-            "keep the same garment family, neckline, collar opening, central placket or fold direction, "
-            "clean continuous cloth directly below the chin, natural fabric folds, realistic seam continuity, "
-            "no hair strands in masked region, no dark patch, no hollow chest cutout, photorealistic clothing details"
+            f"continuous {garment_subject} insert under the chin, clean neckline, natural fabric folds, "
+            "consistent collar opening, photorealistic"
         )
         fill_guidance = 7.8
         fill_negative = _under_jaw_negative()
     elif refine_mode == "cloth_only_second_pass":
         fill_prompt = (
-            f"professional studio portrait photo, regenerate only the central visible {garment_subject} below the chin, "
-            "preserve the same neckline, central placket or fold direction, continuous cloth coverage, "
-            "realistic fabric texture continuity, clean neck and shoulders, no hair strands in masked region, "
-            "no dark patch, no hollow chest cutout, photorealistic clothing details"
+            f"visible {garment_subject} below the chin, clean neckline, natural fabric folds, "
+            "consistent center seam, photorealistic"
         )
         fill_guidance = 7.0 if hair_length == "short" else 6.9
         fill_negative = _under_jaw_negative()
