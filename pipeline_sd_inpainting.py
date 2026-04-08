@@ -1291,6 +1291,8 @@ class MirrAISDPipeline:
         shoulder_cloth_release_for_post: Optional[np.ndarray] = None
         artifact_cleanup_mask_for_post: Optional[np.ndarray] = None
         lower_tail_support_for_post: Optional[np.ndarray] = None
+        short_generation_tail_release_mask = np.zeros((H, W), dtype=np.float32)
+        short_generation_tail_release_px = 0
         short_generation_conditioning_cleanup_mask = np.zeros((H, W), dtype=np.float32)
         short_generation_conditioning_cleanup_px = 0
         short_generation_conditioning_cleanup_applied = False
@@ -1367,6 +1369,35 @@ class MirrAISDPipeline:
             _store_mask("pipeline_torso_cloth_preserve_mask", torso_cloth_preserve_for_post)
             _store_mask("pipeline_lower_tail_support_post_mask", lower_tail_support_for_post)
             _store_mask("pipeline_center_chest_strand_mask", center_chest_strand_mask)
+            if hair_length == "short" and lower_tail_support_for_post is not None and lower_tail_support_for_post.shape == (H, W):
+                short_generation_tail_release_mask = np.clip(
+                    lower_tail_support_for_post.astype(np.float32),
+                    0.0,
+                    1.0,
+                )
+                if cloth_mask_dilated is not None and cloth_mask_dilated.shape == (H, W):
+                    short_generation_tail_release_mask = np.clip(
+                        short_generation_tail_release_mask.astype(np.float32)
+                        * self._dilate_mask_with_px(cloth_mask_dilated.astype(np.float32), 9),
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
+                if protect_mask_for_sd.shape == (H, W):
+                    short_generation_tail_release_mask = np.clip(
+                        short_generation_tail_release_mask - protect_mask_for_sd.astype(np.float32) * 0.95,
+                        0.0,
+                        1.0,
+                    )
+                if face_region_mask.shape == (H, W):
+                    short_generation_tail_release_mask = np.clip(
+                        short_generation_tail_release_mask - face_region_mask.astype(np.float32) * 1.20,
+                        0.0,
+                        1.0,
+                    )
+                short_generation_tail_release_px = self._count_active_mask_px(
+                    short_generation_tail_release_mask
+                )
+            _store_mask("pipeline_short_generation_tail_release_mask", short_generation_tail_release_mask)
             for name, mask in lower_tail_post_debug_masks.items():
                 _store_mask(f"pipeline_{name}", mask)
             if isinstance(subject_shoulder_bridge_mask, np.ndarray) and subject_shoulder_bridge_mask.shape == (H, W):
@@ -2089,6 +2120,12 @@ class MirrAISDPipeline:
                     0.0,
                     1.0,
                 ).astype(np.float32)
+            if hair_length == "short" and short_generation_tail_release_mask.shape == (H, W):
+                if short_generation_tail_release_px >= 80:
+                    gen_mask = np.maximum(
+                        gen_mask.astype(np.float32),
+                        np.clip(short_generation_tail_release_mask.astype(np.float32) * 1.08, 0.0, 1.0),
+                    ).astype(np.float32)
             gen_mask_after_final_core = gen_mask.astype(np.float32).copy()
             _store_mask("pipeline_short_removal_mask", removal_mask_for_post)
             _store_mask("pipeline_short_generation_seed_mask", short_generation_seed_mask_for_debug)
@@ -3043,6 +3080,9 @@ class MirrAISDPipeline:
                     debug_data_common["source_cloth_preclean"]["generation_conditioning_cleanup_applied"] = bool(
                         short_generation_conditioning_cleanup_applied
                     )
+                    debug_data_common["source_cloth_preclean"]["short_generation_tail_release_px"] = int(
+                        short_generation_tail_release_px
+                    )
                 _store_mask(
                     "pipeline_short_generation_conditioning_cleanup_mask",
                     short_generation_conditioning_cleanup_mask,
@@ -3518,6 +3558,11 @@ class MirrAISDPipeline:
                         - short_torso_generation_freeze_mask.astype(np.float32) * 1.20,
                         0.0,
                         1.0,
+                    ).astype(np.float32)
+                if short_generation_tail_release_mask.shape == (H, W) and short_generation_tail_release_px >= 80:
+                    composite_mask = np.maximum(
+                        composite_mask.astype(np.float32),
+                        np.clip(short_generation_tail_release_mask.astype(np.float32) * 1.05, 0.0, 1.0),
                     ).astype(np.float32)
 
             garment_composite_mask = None
