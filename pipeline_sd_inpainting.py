@@ -152,17 +152,25 @@ def _build_length_aware_output_crop_box(
     x1, y1, x2, y2 = [int(v) for v in face_bbox]
     face_w = max(x2 - x1, 1)
     face_h = max(y2 - y1, 1)
-    top_ratio = float(getattr(config, "output_crop_top_face_ratio", 0.85))
     length_key = str(hair_length or "long").strip().lower()
     if length_key == "short":
+        top_ratio = float(
+            getattr(
+                config,
+                "output_crop_top_face_ratio_short",
+                getattr(config, "output_crop_top_face_ratio", 0.85),
+            )
+        )
         bottom_ratio = float(getattr(config, "output_crop_bottom_face_ratio_short", 1.15))
         hair_side_ratio = 0.96
         hair_bottom_pad_ratio = 0.10
     elif length_key == "medium":
+        top_ratio = float(getattr(config, "output_crop_top_face_ratio_medium", 0.48))
         bottom_ratio = float(getattr(config, "output_crop_bottom_face_ratio_medium", 1.85))
         hair_side_ratio = 1.22
         hair_bottom_pad_ratio = 0.18
     else:
+        top_ratio = float(getattr(config, "output_crop_top_face_ratio_long", 0.34))
         bottom_ratio = float(getattr(config, "output_crop_bottom_face_ratio_long", 2.85))
         hair_side_ratio = 1.55
         hair_bottom_pad_ratio = 0.30

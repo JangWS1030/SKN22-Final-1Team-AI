@@ -288,6 +288,9 @@ class SDInpaintConfig:
     # final output crop by target hair length
     enable_output_crop_by_target_length: bool = True
     output_crop_top_face_ratio: float = 0.85
+    output_crop_top_face_ratio_short: float = 0.85
+    output_crop_top_face_ratio_medium: float = 0.48
+    output_crop_top_face_ratio_long: float = 0.34
     output_crop_bottom_face_ratio_short: float = 1.15
     output_crop_bottom_face_ratio_medium: float = 1.85
     output_crop_bottom_face_ratio_long: float = 2.85
