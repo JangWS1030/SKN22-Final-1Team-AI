@@ -6,9 +6,6 @@ from .cloth_preserve import bind_cloth_preserve_methods_to_pipeline
 from .refinement import bind_refinement_methods_to_pipeline
 from .scoring import bind_scoring_methods_to_pipeline
 
-# backward compat: postprocess는 3개 모듈로 분리됨
-from .postprocess import bind_postprocess_methods_to_pipeline
-
 __all__ = [
     "bind_loading_methods_to_pipeline",
     "bind_prompt_methods_to_pipeline",
@@ -17,5 +14,4 @@ __all__ = [
     "bind_cloth_preserve_methods_to_pipeline",
     "bind_refinement_methods_to_pipeline",
     "bind_scoring_methods_to_pipeline",
-    "bind_postprocess_methods_to_pipeline",
 ]

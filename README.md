@@ -458,6 +458,6 @@ push 시 현재 기준으로 아래 워크플로가 동작합니다.
 현재 정리 이후 기본 확인 명령은 아래 두 개입니다.
 
 ```bash
-python -m py_compile handler_sd.py pipeline_sd_inpainting.py pipeline_sd_components/loading.py pipeline_sd_components/prompt.py pipeline_sd_components/postprocess.py runtime_download.py scripts/runpod_release.py
+python -m py_compile handler_sd.py pipeline_sd_inpainting.py pipeline_sd_components/loading.py pipeline_sd_components/output.py pipeline_sd_components/prompt.py runtime_download.py scripts/runpod_release.py
 python test_runpod.py --health-check
 ```

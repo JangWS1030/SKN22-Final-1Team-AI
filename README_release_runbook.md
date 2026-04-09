@@ -110,7 +110,7 @@ python scripts/runpod_release.py --image-tag latest --dry-run
 ## 최종 검증
 
 ```bash
-python -m py_compile scripts/runpod_release.py test_runpod.py pipeline_sd_inpainting.py pipeline_sd_components/loading.py pipeline_sd_components/prompt.py pipeline_sd_components/postprocess.py
+python -m py_compile scripts/runpod_release.py test_runpod.py pipeline_sd_inpainting.py pipeline_sd_components/loading.py pipeline_sd_components/output.py pipeline_sd_components/prompt.py
 python test_runpod.py --health-check
 ```
 
