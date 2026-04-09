@@ -33,7 +33,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gender", default="", help="Optional subject gender hint: male/female")
     parser.add_argument("--top-k", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-    parser.add_argument("--health-check", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--health-check", action="store_true")
+    mode.add_argument("--analyze-face", action="store_true")
+    parser.add_argument("--include-visualization", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     return parser.parse_args()
 
@@ -121,9 +124,35 @@ def save_results(output: dict, out_dir: Path) -> list[Path]:
     return saved
 
 
+def save_analysis_visualization(output: dict, out_dir: Path) -> list[Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[Path] = []
+    visualization_base64 = output.get("visualization_base64")
+    if visualization_base64:
+        if isinstance(visualization_base64, str) and "," in visualization_base64:
+            visualization_base64 = visualization_base64.split(",", 1)[1]
+        image = Image.open(io.BytesIO(base64.b64decode(visualization_base64))).convert("RGB")
+        path = out_dir / "analyze_face_visualization.jpg"
+        image.save(path, format="JPEG", quality=95)
+        saved.append(path)
+    return saved
+
+
 def build_payload(args: argparse.Namespace) -> dict:
     if args.health_check:
         return {"health_check": True}
+    if args.analyze_face:
+        payload = {
+            "action": "analyze_face",
+            "include_visualization": args.include_visualization,
+        }
+        if args.image:
+            payload["image"] = image_to_base64(args.image)
+        elif args.image_url:
+            payload["image_url"] = args.image_url
+        else:
+            raise SystemExit("Provide --image or --image-url for analyze-face test.")
+        return payload
 
     payload = {
         "hairstyle_text": args.hairstyle,
@@ -160,6 +189,22 @@ def main() -> int:
     if args.health_check:
         if str(output.get("status", "")).lower() != "ok":
             raise SystemExit("Health check response did not contain status=ok")
+        return 0
+    if args.analyze_face:
+        if str(output.get("status", "")).lower() != "ok":
+            raise SystemExit(f"Analyze-face response did not contain status=ok: {output}")
+        saved = save_analysis_visualization(output, args.output_dir)
+        print(
+            json.dumps(
+                {
+                    "face_shape": output.get("face_shape"),
+                    "golden_ratio_score": output.get("golden_ratio_score"),
+                    "saved_images": [str(path) for path in saved],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
 
     if not output.get("results"):

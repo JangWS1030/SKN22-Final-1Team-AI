@@ -12,7 +12,7 @@
 
 ## 핵심 파일
 
-- `handler_sd.py`: RunPod serverless 엔트리포인트 (헬스체크 / 직접 생성 라우팅)
+- `handler_sd.py`: RunPod serverless 엔트리포인트 (헬스체크 / 얼굴형 분석 / 직접 생성 라우팅)
 - `internal_api_app.py`: `/internal/...` HTTP facade 엔트리포인트
 - `pipeline_sd_inpainting.py`: 실제 SD 추론 파이프라인
 - `pipeline_sd_components/`: `pipeline_sd_inpainting.py`에서 분리한 로딩 / 프롬프트 / 후처리 모듈
@@ -104,7 +104,7 @@ python -m pip install -r requirements-train.txt
 
 - 엔트리포인트 파일: [handler_sd.py](handler_sd.py)
 - 배포 위치: RunPod Serverless endpoint
-- 용도: 헬스체크, 직접 헤어 생성
+- 용도: 헬스체크, 얼굴형 분석, 직접 헤어 생성
 - 호출 방식: RunPod `run` / `runsync`
 
 로컬에서 handler 자체를 띄우려면:
@@ -147,7 +147,47 @@ python handler_sd.py
 
 ---
 
-### EP1. 직접 지정 생성
+### EP1. 얼굴형 분석
+
+동일한 RunPod serverless endpoint에서 얼굴형 분석도 처리합니다.
+
+**Request**
+```json
+{
+  "input": {
+    "action": "analyze_face",
+    "image": "<base64 or URL>",
+    "include_visualization": true
+  }
+}
+```
+
+**Response**
+```json
+{
+  "status": "ok",
+  "face_shape": "oval",
+  "face_shape_scores": {
+    "oval": 0.4211,
+    "round": 0.1084
+  },
+  "golden_ratio_score": 0.7425,
+  "face_ratios": {
+    "cheekbone_to_height": 0.721334
+  },
+  "face_bbox": {
+    "x1": 205,
+    "y1": 74,
+    "x2": 598,
+    "y2": 602
+  },
+  "visualization_base64": "..."
+}
+```
+
+---
+
+### EP2. 직접 지정 생성
 
 hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 
@@ -238,6 +278,12 @@ python handler_sd.py
 
 ```bash
 python test_runpod.py --health-check
+```
+
+얼굴형 분석:
+
+```bash
+python test_runpod.py --analyze-face --image images/1234.jpg --include-visualization
 ```
 
 샘플 요청:

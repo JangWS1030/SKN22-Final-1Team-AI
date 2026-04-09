@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import hmac
 import json
@@ -17,8 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from handler_sd import PROJECT_ROOT, _ensure_pipeline_module_imported, _load_image_from_input
-from utils.face_metrics import classify_face_shape, golden_ratio_score
+from handler_sd import FaceAnalysisError, PROJECT_ROOT, analyze_face_input
 
 
 logger = logging.getLogger(__name__)
@@ -33,8 +31,6 @@ ASSET_TTL_SECONDS = max(60, int(os.environ.get("MIRRAI_ASSET_TTL_SECONDS", "3600
 ASSET_DIR = PROJECT_ROOT / "output" / "internal_api_assets"
 ASSET_DIR.mkdir(parents=True, exist_ok=True)
 SERVICE_STARTED_AT = time.time()
-
-_ANALYZER_PIPELINE = None
 
 
 class ApiError(RuntimeError):
@@ -209,42 +205,6 @@ def _build_input_payload(image_url: Optional[str], image_base64: Optional[str]) 
     return payload
 
 
-def _round_nullable(value: Any, digits: int = 4) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        return round(float(value), digits)
-    except Exception:
-        return None
-
-
-def _serialize_face_bbox(face_bbox: Tuple[int, int, int, int]) -> Dict[str, int]:
-    x1, y1, x2, y2 = [int(v) for v in face_bbox]
-    return {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
-
-
-def _create_analysis_pipeline():
-    _ensure_pipeline_module_imported()
-    from handler_sd import MirrAISDPipeline, SDInpaintConfig
-
-    cfg_fields = {f.name for f in dataclasses.fields(SDInpaintConfig)}
-    cfg_kwargs: Dict[str, Any] = {
-        "use_sam2": False,
-        "use_clip_ranking": False,
-    }
-    cfg = SDInpaintConfig(**{k: v for k, v in cfg_kwargs.items() if k in cfg_fields})
-    pipeline = MirrAISDPipeline(cfg)
-    pipeline._load_mediapipe()
-    return pipeline
-
-
-def _get_analysis_pipeline():
-    global _ANALYZER_PIPELINE
-    if _ANALYZER_PIPELINE is None:
-        _ANALYZER_PIPELINE = _create_analysis_pipeline()
-    return _ANALYZER_PIPELINE
-
-
 def _analyze_face_core(
     *,
     image_url: Optional[str],
@@ -252,57 +212,33 @@ def _analyze_face_core(
     include_visualization: bool,
     request: Request,
 ) -> Dict[str, Any]:
-    img_bgr = _load_image_from_input(_build_input_payload(image_url, image_base64))
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    pipeline = _get_analysis_pipeline()
-
-    face_bbox = pipeline._detect_face(img_rgb)
-    if face_bbox is None:
+    try:
+        analysis = analyze_face_input(
+            _build_input_payload(image_url, image_base64),
+            include_visualization=include_visualization,
+        )
+    except FaceAnalysisError as exc:
         raise ApiError(
             status_code=422,
-            error_code="FACE_NOT_DETECTED",
-            message="No face was detected in the provided image.",
+            error_code=exc.error_code,
+            message=exc.message,
             retryable=False,
-        )
+        ) from exc
 
-    landmark_obs = pipeline._detect_landmark_data(img_rgb, face_bbox)
-    if not bool(landmark_obs.get("detected")):
-        raise ApiError(
-            status_code=422,
-            error_code="LANDMARKS_NOT_DETECTED",
-            message="Face mesh landmarks could not be detected from the provided image.",
-            retryable=False,
-        )
-
-    debug_data = landmark_obs.get("debug_data") or {}
-    face_ratios = dict(debug_data.get("ratios") or {})
-    face_shape, face_shape_scores = classify_face_shape(face_ratios)
-    golden_score = golden_ratio_score(face_ratios)
-
+    visualization_image = analysis.pop("visualization_image_bgr", None)
     visualization_url = None
     visualization_expires_at = None
-    if include_visualization:
-        debug_images = landmark_obs.get("debug_images") or {}
-        contour_bgr = debug_images.get("mediapipe_face_mesh_contours")
-        if contour_bgr is not None:
-            visualization_url, visualization_expires_at = _persist_image_asset(
-                image_bgr=contour_bgr,
-                request=request,
-                prefix="analyze-face",
-            )
+    if visualization_image is not None:
+        visualization_url, visualization_expires_at = _persist_image_asset(
+            image_bgr=visualization_image,
+            request=request,
+            prefix="analyze-face",
+        )
 
-    return {
-        "face_shape": face_shape,
-        "face_shape_scores": {
-            key: round(float(value), 4) for key, value in face_shape_scores.items()
-        },
-        "golden_ratio_score": round(float(golden_score), 4),
-        "face_ratios": {key: _round_nullable(value, 6) for key, value in face_ratios.items()},
-        "face_bbox": _serialize_face_bbox(face_bbox),
-        "image_url": visualization_url,
-        "image_url_expires_at": visualization_expires_at,
-        "schema_version": SCHEMA_VERSION,
-    }
+    analysis["image_url"] = visualization_url
+    analysis["image_url_expires_at"] = visualization_expires_at
+    analysis["schema_version"] = SCHEMA_VERSION
+    return analysis
 
 
 def _persist_image_asset(
