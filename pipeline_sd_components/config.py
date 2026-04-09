@@ -276,6 +276,11 @@ class SDInpaintConfig:
     standardize_face_width_ratio_min: float = 0.18
     standardized_width: int = 768
     standardized_height: int = 1024
+    adaptive_input_framing_by_target_length: bool = True
+    standardize_crop_top_face_ratio: float = 0.95
+    standardize_crop_bottom_face_ratio_short: float = 1.42
+    standardize_crop_bottom_face_ratio_medium: float = 1.86
+    standardize_crop_bottom_face_ratio_long: float = 2.30
     enable_portrait_reframe: bool = False
     portrait_reframe_face_height_ratio_max: float = 0.40
     portrait_reframe_top_gap_ratio_min: float = 0.06

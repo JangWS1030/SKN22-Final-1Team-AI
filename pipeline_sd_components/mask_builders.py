@@ -5814,6 +5814,8 @@ def _maybe_standardize_input_portrait(
     self,
     img_rgb: np.ndarray,
     face_bbox: Tuple[int, int, int, int],
+    *,
+    target_hair_length: str = "long",
 ) -> Dict[str, Any]:
     """
     얼굴이 너무 작게 잡히는 입력을 미용실 상담용 포트레이트 프레임으로 정규화한다.
@@ -5855,8 +5857,28 @@ def _maybe_standardize_input_portrait(
     else:
         target_w = int(getattr(self.config, "standardized_width", 768))
         target_h = int(getattr(self.config, "standardized_height", 1024))
-        crop_top = int(round(y1 - face_h * 0.95))
-        crop_bottom = int(round(y2 + face_h * 2.15))
+        crop_top_ratio = float(getattr(self.config, "standardize_crop_top_face_ratio", 0.95))
+        adaptive_framing_enabled = bool(
+            getattr(self.config, "adaptive_input_framing_by_target_length", True)
+        )
+        if adaptive_framing_enabled:
+            length_key = str(target_hair_length or "long").strip().lower()
+            if length_key == "short":
+                crop_bottom_ratio = float(
+                    getattr(self.config, "standardize_crop_bottom_face_ratio_short", 1.42)
+                )
+            elif length_key == "medium":
+                crop_bottom_ratio = float(
+                    getattr(self.config, "standardize_crop_bottom_face_ratio_medium", 1.86)
+                )
+            else:
+                crop_bottom_ratio = float(
+                    getattr(self.config, "standardize_crop_bottom_face_ratio_long", 2.30)
+                )
+        else:
+            crop_bottom_ratio = 2.15
+        crop_top = int(round(y1 - face_h * crop_top_ratio))
+        crop_bottom = int(round(y2 + face_h * crop_bottom_ratio))
     target_aspect = target_w / max(float(target_h), 1.0)
 
     cx = 0.5 * (x1 + x2)
@@ -5902,6 +5924,7 @@ def _maybe_standardize_input_portrait(
             "top_gap_ratio": round(top_gap_ratio, 4),
             "is_landscape": bool(is_landscape),
             "reframe_applied": bool(needs_reframe),
+            "target_hair_length": str(target_hair_length or "long"),
         },
         "crop_box": [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)],
         "original_shape": [int(H), int(W)],

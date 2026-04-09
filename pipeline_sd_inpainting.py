@@ -203,6 +203,7 @@ class MirrAISDPipeline:
         requested_color_text = self._normalize_color_text(color_text)
         effective_hairstyle_text = requested_hairstyle_text
         effective_color_text = requested_color_text
+        target_hair_length = self._classify_hair_length(effective_hairstyle_text)
         normalized_color_text = self._normalize_color_text(effective_color_text)
         subject_gender_mode = self._infer_subject_gender(
             effective_hairstyle_text,
@@ -605,7 +606,11 @@ class MirrAISDPipeline:
         if face_obs is None:
             raise ValueError("얼굴을 검출할 수 없습니다.")
         face_bbox = face_obs  # (x1, y1, x2, y2)
-        standardized_meta = self._maybe_standardize_input_portrait(img_rgb, face_bbox)
+        standardized_meta = self._maybe_standardize_input_portrait(
+            img_rgb,
+            face_bbox,
+            target_hair_length=target_hair_length,
+        )
         if standardized_meta.get("applied"):
             std_rgb = standardized_meta.get("image_rgb")
             if isinstance(std_rgb, np.ndarray):
@@ -733,7 +738,7 @@ class MirrAISDPipeline:
             raise ValueError("머리카락 영역이 너무 작습니다.")
 
         # ── Step 3-b: 헤어 길이 분류 ─────────────────────────────────────────
-        hair_length = self._classify_hair_length(effective_hairstyle_text)
+        hair_length = target_hair_length
         logger.info(
             f"[SDPipeline] 헤어 길이 분류: {hair_length}, subject_gender={subject_gender_mode}"
         )
