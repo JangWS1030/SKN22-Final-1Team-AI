@@ -96,7 +96,7 @@ def main() -> int:
     ]
 
     with (
-        patch("internal_api_app._run_recommendation", return_value=(fake_recommendations, None, "fake bob", "natural black")),
+        patch("internal_api_app._run_recommendation", return_value=(fake_recommendations, "fake bob", "natural black")),
         patch("internal_api_app._get_pipeline", return_value=object()),
         patch("internal_api_app._generate_per_recommendation", return_value=[fake_result]),
     ):

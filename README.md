@@ -12,11 +12,11 @@
 
 ## 핵심 파일
 
-- `handler_sd.py`: RunPod serverless 엔트리포인트 (EP0~EP3 라우팅)
+- `handler_sd.py`: RunPod serverless 엔트리포인트 (헬스체크 / 직접 생성 / 추천 생성 라우팅)
 - `internal_api_app.py`: `/internal/...` HTTP facade 엔트리포인트
 - `pipeline_sd_inpainting.py`: 실제 SD 추론 파이프라인
 - `pipeline_sd_components/`: `pipeline_sd_inpainting.py`에서 분리한 로딩 / 프롬프트 / 후처리 모듈
-- `style_recommender.py`: 얼굴형 + 취향벡터 → 스타일 추천 엔진 (ChromaDB 코사인 유사도)
+- `style_recommender.py`: 얼굴형 + 취향벡터 → 스타일 추천 엔진 (로컬 코사인 랭킹)
 - `runtime_download.py`: 런타임 모델 캐시 준비
 - `download_weights_sd.py`: SD 관련 가중치 다운로드 보조 스크립트
 - `entrypoint_sd.sh`: 컨테이너 시작 스크립트
@@ -55,7 +55,6 @@
 - `requirements.txt`: 현재 서비스 런타임 의존성
 - `requirements-train.txt`: 학습/평가용 추가 의존성
 - `requirements-dev.txt`: 로컬 개발용 추가 의존성
-- `requirements-trends.txt`: 트렌드 크롤링/RAG 전용 의존성
 
 `pipeline_sd_components/` 분리는 코드 구조 변경만 포함하고, 런타임/학습용 서드파티 패키지 추가는 없습니다.
 
@@ -69,12 +68,6 @@ python -m pip install -r requirements.txt
 
 ```bash
 python -m pip install -r requirements-train.txt
-```
-
-트렌드 파이프라인 설치:
-
-```bash
-python -m pip install -r requirements-trends.txt
 ```
 
 ## 로컬/업로드 제외 범위
@@ -92,8 +85,6 @@ python -m pip install -r requirements-trends.txt
 
 - `README_release_runbook.md`: 현재 GitHub Actions + RunPod 릴리스 절차
 - `README_runpod_volume.md`: RunPod cold start 완화용 volume 설정 메모
-- `docs/rag_pipeline.md`: 통합된 크롤링/RAG 서브시스템 실행 가이드
-- `docs/rag_evaluation.md`: stylist-rag와 no-rag 비교 평가 결과
 - `docs/pipeline_runtime_config.md`: 현재 파이프라인이 실제로 읽는 runtime config 기준 문서
 - `docs/internal_ai_service_api.md`: backend 연동용 내부 AI 서비스 API 계약
 
@@ -106,7 +97,7 @@ python -m pip install -r requirements-trends.txt
 
 ## RunPod API 엔드포인트
 
-`handler_sd.py`는 단일 RunPod Serverless 핸들러에서 `action` 필드 또는 입력 구조에 따라 4개 기능을 라우팅합니다.
+`handler_sd.py`는 단일 RunPod Serverless 핸들러에서 `action` 필드 또는 입력 구조에 따라 3개 기능을 라우팅합니다.
 
 ### 공통
 
@@ -198,7 +189,7 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 
 ---
 
-### EP2. 추천 기반 생성 (취향벡터 + RAG)
+### EP2. 추천 기반 생성 (취향벡터)
 
 얼굴 분석 데이터 + 사용자 취향 → 스타일 추천 → 추천 스타일별 1장씩 생성합니다.
 `face_ratios`가 있으면 자동으로 추천 모드로 진입합니다.
@@ -308,22 +299,9 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
       "golden_ratio_score": 0.649
     }
   ],
-  "rag_context": "[자료 1]\n제목: ...\n요약: ...",
   "elapsed_seconds": 58.7
 }
 ```
-
----
-
-### EP3. 트렌드 데이터 최신화
-
-트렌드 크롤링/정제/벡터DB 갱신은 RunPod SD runtime entrypoint에서 더 이상 처리하지 않습니다.
-
-- `handler_sd.py`는 `refresh_trends` / `chromadb_tar_base64` 입력을 지원하지 않습니다.
-- 트렌드/RAG 갱신은 별도 파이프라인으로 관리합니다.
-- 관련 코드는 `rag_pipeline/`, `requirements-trends.txt`, `docs/rag_pipeline.md`를 기준으로 실행합니다.
-
-즉, RunPod SD runtime은 생성/추천 추론에 집중하고, ChromaDB 구축/교체는 외부 백엔드 또는 별도 작업 파이프라인에서 수행하는 구조입니다.
 
 ---
 
@@ -424,24 +402,6 @@ push 시 현재 기준으로 아래 워크플로가 동작합니다.
 - `docs/`: generation 학습/평가 및 런타임 설정 관련 문서
 
 기존 StyleGAN / HairCLIP 기반 레거시 경로와 미사용 랜드마크·세그멘테이션 호환 경로는 저장소에서 제거했습니다.
-
-## 통합된 트렌드 크롤링/RAG
-
-상위 폴더의 `crawling_git`는 현재 저장소 기준으로 흡수했습니다.
-
-- 코드: `rag_pipeline/`
-- 데이터: `data/rag/`
-- 원본 PDF: `data/rag/sources/ncs/`
-- 벡터 DB:
-  `data/rag/stores/chromadb_trends` (트렌드)
-  `data/rag/stores/chromadb_ncs` (NCS 시술)
-  `data/rag/stores/chromadb_styles` (스타일 추천)
-- 통합 질의:
-  `python -m rag_pipeline.main stylist-rag --query "요즘 유행하는 단발 추천하고 시술 포인트도 알려줘"`
-- 평가:
-  `python -m rag_pipeline.main stylist-eval --top-k 3`
-
-기존 RunPod SD 서비스 경로와 충돌하지 않도록 완전히 분리된 네임스페이스로 넣었습니다. 자세한 사용법은 `docs/rag_pipeline.md`를 보면 됩니다.
 
 ## 생성 프롬프트 입력
 

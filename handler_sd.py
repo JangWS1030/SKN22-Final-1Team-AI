@@ -21,7 +21,7 @@ MirrAI SD Inpainting — RunPod Serverless Handler
   }
 }
 
-== 모드 2: 추천 기반 생성 (취향벡터 + RAG) ==
+== 모드 2: 추천 기반 생성 (취향벡터) ==
 face_ratios가 있으면 자동으로 추천 모드 진입.
 {
   "input": {
@@ -39,7 +39,6 @@ face_ratios가 있으면 자동으로 추천 모드 진입.
 {
   "results": [ ... ],
   "recommendations": [ ... ],    // 추천 모드
-  "rag_context": "...",          // 추천 모드
   "elapsed_seconds": 12.3
 }
 """
@@ -324,10 +323,10 @@ def _image_to_base64(img_bgr: "np.ndarray", quality: int = 92) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-# ── 추천 + RAG 컨텍스트 ────────────────────────────────────────────────────────
+# ── 추천 ───────────────────────────────────────────────────────────────────────
 
 def _run_recommendation(face_ratios, preference, preference_text, age, color_text, top_k, weights=None):
-    """추천 엔진 실행 → (recommendations_data, rag_context, hairstyle_text, color_text)"""
+    """추천 엔진 실행 → (recommendations_data, hairstyle_text, color_text)"""
     from style_recommender import recommend_top_k, recommend_to_dict
 
     recommendations = recommend_top_k(
@@ -339,7 +338,6 @@ def _run_recommendation(face_ratios, preference, preference_text, age, color_tex
         weights=weights,
     )
     recommendations_data = recommend_to_dict(recommendations)
-    rag_context_str = _fetch_rag_context_for_styles(recommendations)
 
     hairstyle_text = ""
     if recommendations:
@@ -347,34 +345,12 @@ def _run_recommendation(face_ratios, preference, preference_text, age, color_tex
             recommendations[0].metadata.get("hairstyle_text") or recommendations[0].style_name
         ).strip()
     logger.info(f"[handler_sd] 추천 완료: {len(recommendations)}개, top='{hairstyle_text}'")
-    return recommendations_data, rag_context_str, hairstyle_text, color_text
-
-
-def _fetch_rag_context_for_styles(recommendations) -> Optional[str]:
-    """추천된 스타일들에 대한 RAG 트렌드 컨텍스트를 검색."""
-    try:
-        from rag_pipeline.rag_query import retrieve, build_context
-    except ImportError:
-        logger.warning("[handler_sd] RAG pipeline import 실패, 컨텍스트 없이 진행")
-        return None
-
-    all_docs, seen_titles = [], set()
-    for rec in recommendations[:3]:
-        try:
-            docs = retrieve(rec.style_name, n_results=3, expand=True)
-            for doc in docs:
-                title = doc.get("title", "")
-                if title not in seen_titles:
-                    seen_titles.add(title)
-                    all_docs.append(doc)
-        except Exception as e:
-            logger.warning(f"[handler_sd] RAG 검색 실패({rec.style_name}): {e}")
-    return build_context(all_docs[:5]) if all_docs else None
+    return recommendations_data, hairstyle_text, color_text
 
 
 def _generate_per_recommendation(
     pipeline, img_bgr, recommendations, color_text,
-    return_intermediates, mask_refine_mode, subject_gender, lora_path, lora_scale, rag_context,
+    return_intermediates, mask_refine_mode, subject_gender, lora_path, lora_scale,
     white_tshirt_experiment: bool = False,
 ):
     """추천된 각 스타일마다 1장씩 생성."""
@@ -384,11 +360,6 @@ def _generate_per_recommendation(
         hairstyle_text = rec.get("hairstyle_text", "") or style_name
         description = rec.get("description", "")
         enriched_prompt = f"{hairstyle_text}, {description}" if description else hairstyle_text
-
-        if rag_context:
-            rag_kw = _extract_rag_keywords(rag_context, hairstyle_text)
-            if rag_kw:
-                enriched_prompt = f"{enriched_prompt}, {rag_kw}"
 
         # DB에 저장된 SD 프롬프트 데이터 전달
         sd_prompt_data = None
@@ -432,22 +403,6 @@ def _generate_per_recommendation(
             # 실패해도 에러 정보를 포함한 placeholder 반환
             recommendations[idx]["generation_error"] = f"{type(e).__name__}: {e}"
     return all_results
-
-
-def _extract_rag_keywords(rag_context: str, style_name: str) -> str:
-    """RAG 컨텍스트에서 해당 스타일 관련 키워드를 추출."""
-    style_lower = style_name.lower()
-    keywords = []
-    for line in rag_context.split("\n"):
-        line_lower = line.lower()
-        if "스타일 태그:" in line:
-            tags = line.split(":", 1)[1].strip()
-            for tag in (t.strip() for t in tags.split(",")):
-                tag_l = tag.lower().strip("[] ")
-                if tag_l and (tag_l in style_lower or any(w in tag_l for w in style_lower.split())):
-                    keywords.append(tag)
-    seen = set()
-    return ", ".join(kw for kw in keywords if not (kw in seen or seen.add(kw)))[:3]
 
 
 # ── RunPod Handler ──────────────────────────────────────────────────────────────
@@ -516,13 +471,12 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
         is_recommend_mode = face_ratios is not None
         recommendations_data = None
-        rag_context_str = None
 
         # 가중치: 서버에서 동적 조절 가능 (미전달 시 기본 40/20/40)
         weights = inp.get("weights")  # {"face": 0.4, "golden": 0.2, "preference": 0.4}
 
         if is_recommend_mode:
-            recommendations_data, rag_context_str, hairstyle_text, color_text = (
+            recommendations_data, hairstyle_text, color_text = (
                 _run_recommendation(
                     face_ratios=face_ratios,
                     preference=preference,
@@ -566,7 +520,6 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 subject_gender=subject_gender,
                 lora_path=lora_path,
                 lora_scale=lora_scale,
-                rag_context=rag_context_str,
                 white_tshirt_experiment=white_tshirt_experiment,
             )
         else:
@@ -687,8 +640,6 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         }
         if recommendations_data:
             response["recommendations"] = recommendations_data
-        if rag_context_str:
-            response["rag_context"] = rag_context_str
         if intermediates:
             response["intermediates"] = intermediates
         if intermediate_data:

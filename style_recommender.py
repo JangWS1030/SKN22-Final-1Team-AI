@@ -1,7 +1,7 @@
 """
 헤어스타일 추천 엔진 (Style Recommender)
 
-3개 벡터 가중 결합 → ChromaDB 코사인 유사도 → Top-5 추천
+3개 벡터 가중 결합 → 인메모리 코사인 유사도 → Top-5 추천
 
 ┌───────────────────┬────────────────────────────┬────────┐
 │ 입력 벡터          │ 구성 요소                    │ 가중치  │
@@ -11,7 +11,7 @@
 │ user_preference   │ 길이·분위기·모발·컬러·예산     │ 40%    │
 └───────────────────┴────────────────────────────┴────────┘
 
-→ 3개 벡터를 가중 결합 → ChromaDB 코사인 유사도 비교 → Top-5 추천
+→ 3개 벡터를 가중 결합 → 로컬 스타일 카탈로그 코사인 유사도 비교 → Top-5 추천
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ import math
 import re
 from functools import lru_cache
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -33,8 +32,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-_DATA_DIR = Path(__file__).resolve().parent / "data"
-_CHROMA_STYLE_DIR = _DATA_DIR / "rag" / "stores" / "chromadb_styles"
 _STYLE_SOURCE_NAME = "llm_refined_trends"
 
 GOLDEN_RATIO = 1.618
@@ -597,102 +594,6 @@ def encode_user_vector(
     return vec
 
 
-# ---------------------------------------------------------------------------
-# ChromaDB 스타일 컬렉션
-# ---------------------------------------------------------------------------
-_collection_cache = None
-
-
-def _get_style_collection():
-    """ChromaDB 스타일 컬렉션 로드 (없으면 빌드)."""
-    global _collection_cache
-    if _collection_cache is not None:
-        return _collection_cache
-
-    try:
-        import chromadb
-    except ModuleNotFoundError:
-        logger.warning("chromadb is not installed; falling back to in-memory style search")
-        return None
-
-    client = chromadb.PersistentClient(path=str(_CHROMA_STYLE_DIR))
-
-    try:
-        collection = client.get_collection(
-            name="hairstyle_features",
-        )
-        if collection.count() > 0:
-            # 최신 메타 스키마가 없으면 리빌드
-            sample = collection.peek(limit=1)
-            sample_meta = (sample.get("metadatas") or [{}])[0]
-            if (
-                sample_meta.get("source_dataset") != _STYLE_SOURCE_NAME
-                or "hairstyle_text" not in sample_meta
-                or "sd_positive" not in sample_meta
-            ):
-                logger.info("Style collection schema/source changed, rebuilding...")
-                collection = build_style_collection(client)
-            else:
-                logger.info("Loaded existing style collection (%d items)", collection.count())
-            _collection_cache = collection
-            return collection
-    except Exception:
-        pass
-
-    # 컬렉션이 없거나 비어있으면 빌드
-    collection = build_style_collection(client)
-    _collection_cache = collection
-    return collection
-
-
-def build_style_collection(client=None):
-    """llm_refined_trends 기반 추천 후보 → ChromaDB 컬렉션 빌드."""
-    import chromadb
-
-    if client is None:
-        client = chromadb.PersistentClient(path=str(_CHROMA_STYLE_DIR))
-
-    # 기존 컬렉션 삭제 후 재생성
-    try:
-        client.delete_collection("hairstyle_features")
-    except Exception:
-        pass
-
-    collection = client.create_collection(
-        name="hairstyle_features",
-        metadata={
-            "description": "Hairstyle feature vectors for recommendation",
-            "hnsw:space": "cosine",
-        },
-    )
-
-    styles = _load_hairstyles()
-    ids = []
-    embeddings = []
-    metadatas = []
-    documents = []
-
-    for style in styles:
-        vec = encode_style_vector(style)
-        # 스타일 벡터에도 가중치 스케일 적용 (유저 벡터와 동일 공간)
-        scaled = _apply_weight_scaling(vec)
-
-        ids.append(style["id"])
-        embeddings.append(scaled.tolist())
-        metadatas.append(_style_metadata(style))
-        documents.append(_style_document(style))
-
-    collection.add(
-        ids=ids,
-        embeddings=embeddings,
-        metadatas=metadatas,
-        documents=documents,
-    )
-
-    logger.info("Built style collection with %d styles", len(styles))
-    return collection
-
-
 def _apply_weight_scaling(vec: np.ndarray) -> np.ndarray:
     """스타일 벡터에 가중치 스케일링 적용 (유저 벡터와 동일 공간)."""
     scaled = vec.copy()
@@ -836,25 +737,8 @@ def recommend_top_k(
     # 4. 유저 벡터 인코딩 (가중치 적용)
     user_vec = encode_user_vector(face_scores, g_score, preference, weights=weights)
 
-    # 5. ChromaDB 쿼리 (없으면 인메모리 폴백)
-    collection = _get_style_collection()
-    if collection is None:
-        ranked_rows = _query_styles_in_memory(user_vec, top_k)
-    else:
-        results = collection.query(
-            query_embeddings=[user_vec.tolist()],
-            n_results=min(top_k, collection.count()),
-            include=["metadatas", "documents", "distances"],
-        )
-        ranked_rows = [
-            (sid, 1.0 - dist, meta, doc)
-            for sid, dist, meta, doc in zip(
-                results["ids"][0],
-                results["distances"][0],
-                results["metadatas"][0],
-                results["documents"][0],
-            )
-        ]
+    # 5. 로컬 스타일 카탈로그 코사인 유사도 랭킹
+    ranked_rows = _query_styles_in_memory(user_vec, top_k)
 
     # 6. 결과 매핑
     recommendations = []

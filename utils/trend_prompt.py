@@ -13,7 +13,6 @@ from typing import Any, Iterable, List, Optional, Sequence
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TREND_DATA_CANDIDATES = (
     PROJECT_ROOT / "data" / "llm_refined_trends.json",
-    PROJECT_ROOT / "data" / "rag" / "processed" / "trends" / "llm_refined_trends.json",
 )
 
 TOKEN_RE = re.compile(r"[a-z0-9가-힣]+")

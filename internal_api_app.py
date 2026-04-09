@@ -641,7 +641,7 @@ def generate_simulations(
             retryable=False,
         )
 
-    recommendations_data, rag_context, _, resolved_color = _run_recommendation(
+    recommendations_data, _, resolved_color = _run_recommendation(
         face_ratios=face_ratios,
         preference=body.survey_data,
         preference_text=None,
@@ -662,7 +662,6 @@ def generate_simulations(
         subject_gender=body.subject_gender,
         lora_path=None,
         lora_scale=1.0,
-        rag_context=rag_context,
     )
     result_by_rank = {int(r.rank): r for r in generated_results}
 
