@@ -305,7 +305,6 @@ def build_template_update_payload_with_env(
         if key in template and template[key] is not None:
             if key == "env":
                 normalized_env = normalize_template_env(template[key])
-                normalized_env["MIRRAI_PRELOAD_ON_STARTUP"] = "0"
                 if handler_file:
                     normalized_env["RUNPOD_HANDLER_FILE"] = handler_file
                 else:

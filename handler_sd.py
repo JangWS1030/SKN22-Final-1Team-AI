@@ -757,11 +757,11 @@ if __name__ == "__main__":
         "yes",
         "on",
     }
-    if should_preload and is_runpod_serverless and not force_serverless_preload:
-        logger.info(
-            "[handler_sd] serverless startup preload disabled; pipeline will load on first request"
-        )
-        should_preload = False
+    if should_preload and is_runpod_serverless:
+        if force_serverless_preload:
+            logger.info("[handler_sd] serverless startup preload forced on")
+        else:
+            logger.info("[handler_sd] serverless startup preload enabled")
     if not should_preload:
         logger.info("[handler_sd] startup preload skipped; pipeline will load on first request")
         import runpod

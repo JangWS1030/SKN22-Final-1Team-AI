@@ -63,6 +63,13 @@ def ensure_models_cached() -> None:
         "models",
         token,
     )
+    _ensure_file(
+        "SAM2 checkpoint",
+        "facebook/sam2-hiera-large",
+        "sam2_hiera_large.pt",
+        None,
+        token,
+    )
 
 
 def _ensure_file(
