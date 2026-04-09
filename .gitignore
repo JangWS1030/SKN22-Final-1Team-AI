@@ -76,3 +76,6 @@ tmp/
 .claude/
 *.swp
 *.swo
+
+# Raw output files
+raw_output.json

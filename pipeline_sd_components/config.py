@@ -70,6 +70,32 @@ _COMMON_STYLE_BLOCK_NEGATIVE = (
     "dangling lower side tails, loose side tendrils touching clothing, side locks touching shoulders or clothing"
 )
 
+_WHITE_TSHIRT_POSITIVE_HINTS = (
+    "plain white t-shirt",
+    "simple white crew-neck t-shirt",
+    "clean white cotton tee",
+)
+
+_WHITE_TSHIRT_NEGATIVE_HINTS = (
+    "patterned shirt",
+    "printed shirt",
+    "graphic tee",
+    "logo",
+    "text on shirt",
+    "striped shirt",
+    "checkered shirt",
+    "jacket",
+    "cardigan",
+    "hoodie",
+    "coat",
+    "blouse",
+    "dress shirt",
+    "open neckline",
+    "deep v-neck",
+    "plunging neckline",
+    "exposed chest",
+)
+
 # ── 헤어 길이 키워드 ────────────────────────────────────────────────────────────
 _SHORT_HAIR_KEYWORDS = frozenset([
     "short", "bob", "pixie", "buzz", "hush", "crop", "cropped",
@@ -146,6 +172,17 @@ class SDInpaintConfig:
     num_inference_steps: int = 30
     controlnet_conditioning_scale: float = 0.3   # 낮춰야 텍스트 프롬프트가 먹힘
     ip_adapter_scale: float = 0.35               # 너무 강하면 원본 헤어 유지해버림
+    short_generation_ip_adapter_scale: float = 0.0
+    short_generation_controlnet_scale_cap: float = 0.04
+    short_internal_candidate_count: int = 3
+    short_generation_conditioning_cleanup_min_px: int = 180
+    short_generation_plain_cloth_stabilize: bool = True
+    short_generation_freeze_skip_shoulder_refine: bool = True
+    short_generation_freeze_skip_side_column_restore: bool = True
+    short_generation_white_tshirt_conditioning_fill: bool = True
+    short_generation_white_tshirt_fill_strength: float = 0.992
+    short_no_bangs_disable_bangs_recovery: bool = True
+    short_no_bangs_forehead_lama_preclean: bool = True
 
     # Canny edge 파라미터
     canny_low: int  = 80
@@ -239,9 +276,25 @@ class SDInpaintConfig:
     standardize_face_width_ratio_min: float = 0.18
     standardized_width: int = 768
     standardized_height: int = 1024
+    adaptive_input_framing_by_target_length: bool = True
+    standardize_crop_top_face_ratio: float = 0.95
+    standardize_crop_bottom_face_ratio_short: float = 1.42
+    standardize_crop_bottom_face_ratio_medium: float = 1.86
+    standardize_crop_bottom_face_ratio_long: float = 2.30
     enable_portrait_reframe: bool = False
     portrait_reframe_face_height_ratio_max: float = 0.40
     portrait_reframe_top_gap_ratio_min: float = 0.06
+
+    # final output crop by target hair length
+    enable_output_crop_by_target_length: bool = True
+    output_crop_top_face_ratio: float = 0.85
+    output_crop_top_face_ratio_short: float = 0.85
+    output_crop_top_face_ratio_medium: float = 0.48
+    output_crop_top_face_ratio_long: float = 0.34
+    output_crop_bottom_face_ratio_short: float = 1.15
+    output_crop_bottom_face_ratio_medium: float = 1.85
+    output_crop_bottom_face_ratio_long: float = 2.85
+    output_crop_hair_mask_threshold: float = 0.18
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -250,7 +303,7 @@ class SDInpaintConfig:
 
 @dataclasses.dataclass
 class SDInpaintResult:
-    image: np.ndarray       # H×W×3 BGR (원본 해상도)
+    image: np.ndarray       # H×W×3 BGR (최종 반환 해상도)
     image_pil: Image.Image  # PIL RGB
     seed: int
     rank: int
@@ -262,3 +315,4 @@ class SDInpaintResult:
     debug_images: Optional[Dict[str, np.ndarray]] = None    # 디버그용 중간 산출물 (BGR)
     debug_data: Optional[Dict[str, Any]] = None             # 디버그용 중간 메타데이터(JSON)
     style_meta: Optional[Dict[str, Any]] = None             # 추천 모드: 스타일 메타데이터
+    output_crop_box: Optional[Tuple[int, int, int, int]] = None  # 원본 좌표계 crop box

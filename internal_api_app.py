@@ -9,23 +9,16 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from handler_sd import (
-    PROJECT_ROOT,
-    _ensure_pipeline_module_imported,
-    _generate_per_recommendation,
-    _get_pipeline,
-    _load_image_from_input,
-    _run_recommendation,
-)
-from style_recommender import _load_hairstyles, classify_face_shape, golden_ratio_score
+from handler_sd import PROJECT_ROOT, _ensure_pipeline_module_imported, _load_image_from_input
+from utils.face_metrics import classify_face_shape, golden_ratio_score
 
 
 logger = logging.getLogger(__name__)
@@ -67,29 +60,6 @@ class AnalyzeFaceRequest(BaseModel):
     image_url: Optional[str] = None
     image_base64: Optional[str] = None
     include_visualization: bool = False
-
-
-class GenerateSimulationsRequest(BaseModel):
-    request_id: Optional[str] = None
-    client_id: Optional[str] = None
-    image_url: Optional[str] = None
-    image_base64: Optional[str] = None
-    analysis_data: Optional[Dict[str, Any]] = None
-    survey_data: Optional[Dict[str, Any]] = None
-    scoring_weights: Optional[Dict[str, float]] = None
-    color_text: str = ""
-    subject_gender: Optional[str] = None
-    top_k: int = Field(default=3, ge=1, le=5)
-
-
-class ExplainStyleRequest(BaseModel):
-    request_id: Optional[str] = None
-    style_id: Optional[str] = None
-    style_name: Optional[str] = None
-    analysis_data: Optional[Dict[str, Any]] = None
-    survey_data: Optional[Dict[str, Any]] = None
-    simulation_image_url: Optional[str] = None
-    reasoning_snapshot: Optional[Dict[str, Any]] = None
 
 
 app = FastAPI(
@@ -335,29 +305,6 @@ def _analyze_face_core(
     }
 
 
-def _resolve_analysis_ratios(
-    *,
-    request: Request,
-    image_url: Optional[str],
-    image_base64: Optional[str],
-    analysis_data: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
-    if isinstance(analysis_data, dict):
-        face_ratios = analysis_data.get("face_ratios") or analysis_data.get("ratios")
-        if isinstance(face_ratios, dict):
-            return {
-                "face_shape": analysis_data.get("face_shape"),
-                "golden_ratio_score": analysis_data.get("golden_ratio_score"),
-                "face_ratios": face_ratios,
-            }
-    return _analyze_face_core(
-        image_url=image_url,
-        image_base64=image_base64,
-        include_visualization=False,
-        request=request,
-    )
-
-
 def _persist_image_asset(
     *,
     image_bgr,
@@ -436,85 +383,6 @@ def _verify_asset_signature(asset_id: str, expires: str, token: str) -> None:
             message="Asset token is invalid.",
             retryable=False,
         )
-
-
-def _find_style_record(style_id: Optional[str], style_name: Optional[str]) -> Dict[str, Any]:
-    normalized_style_id = _normalize_optional_text(style_id)
-    normalized_style_name = _normalize_optional_text(style_name)
-    for style in _load_hairstyles():
-        if normalized_style_id and style.get("id") == normalized_style_id:
-            return style
-        if normalized_style_name and str(style.get("style_name", "")).strip() == normalized_style_name:
-            return style
-    raise ApiError(
-        status_code=404,
-        error_code="STYLE_NOT_FOUND",
-        message="Requested style could not be found in the recommendation catalog.",
-        detail={"style_id": normalized_style_id, "style_name": normalized_style_name},
-        retryable=False,
-    )
-
-
-def _build_style_explanation(
-    *,
-    style: Dict[str, Any],
-    analysis_data: Optional[Dict[str, Any]],
-    survey_data: Optional[Dict[str, Any]],
-    reasoning_snapshot: Optional[Dict[str, Any]],
-    simulation_image_url: Optional[str],
-) -> Dict[str, Any]:
-    detected_face_shape = _normalize_optional_text(
-        (analysis_data or {}).get("face_shape")
-    ) or _normalize_optional_text((reasoning_snapshot or {}).get("face_shape_detected"))
-    supported_shapes = list(style.get("face_shapes") or [])
-    trend_name = str(style.get("trend_name", "")).strip()
-    description = str(style.get("description", "")).strip()
-    length = str(style.get("length", "medium")).strip()
-    maintenance = str(style.get("maintenance", "medium")).strip()
-    moods = list(style.get("mood") or [])
-
-    why_parts: List[str] = []
-    if detected_face_shape and detected_face_shape in supported_shapes:
-        why_parts.append(f"{detected_face_shape} face shape compatibility is explicitly supported by this style.")
-    elif detected_face_shape:
-        why_parts.append(f"This style is being compared against a detected {detected_face_shape} face shape.")
-    if moods:
-        why_parts.append(f"It aligns with the target mood tags: {', '.join(moods)}.")
-    if description:
-        why_parts.append(description)
-
-    styling_points = [
-        f"Target length: {length}.",
-        f"Expected maintenance level: {maintenance}.",
-    ]
-    if trend_name:
-        styling_points.append(f"Trend anchor: {trend_name}.")
-
-    cautions = [
-        "Simulation output should be treated as reference imagery, not a guaranteed salon result.",
-        "If the simulation image URL expires, the backend should refetch the explanation or store the image immediately.",
-    ]
-    if isinstance(survey_data, dict) and survey_data:
-        cautions.append("Survey inputs were applied when generating the recommendation score.")
-
-    llm_explanation = " ".join(why_parts or [f"{style['style_name']} is recommended based on the current style metadata."]).strip()
-
-    card = {
-        "style_id": style["id"],
-        "style_name": style["style_name"],
-        "summary": description or style["style_name"],
-        "why_it_matches": why_parts,
-        "styling_points": styling_points,
-        "cautions": cautions,
-        "simulation_image_url": simulation_image_url,
-    }
-    return {
-        "style_id": style["id"],
-        "style_name": style["style_name"],
-        "llm_explanation": llm_explanation,
-        "simulation_image_url": simulation_image_url,
-        "card": card,
-    }
 
 
 @app.middleware("http")
@@ -609,136 +477,6 @@ def analyze_face(
         image_base64=body.image_base64,
         include_visualization=bool(body.include_visualization),
         request=request,
-    )
-    return _success_payload(
-        request_id=_get_request_id(request, body.request_id),
-        data=data,
-        processing_time_ms=_elapsed_ms(request),
-    )
-
-
-@app.post("/internal/generate-simulations")
-def generate_simulations(
-    body: GenerateSimulationsRequest,
-    request: Request,
-    _: None = Depends(_verify_api_version),
-    __: None = Depends(_verify_internal_auth),
-):
-    input_payload = _build_input_payload(body.image_url, body.image_base64)
-    img_bgr = _load_image_from_input(input_payload)
-    analysis_result = _resolve_analysis_ratios(
-        request=request,
-        image_url=body.image_url,
-        image_base64=body.image_base64,
-        analysis_data=body.analysis_data,
-    )
-    face_ratios = analysis_result.get("face_ratios")
-    if not isinstance(face_ratios, dict):
-        raise ApiError(
-            status_code=422,
-            error_code="FACE_ANALYSIS_REQUIRED",
-            message="face_ratios are required to generate recommendation-based simulations.",
-            retryable=False,
-        )
-
-    recommendations_data, rag_context, _, resolved_color = _run_recommendation(
-        face_ratios=face_ratios,
-        preference=body.survey_data,
-        preference_text=None,
-        age=None,
-        color_text=body.color_text,
-        top_k=body.top_k,
-        weights=body.scoring_weights,
-    )
-
-    pipeline = _get_pipeline()
-    generated_results = _generate_per_recommendation(
-        pipeline=pipeline,
-        img_bgr=img_bgr,
-        recommendations=recommendations_data,
-        color_text=resolved_color,
-        return_intermediates=False,
-        mask_refine_mode=None,
-        subject_gender=body.subject_gender,
-        lora_path=None,
-        lora_scale=1.0,
-        rag_context=rag_context,
-    )
-    result_by_rank = {int(r.rank): r for r in generated_results}
-
-    items: List[Dict[str, Any]] = []
-    partial_failures: List[Dict[str, Any]] = []
-    for rec in recommendations_data:
-        rank = int(rec.get("rank", len(items)))
-        generated = result_by_rank.get(rank)
-        generation_error = _normalize_optional_text(rec.get("generation_error"))
-        image_url = None
-        expires_at = None
-        if generated is not None:
-            image_url, expires_at = _persist_image_asset(
-                image_bgr=generated.image,
-                request=request,
-                prefix=f"simulation-{rec.get('style_id') or rank}",
-            )
-        elif generation_error:
-            partial_failures.append(
-                {
-                    "style_id": rec.get("style_id"),
-                    "style_name": rec.get("style_name"),
-                    "error_code": "SIMULATION_GENERATION_FAILED",
-                    "message": generation_error,
-                }
-            )
-
-        items.append(
-            {
-                "style_id": rec.get("style_id"),
-                "style_name": rec.get("style_name"),
-                "rank": rank,
-                "score": _round_nullable(rec.get("score"), 4),
-                "simulation_image_url": image_url,
-                "simulation_image_url_expires_at": expires_at,
-                "reasoning_snapshot": {
-                    "face_shape_detected": analysis_result.get("face_shape"),
-                    "golden_ratio_score": analysis_result.get("golden_ratio_score"),
-                    "matched_face_shapes": rec.get("face_shapes") or [],
-                    "recommendation_score": _round_nullable(rec.get("score"), 4),
-                    "trend_name": rec.get("trend_name"),
-                    "description": rec.get("description"),
-                },
-            }
-        )
-
-    status = "partial_success" if partial_failures else "ok"
-    data = {
-        "client_id": body.client_id,
-        "items": items,
-        "processing_mode": "sync",
-        "schema_version": SCHEMA_VERSION,
-        "partial_failures": partial_failures,
-    }
-    return _success_payload(
-        request_id=_get_request_id(request, body.request_id),
-        data=data,
-        processing_time_ms=_elapsed_ms(request),
-        status=status,
-    )
-
-
-@app.post("/internal/explain-style")
-def explain_style(
-    body: ExplainStyleRequest,
-    request: Request,
-    _: None = Depends(_verify_api_version),
-    __: None = Depends(_verify_internal_auth),
-):
-    style = _find_style_record(body.style_id, body.style_name)
-    data = _build_style_explanation(
-        style=style,
-        analysis_data=body.analysis_data,
-        survey_data=body.survey_data,
-        reasoning_snapshot=body.reasoning_snapshot,
-        simulation_image_url=body.simulation_image_url,
     )
     return _success_payload(
         request_id=_get_request_id(request, body.request_id),

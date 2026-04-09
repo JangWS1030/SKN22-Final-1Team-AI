@@ -17,16 +17,13 @@ WORKDIR /app
 COPY --chmod=755 entrypoint_sd.sh entrypoint.sh
 COPY handler_sd.py             ./
 COPY internal_api_app.py       ./
-COPY style_recommender.py      ./
 COPY handler_runpod_diag.py    ./
 COPY pipeline_sd_inpainting.py ./
 COPY pipeline_sd_components/   pipeline_sd_components/
 COPY runtime_download.py       ./
 COPY utils/                    utils/
-COPY rag_pipeline/             rag_pipeline/
 COPY models/__init__.py        models/__init__.py
 COPY models/segface/           models/segface/
-COPY data/                     data/
 
 # Normalize Windows CRLF line endings so the Linux entrypoint can execute.
 RUN sed -i 's/\r$//' entrypoint.sh
