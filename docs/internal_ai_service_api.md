@@ -2,11 +2,24 @@
 
 이 문서는 backend가 `MIRRAI_AI_SERVICE_URL` 뒤에 붙여 호출하는 내부 AI 서비스 계약을 정의한다.
 
+실제 엔트리포인트는 [internal_api_app.py](../internal_api_app.py)의 FastAPI app이다.
+
+문서 진입점:
+
+- Swagger UI: `/internal/docs`
+- OpenAPI JSON: `/internal/openapi.json`
+
 기본 URL 규칙:
 
 - 로컬 개발: `MIRRAI_AI_SERVICE_URL=http://localhost:8000`
 - 운영: `MIRRAI_AI_SERVICE_URL=https://mirrai.shop`
 - backend는 위 base URL 뒤에 `/internal/health`, `/internal/analyze-face`를 붙여 호출한다.
+
+로컬 실행 예시:
+
+```bash
+uvicorn internal_api_app:app --host 0.0.0.0 --port 8000
+```
 
 기본 규칙:
 

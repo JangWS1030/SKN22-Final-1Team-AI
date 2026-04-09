@@ -87,18 +87,33 @@ python -m pip install -r requirements-train.txt
 - `docs/pipeline_runtime_config.md`: 현재 파이프라인이 실제로 읽는 runtime config 기준 문서
 - `docs/internal_ai_service_api.md`: backend 연동용 내부 AI 서비스 API 계약
 
-## Internal AI Service Base URL
+## API 엔트리포인트
 
-- 개발: `MIRRAI_AI_SERVICE_URL=http://localhost:8000`
-- 운영: `MIRRAI_AI_SERVICE_URL=https://mirrai.shop`
-- backend는 위 base URL 뒤에 `/internal/health`, `/internal/analyze-face`를 붙여 호출합니다.
-- 내부 API는 path versioning 없이 `/internal/...`를 사용하고, 선택적으로 `X-MirrAI-API-Version` 헤더를 받을 수 있습니다.
+현재 외부 연동 진입점은 두 개입니다.
 
-## RunPod API 엔드포인트
+- 생성 API: [handler_sd.py](handler_sd.py)
+- 내부 분석 API: [internal_api_app.py](internal_api_app.py)
 
-`handler_sd.py`는 단일 RunPod Serverless 핸들러에서 `action` 필드 또는 입력 구조에 따라 2개 기능을 라우팅합니다.
+문서를 먼저 보고 들어가려면 아래 순서가 가장 빠릅니다.
 
-### 공통
+- 내부 API 계약 문서: [docs/internal_ai_service_api.md](docs/internal_ai_service_api.md)
+- 내부 API Swagger UI: `/internal/docs`
+- 내부 API OpenAPI JSON: `/internal/openapi.json`
+
+### 1. 생성 API: RunPod Serverless
+
+- 엔트리포인트 파일: [handler_sd.py](handler_sd.py)
+- 배포 위치: RunPod Serverless endpoint
+- 용도: 헬스체크, 직접 헤어 생성
+- 호출 방식: RunPod `run` / `runsync`
+
+로컬에서 handler 자체를 띄우려면:
+
+```bash
+python handler_sd.py
+```
+
+원격 호출 규칙:
 
 - **URL**: `https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync` (동기) 또는 `/run` (비동기)
 - **Header**: `Authorization: Bearer {RUNPOD_API_KEY}`
@@ -132,7 +147,7 @@ python -m pip install -r requirements-train.txt
 
 ---
 
-### EP1. 직접 지정 생성 (기존)
+### EP1. 직접 지정 생성
 
 hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 
@@ -186,6 +201,29 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 }
 ```
 
+### 2. 내부 분석 API: FastAPI HTTP facade
+
+- 엔트리포인트 파일: [internal_api_app.py](internal_api_app.py)
+- 로컬 base URL: `http://localhost:8000`
+- 운영 base URL: `https://mirrai.shop`
+- endpoint prefix: `/internal`
+- 문서 진입점: `/internal/docs`
+- OpenAPI JSON: `/internal/openapi.json`
+
+로컬에서 내부 API를 띄우려면:
+
+```bash
+uvicorn internal_api_app:app --host 0.0.0.0 --port 8000
+```
+
+backend 연동 기준 endpoint:
+
+- `GET /internal/health`
+- `POST /internal/analyze-face`
+- `GET /internal/assets/{asset_id}`
+
+세부 계약은 [docs/internal_ai_service_api.md](docs/internal_ai_service_api.md)를 기준으로 봅니다.
+
 ---
 
 ## 실행 예시
@@ -212,22 +250,28 @@ python test_runpod.py \
   --top-k 1
 ```
 
-단발/중단발 마스크 비교:
+내부 API 로컬 실행:
 
 ```bash
-python test_runpod.py \
-  --image images/1234.jpg \
-  --hairstyle "short chin-length bob cut, hush cut" \
-  --top-k 1 \
-  --bg-fill sd \
-  --mask-refine-mode segface_priority
+uvicorn internal_api_app:app --host 0.0.0.0 --port 8000
 ```
 
-마스크 비교 모드:
+내부 API health 확인:
 
-- `sam2`: 기본 경로
-- `segface_priority`: SegFace 코어 유지 + SAM2 경계 보정만 약하게 반영
-- `segface_only`: SegFace 마스크만 사용
+```bash
+curl http://localhost:8000/internal/health
+```
+
+내부 API analyze-face 예시:
+
+```bash
+curl -X POST http://localhost:8000/internal/analyze-face \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "image_base64": "<base64>",
+    "include_visualization": true
+  }'
+```
 
 ## CI/CD
 
