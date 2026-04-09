@@ -616,6 +616,12 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     item["mask_base64"] = _image_to_base64(mask_rgb)
 
                     overlay_base_bgr = img_bgr
+                    crop_box = getattr(r, "output_crop_box", None)
+                    if crop_box is not None:
+                        crop_x1, crop_y1, crop_x2, crop_y2 = [int(v) for v in crop_box]
+                        cropped_overlay_base = overlay_base_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
+                        if cropped_overlay_base.size > 0:
+                            overlay_base_bgr = cropped_overlay_base
                     standardized_bgr = debug_images_for_overlay.get("pipeline_standardized_input_image")
                     if (
                         isinstance(standardized_bgr, np.ndarray)
@@ -640,6 +646,14 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 if r.face_bbox is not None:
                     x1, y1, x2, y2 = r.face_bbox
                     item["face_bbox"] = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+                if getattr(r, "output_crop_box", None) is not None:
+                    crop_x1, crop_y1, crop_x2, crop_y2 = [int(v) for v in r.output_crop_box]
+                    item["output_crop_box"] = {
+                        "x1": crop_x1,
+                        "y1": crop_y1,
+                        "x2": crop_x2,
+                        "y2": crop_y2,
+                    }
 
             # 추천 모드: 스타일 메타데이터 추가
             if hasattr(r, "style_meta") and r.style_meta:

@@ -98,6 +98,90 @@ def _clean_optional_env_text(value: Optional[str]) -> Optional[str]:
     return cleaned or None
 
 
+def _shift_box_within_bounds(
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    width: int,
+    height: int,
+) -> Tuple[int, int, int, int]:
+    box_w = max(int(right) - int(left), 1)
+    box_h = max(int(bottom) - int(top), 1)
+    left = int(left)
+    top = int(top)
+    right = left + box_w
+    bottom = top + box_h
+
+    if left < 0:
+        right -= left
+        left = 0
+    if right > width:
+        left -= right - width
+        right = width
+    if top < 0:
+        bottom -= top
+        top = 0
+    if bottom > height:
+        top -= bottom - height
+        bottom = height
+
+    left = max(0, left)
+    top = max(0, top)
+    right = min(width, max(left + 1, right))
+    bottom = min(height, max(top + 1, bottom))
+    return left, top, right, bottom
+
+
+def _build_length_aware_output_crop_box(
+    config: SDInpaintConfig,
+    image_shape: Tuple[int, int],
+    face_bbox: Optional[Tuple[int, int, int, int]],
+    hair_length: str,
+) -> Optional[Tuple[int, int, int, int]]:
+    if not getattr(config, "enable_output_crop_by_target_length", True):
+        return None
+    if face_bbox is None:
+        return None
+
+    height, width = [int(v) for v in image_shape[:2]]
+    if height <= 1 or width <= 1:
+        return None
+
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(x2 - x1, 1)
+    face_h = max(y2 - y1, 1)
+    top_ratio = float(getattr(config, "output_crop_top_face_ratio", 0.85))
+    length_key = str(hair_length or "long").strip().lower()
+    if length_key == "short":
+        bottom_ratio = float(getattr(config, "output_crop_bottom_face_ratio_short", 1.15))
+    elif length_key == "medium":
+        bottom_ratio = float(getattr(config, "output_crop_bottom_face_ratio_medium", 1.85))
+    else:
+        bottom_ratio = float(getattr(config, "output_crop_bottom_face_ratio_long", 2.85))
+
+    crop_top = int(round(y1 - face_h * top_ratio))
+    crop_bottom = int(round(y2 + face_h * bottom_ratio))
+    crop_h = max(crop_bottom - crop_top, face_h + 1)
+    target_aspect = width / max(float(height), 1.0)
+    crop_w = max(int(round(crop_h * target_aspect)), face_w + 1)
+    cx = 0.5 * (x1 + x2)
+    crop_left = int(round(cx - crop_w * 0.5))
+    crop_right = crop_left + crop_w
+    crop_left, crop_top, crop_right, crop_bottom = _shift_box_within_bounds(
+        crop_left,
+        crop_top,
+        crop_right,
+        crop_bottom,
+        width=width,
+        height=height,
+    )
+
+    if crop_left <= 0 and crop_top <= 0 and crop_right >= width and crop_bottom >= height:
+        return None
+    return crop_left, crop_top, crop_right, crop_bottom
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Pipeline
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5801,18 +5885,54 @@ class MirrAISDPipeline:
                     stage_diffs.get("chest_center_generated_resized_vs_composite_after_core_mask_mean_abs_diff", 0.0),
                     stage_diffs.get("chest_center_generated_resized_vs_final_mean_abs_diff", 0.0),
                 )
+            output_crop_box = _build_length_aware_output_crop_box(
+                self.config,
+                final_bgr.shape[:2],
+                face_bbox,
+                hair_length,
+            )
+            result_bgr = final_bgr
+            result_mask = hair_mask_for_sd
+            result_face_bbox = face_bbox
+            if output_crop_box is not None:
+                crop_x1, crop_y1, crop_x2, crop_y2 = output_crop_box
+                cropped_bgr = final_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
+                if cropped_bgr.size > 0:
+                    result_bgr = cropped_bgr.copy()
+                    if (
+                        isinstance(hair_mask_for_sd, np.ndarray)
+                        and hair_mask_for_sd.shape[:2] == final_bgr.shape[:2]
+                    ):
+                        result_mask = hair_mask_for_sd[crop_y1:crop_y2, crop_x1:crop_x2].copy()
+                    if face_bbox is not None:
+                        fx1, fy1, fx2, fy2 = [int(v) for v in face_bbox]
+                        result_face_bbox = (
+                            max(0, fx1 - crop_x1),
+                            max(0, fy1 - crop_y1),
+                            max(0, fx2 - crop_x1),
+                            max(0, fy2 - crop_y1),
+                        )
+            if debug_data_common is not None and rank == 0:
+                debug_data_common["output_crop"] = {
+                    "applied": bool(output_crop_box is not None),
+                    "hair_length": str(hair_length),
+                    "original_shape": [int(final_bgr.shape[0]), int(final_bgr.shape[1])],
+                    "output_shape": [int(result_bgr.shape[0]), int(result_bgr.shape[1])],
+                    "crop_box": list(output_crop_box) if output_crop_box is not None else None,
+                }
             results.append(SDInpaintResult(
-                image=final_bgr,
-                image_pil=Image.fromarray(cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)),
+                image=result_bgr,
+                image_pil=Image.fromarray(cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)),
                 seed=cand["seed"],
                 rank=rank,
                 mask_used=mask_source,
                 mask_refine_mode=mask_refine_mode_used,
                 clip_score=float(cand["color_score"]),
-                mask=hair_mask_for_sd,
-                face_bbox=face_bbox,
+                mask=result_mask,
+                face_bbox=result_face_bbox,
                 debug_images=debug_images_common if (debug_images_common is not None and rank == 0) else None,
                 debug_data=debug_data_common if (debug_data_common is not None and rank == 0) else None,
+                output_crop_box=output_crop_box,
             ))
 
         return results

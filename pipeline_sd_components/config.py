@@ -285,6 +285,13 @@ class SDInpaintConfig:
     portrait_reframe_face_height_ratio_max: float = 0.40
     portrait_reframe_top_gap_ratio_min: float = 0.06
 
+    # final output crop by target hair length
+    enable_output_crop_by_target_length: bool = True
+    output_crop_top_face_ratio: float = 0.85
+    output_crop_bottom_face_ratio_short: float = 1.15
+    output_crop_bottom_face_ratio_medium: float = 1.85
+    output_crop_bottom_face_ratio_long: float = 2.85
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Result
@@ -292,7 +299,7 @@ class SDInpaintConfig:
 
 @dataclasses.dataclass
 class SDInpaintResult:
-    image: np.ndarray       # H×W×3 BGR (원본 해상도)
+    image: np.ndarray       # H×W×3 BGR (최종 반환 해상도)
     image_pil: Image.Image  # PIL RGB
     seed: int
     rank: int
@@ -304,3 +311,4 @@ class SDInpaintResult:
     debug_images: Optional[Dict[str, np.ndarray]] = None    # 디버그용 중간 산출물 (BGR)
     debug_data: Optional[Dict[str, Any]] = None             # 디버그용 중간 메타데이터(JSON)
     style_meta: Optional[Dict[str, Any]] = None             # 추천 모드: 스타일 메타데이터
+    output_crop_box: Optional[Tuple[int, int, int, int]] = None  # 원본 좌표계 crop box
