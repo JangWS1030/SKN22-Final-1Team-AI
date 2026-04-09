@@ -21,24 +21,9 @@ MirrAI SD Inpainting — RunPod Serverless Handler
   }
 }
 
-== 모드 2: 추천 기반 생성 (취향벡터) ==
-face_ratios가 있으면 자동으로 추천 모드 진입.
-{
-  "input": {
-    "image":          "<base64 or URL>",
-    "face_ratios": { "cheekbone_to_height": 0.72, ... },
-    "preference": { "length": "medium", "mood": ["trendy"], ... },
-    "preference_text": "자연스러운 웨이브",
-    "age": 28,
-    "top_k": 5,
-    "return_base64": true
-  }
-}
-
 출력 스키마:
 {
   "results": [ ... ],
-  "recommendations": [ ... ],    // 추천 모드
   "elapsed_seconds": 12.3
 }
 """
@@ -50,7 +35,6 @@ import hashlib
 import io
 import logging
 import os
-import sys
 import time
 import traceback
 import urllib.parse
@@ -323,88 +307,6 @@ def _image_to_base64(img_bgr: "np.ndarray", quality: int = 92) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-# ── 추천 ───────────────────────────────────────────────────────────────────────
-
-def _run_recommendation(face_ratios, preference, preference_text, age, color_text, top_k, weights=None):
-    """추천 엔진 실행 → (recommendations_data, hairstyle_text, color_text)"""
-    from style_recommender import recommend_top_k, recommend_to_dict
-
-    recommendations = recommend_top_k(
-        face_ratios=face_ratios,
-        preference=preference,
-        preference_text=preference_text or None,
-        age=age,
-        top_k=top_k,
-        weights=weights,
-    )
-    recommendations_data = recommend_to_dict(recommendations)
-
-    hairstyle_text = ""
-    if recommendations:
-        hairstyle_text = str(
-            recommendations[0].metadata.get("hairstyle_text") or recommendations[0].style_name
-        ).strip()
-    logger.info(f"[handler_sd] 추천 완료: {len(recommendations)}개, top='{hairstyle_text}'")
-    return recommendations_data, hairstyle_text, color_text
-
-
-def _generate_per_recommendation(
-    pipeline, img_bgr, recommendations, color_text,
-    return_intermediates, mask_refine_mode, subject_gender, lora_path, lora_scale,
-    white_tshirt_experiment: bool = False,
-):
-    """추천된 각 스타일마다 1장씩 생성."""
-    all_results = []
-    for idx, rec in enumerate(recommendations):
-        style_name = rec.get("style_name", "")
-        hairstyle_text = rec.get("hairstyle_text", "") or style_name
-        description = rec.get("description", "")
-        enriched_prompt = f"{hairstyle_text}, {description}" if description else hairstyle_text
-
-        # DB에 저장된 SD 프롬프트 데이터 전달
-        sd_prompt_data = None
-        if rec.get("sd_positive"):
-            sd_prompt_data = {
-                "sd_positive": rec["sd_positive"],
-                "sd_negative": rec.get("sd_negative", ""),
-                "sd_guidance": rec.get("sd_guidance", 8.5),
-            }
-
-        logger.info(
-            f"[handler_sd] 추천 #{idx}: style='{style_name}' prompt='{enriched_prompt}' "
-            f"(sd_prompt_data={'yes' if sd_prompt_data else 'no'})"
-        )
-        try:
-            results = pipeline.run(
-                image=img_bgr,
-                hairstyle_text=enriched_prompt,
-                color_text=color_text,
-                top_k=1,
-                return_intermediates=return_intermediates if idx == 0 else False,
-                mask_refine_mode=mask_refine_mode,
-                subject_gender=subject_gender,
-                lora_path=lora_path,
-                lora_scale=lora_scale,
-                sd_prompt_data=sd_prompt_data,
-                white_tshirt_experiment=white_tshirt_experiment,
-            )
-            for r in results:
-                r.rank = idx
-                r.style_meta = {
-                    "style_id": rec.get("style_id"),
-                    "style_name": style_name,
-                    "hairstyle_text": hairstyle_text,
-                    "trend_name": rec.get("trend_name"),
-                    "recommendation_score": rec.get("score"),
-                }
-                all_results.append(r)
-        except Exception as e:
-            logger.error(f"[handler_sd] 추천 #{idx} 생성 실패: {e}\n{traceback.format_exc()}")
-            # 실패해도 에러 정보를 포함한 placeholder 반환
-            recommendations[idx]["generation_error"] = f"{type(e).__name__}: {e}"
-    return all_results
-
-
 # ── RunPod Handler ──────────────────────────────────────────────────────────────
 
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -461,35 +363,16 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         lora_path = str(inp.get("lora_path", "")).strip() or None
         lora_scale = float(inp.get("lora_scale", 1.0))
 
-        # ── 추천 모드 입력 ─────────────────────────────────────────────────
-        face_ratios = inp.get("face_ratios")
-        preference = inp.get("preference")
-        preference_text = str(inp.get("preference_text", "")).strip()
-        age = inp.get("age")
-        if age is not None:
-            age = int(age)
+        deprecated_recommend_keys = ("face_ratios", "preference", "preference_text", "age", "weights")
+        deprecated_inputs = [key for key in deprecated_recommend_keys if inp.get(key) not in (None, "", {}, [])]
+        if deprecated_inputs:
+            return {
+                "error": "추천 입력은 더 이상 지원하지 않습니다. hairstyle_text 또는 sd_prompt_data를 사용하세요.",
+                "unsupported_inputs": deprecated_inputs,
+            }
 
-        is_recommend_mode = face_ratios is not None
-        recommendations_data = None
-
-        # 가중치: 서버에서 동적 조절 가능 (미전달 시 기본 40/20/40)
-        weights = inp.get("weights")  # {"face": 0.4, "golden": 0.2, "preference": 0.4}
-
-        if is_recommend_mode:
-            recommendations_data, hairstyle_text, color_text = (
-                _run_recommendation(
-                    face_ratios=face_ratios,
-                    preference=preference,
-                    preference_text=preference_text,
-                    age=age,
-                    color_text=color_text,
-                    top_k=top_k,
-                    weights=weights,
-                )
-            )
-        elif not hairstyle_text and not color_text:
-            return {"error": "hairstyle_text 또는 color_text 중 하나 이상 필요합니다. "
-                           "또는 face_ratios를 전달하여 추천 모드를 사용하세요."}
+        if not hairstyle_text and not color_text:
+            return {"error": "hairstyle_text 또는 color_text 중 하나 이상 필요합니다."}
 
         # ── 이미지 로드 ──────────────────────────────────────────────────────
         img_bgr = _load_image_from_input(inp)
@@ -498,7 +381,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             f"[handler_sd] 입력: {w}×{h}, "
             f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}, "
             f"mask_refine_mode={mask_refine_mode or 'default'}, "
-            f"recommend_mode={is_recommend_mode}, subject_gender={subject_gender or 'auto'}, "
+            f"subject_gender={subject_gender or 'auto'}, "
             f"sd_prompt_data={'yes' if sd_prompt_data else 'no'}, "
             f"white_tshirt_experiment={white_tshirt_experiment}"
         )
@@ -509,33 +392,19 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"[handler_sd] bg_fill_mode={bg_fill_mode}")
         logger.info(f"[handler_sd] mask_debug_only={mask_debug_only}")
 
-        if is_recommend_mode and recommendations_data:
-            results = _generate_per_recommendation(
-                pipeline=pipeline,
-                img_bgr=img_bgr,
-                recommendations=recommendations_data,
-                color_text=color_text,
-                return_intermediates=return_intermediates,
-                mask_refine_mode=mask_refine_mode,
-                subject_gender=subject_gender,
-                lora_path=lora_path,
-                lora_scale=lora_scale,
-                white_tshirt_experiment=white_tshirt_experiment,
-            )
-        else:
-            results = pipeline.run(
-                image=img_bgr,
-                hairstyle_text=hairstyle_text,
-                color_text=color_text,
-                top_k=top_k,
-                return_intermediates=return_intermediates,
-                mask_refine_mode=mask_refine_mode,
-                subject_gender=subject_gender,
-                lora_path=lora_path,
-                lora_scale=lora_scale,
-                sd_prompt_data=sd_prompt_data,
-                white_tshirt_experiment=white_tshirt_experiment,
-            )
+        results = pipeline.run(
+            image=img_bgr,
+            hairstyle_text=hairstyle_text,
+            color_text=color_text,
+            top_k=top_k,
+            return_intermediates=return_intermediates,
+            mask_refine_mode=mask_refine_mode,
+            subject_gender=subject_gender,
+            lora_path=lora_path,
+            lora_scale=lora_scale,
+            sd_prompt_data=sd_prompt_data,
+            white_tshirt_experiment=white_tshirt_experiment,
+        )
 
         # ── 결과 직렬화 ───────────────────────────────────────────────────────
         output_results = []
@@ -608,10 +477,6 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                         "y2": crop_y2,
                     }
 
-            # 추천 모드: 스타일 메타데이터 추가
-            if hasattr(r, "style_meta") and r.style_meta:
-                item["recommended_style"] = r.style_meta
-
             output_results.append(item)
 
         intermediates: Dict[str, str] = {}
@@ -638,8 +503,6 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             "build_tag":       runtime_meta["build_tag"],
             "runpod":          runtime_meta["runpod"],
         }
-        if recommendations_data:
-            response["recommendations"] = recommendations_data
         if intermediates:
             response["intermediates"] = intermediates
         if intermediate_data:

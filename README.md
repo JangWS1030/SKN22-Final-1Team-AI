@@ -12,11 +12,10 @@
 
 ## 핵심 파일
 
-- `handler_sd.py`: RunPod serverless 엔트리포인트 (헬스체크 / 직접 생성 / 추천 생성 라우팅)
+- `handler_sd.py`: RunPod serverless 엔트리포인트 (헬스체크 / 직접 생성 라우팅)
 - `internal_api_app.py`: `/internal/...` HTTP facade 엔트리포인트
 - `pipeline_sd_inpainting.py`: 실제 SD 추론 파이프라인
 - `pipeline_sd_components/`: `pipeline_sd_inpainting.py`에서 분리한 로딩 / 프롬프트 / 후처리 모듈
-- `style_recommender.py`: 얼굴형 + 취향벡터 → 스타일 추천 엔진 (로컬 코사인 랭킹)
 - `runtime_download.py`: 런타임 모델 캐시 준비
 - `download_weights_sd.py`: SD 관련 가중치 다운로드 보조 스크립트
 - `entrypoint_sd.sh`: 컨테이너 시작 스크립트
@@ -92,12 +91,12 @@ python -m pip install -r requirements-train.txt
 
 - 개발: `MIRRAI_AI_SERVICE_URL=http://localhost:8000`
 - 운영: `MIRRAI_AI_SERVICE_URL=https://mirrai.shop`
-- backend는 위 base URL 뒤에 `/internal/health`, `/internal/analyze-face`, `/internal/generate-simulations`, `/internal/explain-style`를 붙여 호출합니다.
+- backend는 위 base URL 뒤에 `/internal/health`, `/internal/analyze-face`를 붙여 호출합니다.
 - 내부 API는 path versioning 없이 `/internal/...`를 사용하고, 선택적으로 `X-MirrAI-API-Version` 헤더를 받을 수 있습니다.
 
 ## RunPod API 엔드포인트
 
-`handler_sd.py`는 단일 RunPod Serverless 핸들러에서 `action` 필드 또는 입력 구조에 따라 3개 기능을 라우팅합니다.
+`handler_sd.py`는 단일 RunPod Serverless 핸들러에서 `action` 필드 또는 입력 구조에 따라 2개 기능을 라우팅합니다.
 
 ### 공통
 
@@ -189,145 +188,6 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 
 ---
 
-### EP2. 추천 기반 생성 (취향벡터)
-
-얼굴 분석 데이터 + 사용자 취향 → 스타일 추천 → 추천 스타일별 1장씩 생성합니다.
-`face_ratios`가 있으면 자동으로 추천 모드로 진입합니다.
-
-**Request (구조화된 취향)**
-```json
-{
-  "input": {
-    "image": "<base64 or URL>",
-    "face_ratios": {
-      "cheekbone_to_height": 0.72,
-      "jaw_to_height": 0.60,
-      "temple_to_height": 0.70,
-      "jaw_to_cheekbone": 0.83
-    },
-    "preference": {
-      "length": "medium",
-      "mood": ["trendy", "natural"],
-      "hair_type": "wavy",
-      "color_temp": "warm",
-      "budget": "medium"
-    },
-    "color_text": "ash brown",
-    "top_k": 5,
-    "return_base64": true
-  }
-}
-```
-
-**Request (자연어 취향 + 나이)**
-```json
-{
-  "input": {
-    "image": "<base64 or URL>",
-    "face_ratios": {
-      "cheekbone_to_height": 0.72,
-      "jaw_to_height": 0.60,
-      "temple_to_height": 0.70,
-      "jaw_to_cheekbone": 0.83
-    },
-    "preference_text": "자연스러운 웨이브 미디엄 길이, 따뜻한 톤",
-    "age": 28,
-    "top_k": 5,
-    "return_base64": true
-  }
-}
-```
-
-| 필드 | 타입 | 필수 | 설명 |
-|------|------|------|------|
-| `image` | string | O | base64 인코딩 이미지 또는 URL |
-| `face_ratios` | object | O | MediaPipe 얼굴 비율 (EP1 얼굴 분석 결과) |
-| `preference` | object | △ | 구조화된 취향 벡터 (옵션 A) |
-| `preference_text` | string | △ | 자연어 취향 텍스트 (옵션 B) |
-| `age` | int | | 나이 (분위기 추론에 사용) |
-| `color_text` | string | | 헤어 색상 |
-| `top_k` | int | | 추천 수 (1~5, 기본 5) |
-
-`preference` 필드 상세:
-
-| 키 | 값 | 설명 |
-|------|------|------|
-| `length` | `"short"` / `"medium"` / `"long"` | 선호 길이 |
-| `mood` | `["natural", "trendy", "classic", "edgy", "cute"]` | 분위기 (복수 선택) |
-| `hair_type` | `"straight"` / `"wavy"` / `"curly"` | 모발 타입 |
-| `color_temp` | `"warm"` / `"cool"` / `"neutral"` | 색상 톤 |
-| `budget` | `"low"` / `"medium"` / `"high"` | 예산/관리 수준 |
-
-**Response**
-```json
-{
-  "results": [
-    {
-      "rank": 0,
-      "seed": 42,
-      "clip_score": 0.298,
-      "mask_used": "sam2",
-      "image_base64": "...",
-      "recommended_style": {
-        "style_id": "shaggy-midi",
-        "style_name": "Shaggy Midi Cut",
-        "recommendation_score": 0.8437
-      }
-    },
-    {
-      "rank": 1,
-      "seed": 77,
-      "clip_score": 0.285,
-      "mask_used": "sam2",
-      "image_base64": "...",
-      "recommended_style": {
-        "style_id": "layered-midi-waves",
-        "style_name": "Layered Midi Waves",
-        "recommendation_score": 0.8122
-      }
-    }
-  ],
-  "recommendations": [
-    {
-      "rank": 0,
-      "style_id": "shaggy-midi",
-      "style_name": "Shaggy Midi Cut",
-      "score": 0.8437,
-      "face_shapes": ["round", "oval", "oblong"],
-      "description": "Mid-length shag with crown texture...",
-      "face_shape_detected": "oval",
-      "golden_ratio_score": 0.649
-    }
-  ],
-  "elapsed_seconds": 58.7
-}
-```
-
----
-
-### 추천 벡터 가중치 구조
-
-스타일 추천은 3개 벡터를 가중 결합하여 코사인 유사도로 Top-K를 선정합니다.
-
-| 입력 벡터 | 구성 요소 | 가중치 |
-|-----------|-----------|--------|
-| 얼굴 비율 벡터 | 비율 측정값 + 얼굴형 분류 결과 (oval/round/square/heart/oblong) | 40% |
-| 황금비율 근접도 | 얼굴 세로/가로 비율의 황금비(1.618) 편차 점수 | 20% |
-| user_preference_vector | 길이 / 분위기 / 모발 타입 / 컬러 톤 / 예산 | 40% |
-
-벡터 차원 구성 (총 23차원):
-```
-face_shape   [5]  oval, round, square, heart, oblong
-golden_ratio [1]  0~1 (1=완벽한 황금비)
-length       [3]  short, medium, long
-mood         [5]  natural, trendy, classic, edgy, cute
-hair_type    [3]  straight, wavy, curly
-color_temp   [3]  warm, cool, neutral
-budget       [3]  low, medium, high
-```
-
----
-
 ## 실행 예시
 
 RunPod handler 로컬 실행:
@@ -350,12 +210,6 @@ python test_runpod.py \
   --hairstyle "wolf cut, layered bangs" \
   --color "ash brown" \
   --top-k 1
-```
-
-스타일 추천 테스트 (로컬):
-
-```bash
-python style_recommender.py
 ```
 
 단발/중단발 마스크 비교:
@@ -404,8 +258,6 @@ push 시 현재 기준으로 아래 워크플로가 동작합니다.
 기존 StyleGAN / HairCLIP 기반 레거시 경로와 미사용 랜드마크·세그멘테이션 호환 경로는 저장소에서 제거했습니다.
 
 ## 생성 프롬프트 입력
-
-런타임 헤어 생성은 더 이상 `data/llm_refined_trends.json`를 기준으로 `hairstyle_text`를 내부에서 재해석하지 않습니다.
 
 - 기본 입력은 요청에 들어온 `hairstyle_text`, `color_text` 그대로 사용
 - 백엔드가 `sd_prompt_data`를 함께 보내면 해당 `sd_positive` / `sd_negative` / `sd_guidance`를 우선 사용
