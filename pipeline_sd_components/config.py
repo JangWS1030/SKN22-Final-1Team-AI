@@ -291,6 +291,7 @@ class SDInpaintConfig:
     output_crop_bottom_face_ratio_short: float = 1.15
     output_crop_bottom_face_ratio_medium: float = 1.85
     output_crop_bottom_face_ratio_long: float = 2.85
+    output_crop_hair_mask_threshold: float = 0.18
 
 
 # ─────────────────────────────────────────────────────────────────────────────
