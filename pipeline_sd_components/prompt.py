@@ -226,6 +226,37 @@ def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
             parts.append(hint)
     return ", ".join(parts)
 
+def _resolve_male_fringe_prompt_hints(hairstyle_text: str) -> Tuple[str, str]:
+    lowered = " ".join(str(hairstyle_text or "").strip().lower().split())
+    if not any(token in lowered for token in ("bang", "bangs", "fringe", "앞머리")):
+        return "", ""
+
+    full_fringe_requested = any(
+        token in lowered
+        for token in (
+            "full fringe",
+            "heavy fringe",
+            "dense fringe",
+            "covering the forehead",
+            "covering forehead",
+            "forehead covering",
+            "down fringe",
+            "full bangs",
+            "heavy bangs",
+            "앞머리 덮",
+            "이마 덮",
+        )
+    )
+    if full_fringe_requested:
+        positive = "full masculine fringe covering most of the forehead"
+        negative = (
+            "exposed forehead, lifted quiff, pushed-up front hair, slicked-back front, parted curtain fringe, "
+        )
+    else:
+        positive = "soft masculine fringe with visible forehead coverage"
+        negative = "exposed forehead, lifted quiff, pushed-up front hair, slicked-back front, "
+    return positive, negative
+
 def _normalize_hairstyle_prompt_text(
     hairstyle_text: str,
     hair_length: str,
@@ -981,6 +1012,12 @@ def _build_prompt(
         hairstyle_text, subject_gender
     )
     subject_profile = _resolve_subject_pipeline_profile(gender_mode)
+    male_fringe_positive_hint = ""
+    male_fringe_negative_hint = ""
+    if gender_mode == "male":
+        male_fringe_positive_hint, male_fringe_negative_hint = _resolve_male_fringe_prompt_hints(
+            hairstyle_text
+        )
     normalized_style = _normalize_hairstyle_prompt_text(
         hairstyle_text,
         hair_length,
@@ -1147,13 +1184,22 @@ def _build_prompt(
             positive_parts.append("natural masculine portrait framing")
         if color_pos_hint:
             positive_parts.append(color_pos_hint)
+        if male_fringe_positive_hint:
+            positive_parts.append(male_fringe_positive_hint)
         positive_parts.extend([
             "clean neckline",
             "photorealistic, natural lighting, sharp focus",
         ])
         positive = _compact_prompt_parts(positive_parts)
         negative_base = _NEGATIVE_BASE + ", " + _COMMON_STYLE_BLOCK_NEGATIVE
-        negative = sd_neg + (", " if sd_neg else "") + color_neg_hint + garment_negative_hint + negative_base
+        negative = (
+            sd_neg
+            + (", " if sd_neg else "")
+            + male_fringe_negative_hint
+            + color_neg_hint
+            + garment_negative_hint
+            + negative_base
+        )
 
         return positive, negative, guidance
 
@@ -1169,6 +1215,8 @@ def _build_prompt(
         pos_suffix = (
             ", masculine short cut, balanced forehead, clean temple line, defined sideburn connection, tidy temple transition, no side tails, no jewelry"
         )
+        if male_fringe_positive_hint:
+            pos_suffix += ", masculine fringe covering the forehead"
         neg_prefix = (
             "feminine bob, chin-length bob, rounded bob, bixie, pixie bob, "
             "oversized exposed forehead, exaggerated high hairline, receding hairline, severe slicked-back hair, "
@@ -1198,6 +1246,8 @@ def _build_prompt(
         pos_suffix = (
             ", masculine medium cut, balanced forehead, centered volume, natural sideburn connection, tidy temple transition, no side sweep, no jewelry"
         )
+        if male_fringe_positive_hint:
+            pos_suffix += ", masculine fringe covering the forehead"
         neg_prefix = (
             "feminine bob, rounded lob, dangling earrings, hoop earrings, necklace, jewelry, "
             "oversized exposed forehead, exaggerated high hairline, receding hairline, severe slicked-back hair, "
@@ -1240,6 +1290,8 @@ def _build_prompt(
     ]
     if hair_length == "short":
         positive_parts.append("strict short bob silhouette, hair mass ending above the neckline")
+    if male_fringe_positive_hint:
+        positive_parts.append(male_fringe_positive_hint)
     if color_pos_hint:
         positive_parts.append(color_pos_hint)
     positive_parts.extend([
@@ -1254,7 +1306,7 @@ def _build_prompt(
         + ", "
         + _COMMON_STYLE_BLOCK_NEGATIVE
     )
-    negative = neg_prefix + color_neg_hint + garment_negative_hint + negative_base
+    negative = neg_prefix + male_fringe_negative_hint + color_neg_hint + garment_negative_hint + negative_base
 
     return positive, negative, guidance
 
