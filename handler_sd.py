@@ -309,6 +309,15 @@ def _image_to_base64(img_bgr: "np.ndarray", quality: int = 92) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+def _crop_bgr_with_output_box(
+    img_bgr: "np.ndarray",
+    crop_box: Tuple[int, int, int, int],
+) -> "np.ndarray":
+    from pipeline_sd_components.output import crop_with_padding
+
+    return crop_with_padding(img_bgr, crop_box)
+
+
 class FaceAnalysisError(RuntimeError):
     def __init__(self, error_code: str, message: str) -> None:
         super().__init__(message)
@@ -549,8 +558,10 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     overlay_base_bgr = img_bgr
                     crop_box = getattr(r, "output_crop_box", None)
                     if crop_box is not None:
-                        crop_x1, crop_y1, crop_x2, crop_y2 = [int(v) for v in crop_box]
-                        cropped_overlay_base = overlay_base_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
+                        cropped_overlay_base = _crop_bgr_with_output_box(
+                            overlay_base_bgr,
+                            tuple(int(v) for v in crop_box),
+                        )
                         if cropped_overlay_base.size > 0:
                             overlay_base_bgr = cropped_overlay_base
                     standardized_bgr = debug_images_for_overlay.get("pipeline_standardized_input_image")

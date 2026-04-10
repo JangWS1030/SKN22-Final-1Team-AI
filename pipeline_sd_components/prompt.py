@@ -34,9 +34,13 @@ from .config import (
     IP_ADAPTER_REPO_ID,
     IP_ADAPTER_WEIGHT,
     NECKLACE_CLASS_IDX,
+    FEMALE_SUBJECT_PIPELINE_PROFILE,
+    MALE_SUBJECT_PIPELINE_PROFILE,
+    NEUTRAL_SUBJECT_PIPELINE_PROFILE,
     PROJECT_ROOT,
     SD_INPAINT_MODEL_ID,
     SD_SIZE,
+    SubjectPipelineProfile,
     _COMMON_STYLE_BLOCK_NEGATIVE,
     _FEMALE_STYLE_HINTS,
     _FEMALE_SUBJECT_HINTS,
@@ -105,6 +109,16 @@ def _infer_subject_gender(
     if female_hits >= max(1, male_hits + 1):
         return "female"
     return "neutral"
+
+def _resolve_subject_pipeline_profile(
+    subject_gender: Optional[str],
+) -> SubjectPipelineProfile:
+    normalized = _normalize_subject_gender(subject_gender)
+    if normalized == "male":
+        return MALE_SUBJECT_PIPELINE_PROFILE
+    if normalized == "female":
+        return FEMALE_SUBJECT_PIPELINE_PROFILE
+    return NEUTRAL_SUBJECT_PIPELINE_PROFILE
 
 def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
     raw = " ".join(str(hairstyle_text or "").strip().split())
@@ -966,6 +980,7 @@ def _build_prompt(
     gender_mode = _infer_subject_gender(
         hairstyle_text, subject_gender
     )
+    subject_profile = _resolve_subject_pipeline_profile(gender_mode)
     normalized_style = _normalize_hairstyle_prompt_text(
         hairstyle_text,
         hair_length,
@@ -999,9 +1014,16 @@ def _build_prompt(
             "bib-like front panel",
             "structured breastplate top",
         ])
+        if gender_mode == "male":
+            garment_negative_parts.extend([
+                "dress",
+                "blouse",
+                "camisole",
+                "off-shoulder top",
+            ])
 
     garment_hints = source_garment_hints if isinstance(source_garment_hints, dict) else {}
-    if not white_tshirt_experiment:
+    if not white_tshirt_experiment and subject_profile.use_source_garment_prompt_hints:
         garment_conf = garment_hints.get("confidence") if isinstance(garment_hints.get("confidence"), dict) else {}
         color_conf = float(garment_conf.get("color", 0.0) or 0.0)
         pattern_conf = float(garment_conf.get("pattern", 0.0) or 0.0)
@@ -1078,6 +1100,9 @@ def _build_prompt(
         deduped_negative_parts.append(str(part).strip())
 
     garment_positive_hint = ", ".join(deduped_positive_parts[:3])
+    garment_positive_hint = ", ".join(
+        deduped_positive_parts[: subject_profile.garment_positive_hint_limit]
+    )
     if hair_length == "short" and not white_tshirt_experiment:
         short_garment_parts = [
             part for part in deduped_positive_parts
@@ -1088,6 +1113,12 @@ def _build_prompt(
     garment_negative_hint = ", ".join(deduped_negative_parts)
     if garment_negative_hint:
         garment_negative_hint += ", "
+
+    subject_noun = "person"
+    if gender_mode == "male":
+        subject_noun = "man"
+    elif gender_mode == "female":
+        subject_noun = "woman"
 
     # ── DB 프롬프트 데이터가 있으면 우선 사용 ─────────────────────────────
     if sd_prompt_data and sd_prompt_data.get("sd_positive"):
@@ -1106,12 +1137,14 @@ def _build_prompt(
             else:
                 color_pos_hint = "natural consistent hair color"
 
-        primary_positive = f"professional portrait photo of a person with {style_part}"
+        primary_positive = f"professional portrait photo of a {subject_noun} with {style_part}"
         if garment_positive_hint:
             primary_positive = f"{primary_positive}, {garment_positive_hint}"
         positive_parts = [
             primary_positive,
         ]
+        if gender_mode == "male":
+            positive_parts.append("natural masculine portrait framing")
         if color_pos_hint:
             positive_parts.append(color_pos_hint)
         positive_parts.extend([
@@ -1130,16 +1163,11 @@ def _build_prompt(
     if normalized_color:
         parts.append(f"{normalized_color.strip()} hair color")
     style = _truncate_words(", ".join(parts) if parts else "natural hairstyle", 18)
-    subject_noun = "person"
-    if gender_mode == "male":
-        subject_noun = "man"
-    elif gender_mode == "female":
-        subject_noun = "woman"
 
     # 길이별 기본 보강 (직접 입력/DB 프롬프트 폴백 시 사용)
     if hair_length == "short" and gender_mode == "male":
         pos_suffix = (
-            ", masculine short cut, balanced forehead, clean temple line, no side tails, no jewelry"
+            ", masculine short cut, balanced forehead, clean temple line, defined sideburn connection, tidy temple transition, no side tails, no jewelry"
         )
         neg_prefix = (
             "feminine bob, chin-length bob, rounded bob, bixie, pixie bob, "
@@ -1168,7 +1196,7 @@ def _build_prompt(
         guidance = 12.2
     elif hair_length == "medium" and gender_mode == "male":
         pos_suffix = (
-            ", masculine medium cut, balanced forehead, centered volume, no side sweep, no jewelry"
+            ", masculine medium cut, balanced forehead, centered volume, natural sideburn connection, tidy temple transition, no side sweep, no jewelry"
         )
         neg_prefix = (
             "feminine bob, rounded lob, dangling earrings, hoop earrings, necklace, jewelry, "
@@ -1235,6 +1263,7 @@ def bind_prompt_methods_to_pipeline(cls) -> None:
     cls._normalize_color_text = staticmethod(_normalize_color_text)
     cls._normalize_subject_gender = staticmethod(_normalize_subject_gender)
     cls._infer_subject_gender = staticmethod(_infer_subject_gender)
+    cls._resolve_subject_pipeline_profile = staticmethod(_resolve_subject_pipeline_profile)
     cls._normalize_male_short_hairstyle_prompt_text = staticmethod(_normalize_male_short_hairstyle_prompt_text)
     cls._normalize_male_medium_hairstyle_prompt_text = staticmethod(_normalize_male_medium_hairstyle_prompt_text)
     cls._normalize_hairstyle_prompt_text = staticmethod(_normalize_hairstyle_prompt_text)

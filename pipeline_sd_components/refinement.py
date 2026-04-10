@@ -29,19 +29,50 @@ logger = logging.getLogger(__name__)
 def _resolve_generation_conditioning(
     self,
     hair_length: str,
+    subject_gender: Optional[str] = None,
 ) -> Tuple[float, float]:
+    subject_profile = self._resolve_subject_pipeline_profile(subject_gender)
     if hair_length == "short":
-        ip_scale = float(self.config.short_generation_ip_adapter_scale)
+        ip_scale = (
+            float(subject_profile.short_ip_adapter_scale)
+            if subject_profile.short_ip_adapter_scale is not None
+            else float(self.config.short_generation_ip_adapter_scale)
+        )
+        control_cap = (
+            float(subject_profile.short_controlnet_scale_cap)
+            if subject_profile.short_controlnet_scale_cap is not None
+            else float(self.config.short_generation_controlnet_scale_cap)
+        )
         control_scale = min(
             float(self.config.controlnet_conditioning_scale),
-            float(self.config.short_generation_controlnet_scale_cap),
+            control_cap,
         )
     elif hair_length == "medium":
-        ip_scale = 0.18
-        control_scale = min(self.config.controlnet_conditioning_scale, 0.20)
+        ip_scale = (
+            float(subject_profile.medium_ip_adapter_scale)
+            if subject_profile.medium_ip_adapter_scale is not None
+            else 0.18
+        )
+        control_cap = (
+            float(subject_profile.medium_controlnet_scale_cap)
+            if subject_profile.medium_controlnet_scale_cap is not None
+            else 0.20
+        )
+        control_scale = min(float(self.config.controlnet_conditioning_scale), control_cap)
     else:
-        ip_scale = self.config.ip_adapter_scale
-        control_scale = self.config.controlnet_conditioning_scale
+        ip_scale = (
+            float(subject_profile.long_ip_adapter_scale)
+            if subject_profile.long_ip_adapter_scale is not None
+            else float(self.config.ip_adapter_scale)
+        )
+        control_scale = (
+            min(
+                float(self.config.controlnet_conditioning_scale),
+                float(subject_profile.long_controlnet_scale),
+            )
+            if subject_profile.long_controlnet_scale is not None
+            else float(self.config.controlnet_conditioning_scale)
+        )
     return float(ip_scale), float(control_scale)
 
 
@@ -56,6 +87,7 @@ def _generate(
     guidance_scale: float,
     seeds: List[int],
     hair_length: str = "long",
+    subject_gender: Optional[str] = None,
 ) -> List[Image.Image]:
     """
     모든 seed를 단일 배치 forward pass로 생성 (순차 대비 ~절반 시간).
@@ -65,11 +97,16 @@ def _generate(
     """
     # 숏컷/중단발 변환 시 IP-Adapter / ControlNet 비중을 낮춰
     # 원본 긴머리 실루엣 고착을 줄인다.
-    ip_scale, control_scale = self._resolve_generation_conditioning(hair_length)
+    subject_profile = self._resolve_subject_pipeline_profile(subject_gender)
+    ip_scale, control_scale = self._resolve_generation_conditioning(
+        hair_length,
+        subject_gender=subject_gender,
+    )
     self._sd_pipe.set_ip_adapter_scale(ip_scale)
     logger.info(
         f"[SDPipeline] ip_adapter_scale={ip_scale}, "
-        f"controlnet_scale={control_scale} (hair_length={hair_length})"
+        f"controlnet_scale={control_scale} "
+        f"(hair_length={hair_length}, subject_branch={subject_profile.key})"
     )
 
     n = len(seeds)

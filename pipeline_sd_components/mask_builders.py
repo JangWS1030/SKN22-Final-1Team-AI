@@ -189,12 +189,14 @@ def _build_generation_protect_mask(
     protect_mask: np.ndarray,
     face_bbox: Tuple[int, int, int, int],
     hair_length: str,
+    subject_gender: Optional[str] = None,
 ) -> np.ndarray:
     """
     SD 생성/합성에 사용할 얼굴 보호 마스크.
     short/medium 헤어에서는 목까지 네모나게 막히면 bob 라인이 끊겨 보여서,
     턱 아래는 빠르게 감쇠시키고 중앙 목 부분만 좁게 남긴다.
     """
+    subject_profile = self._resolve_subject_pipeline_profile(subject_gender)
     mask = np.clip(protect_mask.astype(np.float32), 0.0, 1.0).copy()
     if hair_length not in ("short", "medium"):
         return mask
@@ -244,8 +246,42 @@ def _build_generation_protect_mask(
             neck_guard[neck_y2:, :] = 0.0
         mask = np.maximum(
             mask,
-            neck_guard * (0.58 if hair_length == "short" else 0.50),
+            neck_guard
+            * (0.58 if hair_length == "short" else 0.50)
+            * float(subject_profile.generation_protect_neck_guard_scale),
         )
+
+    side_release_strength = float(subject_profile.generation_protect_side_release_strength)
+    if side_release_strength > 0.0:
+        release_u8 = np.zeros((H, W), dtype=np.uint8)
+        release_y = int(y1 + face_h * (0.62 if hair_length == "short" else 0.64))
+        release_axes = (
+            max(8, int(face_w * (0.12 if hair_length == "short" else 0.14))),
+            max(14, int(face_h * (0.22 if hair_length == "short" else 0.26))),
+        )
+        left_center = (
+            max(0, min(W - 1, int(x1 + face_w * 0.06))),
+            max(0, min(H - 1, release_y)),
+        )
+        right_center = (
+            max(0, min(W - 1, int(x2 - face_w * 0.06))),
+            max(0, min(H - 1, release_y)),
+        )
+        cv2.ellipse(release_u8, left_center, release_axes, 0, 0, 360, 255, -1)
+        cv2.ellipse(release_u8, right_center, release_axes, 0, 0, 360, 255, -1)
+        release_mask = cv2.GaussianBlur(
+            release_u8.astype(np.float32) / 255.0,
+            (0, 0),
+            sigmaX=4.8,
+            sigmaY=5.6,
+        )
+        band_top = max(0, int(y1 + face_h * 0.14))
+        band_bottom = min(H, int(y2 + face_h * (0.22 if hair_length == "short" else 0.28)))
+        if band_top > 0:
+            release_mask[:band_top, :] = 0.0
+        if band_bottom < H:
+            release_mask[band_bottom:, :] = 0.0
+        mask = np.clip(mask - release_mask * side_release_strength, 0.0, 1.0)
 
     if hair_length == "short":
         erode_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -258,12 +294,14 @@ def _build_removal_protect_mask(
     protect_mask: np.ndarray,
     face_bbox: Tuple[int, int, int, int],
     hair_length: str,
+    subject_gender: Optional[str] = None,
 ) -> np.ndarray:
     """
     긴 머리 제거(pre-clean) 단계에서 사용할 얼굴 보호 마스크.
     생성 단계보다 목 중앙 보호를 훨씬 약하게 두어, 목 앞쪽으로 내려온 머리 가닥은
     제거 대상으로 남기고 얼굴/턱 주변만 보수적으로 보호한다.
     """
+    subject_profile = self._resolve_subject_pipeline_profile(subject_gender)
     mask = np.clip(protect_mask.astype(np.float32), 0.0, 1.0).copy()
     if hair_length not in ("short", "medium"):
         return mask
@@ -290,7 +328,10 @@ def _build_removal_protect_mask(
         sigmaX=4.0,
         sigmaY=4.0,
     )
-    mask = np.minimum(mask, np.clip(face_core * 1.15, 0.0, 1.0))
+    mask = np.minimum(
+        mask,
+        np.clip(face_core * (1.15 * float(subject_profile.removal_protect_face_scale)), 0.0, 1.0),
+    )
 
     fade_start = max(0, int(y2 - face_h * 0.10))
     fade_end = min(H, int(y2 + face_h * (0.005 if hair_length == "short" else 0.02)))
@@ -317,7 +358,43 @@ def _build_removal_protect_mask(
         sigmaX=3.6,
         sigmaY=3.6,
     )
-    mask = np.clip(mask - neck_cut, 0.0, 1.0)
+    mask = np.clip(
+        mask - neck_cut * float(subject_profile.removal_protect_neck_cut_scale),
+        0.0,
+        1.0,
+    )
+
+    side_release_strength = float(subject_profile.removal_protect_side_release_strength)
+    if side_release_strength > 0.0:
+        release_u8 = np.zeros((H, W), dtype=np.uint8)
+        release_y = int(y1 + face_h * (0.64 if hair_length == "short" else 0.66))
+        release_axes = (
+            max(8, int(face_w * (0.13 if hair_length == "short" else 0.15))),
+            max(15, int(face_h * (0.24 if hair_length == "short" else 0.28))),
+        )
+        left_center = (
+            max(0, min(W - 1, int(x1 + face_w * 0.05))),
+            max(0, min(H - 1, release_y)),
+        )
+        right_center = (
+            max(0, min(W - 1, int(x2 - face_w * 0.05))),
+            max(0, min(H - 1, release_y)),
+        )
+        cv2.ellipse(release_u8, left_center, release_axes, 0, 0, 360, 255, -1)
+        cv2.ellipse(release_u8, right_center, release_axes, 0, 0, 360, 255, -1)
+        release_mask = cv2.GaussianBlur(
+            release_u8.astype(np.float32) / 255.0,
+            (0, 0),
+            sigmaX=4.6,
+            sigmaY=5.4,
+        )
+        band_top = max(0, int(y1 + face_h * 0.16))
+        band_bottom = min(H, int(y2 + face_h * (0.24 if hair_length == "short" else 0.30)))
+        if band_top > 0:
+            release_mask[:band_top, :] = 0.0
+        if band_bottom < H:
+            release_mask[band_bottom:, :] = 0.0
+        mask = np.clip(mask - release_mask * side_release_strength, 0.0, 1.0)
 
     erode_k = (5, 5) if hair_length == "short" else (7, 7)
     mask = cv2.erode(

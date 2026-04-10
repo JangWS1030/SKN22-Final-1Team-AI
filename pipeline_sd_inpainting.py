@@ -44,7 +44,10 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-from pipeline_sd_components.output import build_length_aware_output_crop_box
+from pipeline_sd_components.output import (
+    build_length_aware_output_crop_box,
+    crop_with_padding,
+)
 from pipeline_sd_components.config import (
     PROJECT_ROOT,
     SD_INPAINT_MODEL_ID,
@@ -201,6 +204,7 @@ class MirrAISDPipeline:
             effective_hairstyle_text,
             subject_gender=subject_gender,
         )
+        subject_profile = self._resolve_subject_pipeline_profile(subject_gender_mode)
         has_color_request = bool(normalized_color_text)
         target_hair_lab = self._resolve_target_hair_lab(normalized_color_text) if has_color_request else None
         if not has_color_request:
@@ -213,12 +217,18 @@ class MirrAISDPipeline:
         debug_data_common: Optional[Dict[str, Any]] = {} if return_intermediates else None
         if debug_data_common is not None:
             debug_data_common["subject_gender"] = subject_gender_mode
+            debug_data_common["subject_pipeline_branch"] = subject_profile.key
             debug_data_common["prompt_input"] = {
                 "hairstyle_text": requested_hairstyle_text,
                 "color_text": requested_color_text,
                 "sd_prompt_data_provided": bool(sd_prompt_data and sd_prompt_data.get("sd_positive")),
                 "white_tshirt_experiment": bool(white_tshirt_experiment),
             }
+        logger.info(
+            "[SDPipeline] subject pipeline branch=%s (subject_gender=%s)",
+            subject_profile.key,
+            subject_gender_mode,
+        )
 
         def _store_mask(name: str, mask: Optional[np.ndarray]) -> None:
             if debug_images_common is None or mask is None:
@@ -794,6 +804,7 @@ class MirrAISDPipeline:
             short_internal_target = max(
                 int(requested_top_k),
                 int(self.config.short_internal_candidate_count),
+                int(subject_profile.short_internal_candidate_min),
             )
             if len(seeds) < short_internal_target:
                 extra = short_internal_target - len(seeds)
@@ -801,11 +812,17 @@ class MirrAISDPipeline:
             logger.info(
                 f"[SDPipeline] short internal candidate count: requested={requested_top_k}, internal={len(seeds)}"
             )
-        elif subject_gender_mode == "male" and hair_length in ("short", "medium") and len(seeds) < 3:
-            extra = 3 - len(seeds)
+        elif (
+            hair_length == "medium"
+            and int(subject_profile.medium_internal_candidate_min) > len(seeds)
+        ):
+            extra = int(subject_profile.medium_internal_candidate_min) - len(seeds)
             seeds.extend(random.randint(0, 2**31 - 1) for _ in range(extra))
             logger.info(
-                f"[SDPipeline] male internal candidate expansion: requested={requested_top_k}, internal={len(seeds)}"
+                "[SDPipeline] subject-branch internal candidate expansion: requested=%d, internal=%d, branch=%s",
+                requested_top_k,
+                len(seeds),
+                subject_profile.key,
             )
         landmark_debug_data = landmark_obs.get("debug_data")
         if not isinstance(landmark_debug_data, dict):
@@ -831,11 +848,13 @@ class MirrAISDPipeline:
             face_region_mask,
             face_bbox=face_bbox,
             hair_length=hair_length,
+            subject_gender=subject_gender_mode,
         )
         protect_mask_for_removal = self._build_removal_protect_mask(
             face_region_mask,
             face_bbox=face_bbox,
             hair_length=hair_length,
+            subject_gender=subject_gender_mode,
         )
         accessory_protect_mask = self._build_accessory_protect_mask(
             face_bbox=face_bbox,
@@ -3556,7 +3575,8 @@ class MirrAISDPipeline:
 
         source_garment_prompt_hints: Dict[str, Any] = {}
         source_garment_prompt_support_mask = np.zeros((H, W), dtype=np.float32)
-        if hair_length in ("short", "medium", "long"):
+        source_garment_prompt_hints_enabled = bool(subject_profile.use_source_garment_prompt_hints)
+        if hair_length in ("short", "medium", "long") and source_garment_prompt_hints_enabled:
             try:
                 (
                     source_garment_prompt_hints,
@@ -3574,9 +3594,16 @@ class MirrAISDPipeline:
                 logger.warning(f"[SDPipeline] source garment prompt hint extraction failed (ignored): {e}")
                 source_garment_prompt_hints = {}
                 source_garment_prompt_support_mask = np.zeros((H, W), dtype=np.float32)
+        elif hair_length in ("short", "medium", "long"):
+            logger.info(
+                "[SDPipeline] source garment prompt hint extraction skipped for subject branch=%s",
+                subject_profile.key,
+            )
         _store_mask("pipeline_source_garment_prompt_support_mask", source_garment_prompt_support_mask)
         if debug_data_common is not None and source_garment_prompt_hints:
             debug_data_common["source_garment_prompt_hints"] = source_garment_prompt_hints
+        if debug_data_common is not None:
+            debug_data_common["source_garment_prompt_hints_enabled"] = source_garment_prompt_hints_enabled
         if source_garment_prompt_hints:
             logger.info(
                 "[SDPipeline] source garment prompt hints: color=%s pattern=%s material=%s neckline=%s support_px=%s",
@@ -3598,7 +3625,8 @@ class MirrAISDPipeline:
             white_tshirt_experiment=white_tshirt_experiment,
         )
         generation_ip_scale, generation_control_scale = self._resolve_generation_conditioning(
-            hair_length
+            hair_length,
+            subject_gender=subject_gender_mode,
         )
         logger.info(f"[SDPipeline] 프롬프트: {prompt}")
         logger.info(f"[SDPipeline] 네거티브: {neg_prompt}")
@@ -3625,6 +3653,7 @@ class MirrAISDPipeline:
         gen_images = self._generate(
             img_512, mask_512, canny_512, face_crop_pil, prompt, neg_prompt, guidance, seeds,
             hair_length=hair_length,
+            subject_gender=subject_gender_mode,
         )
         logger.info(
             "[SDPipeline] generation batch returned: images=%d requested_top_k=%d internal_candidates=%d",
@@ -3954,8 +3983,18 @@ class MirrAISDPipeline:
         if has_color_request and target_hair_lab is not None and len(candidates) > 1:
             sortable_count = sum(c["color_distance"] is not None for c in candidates)
             if sortable_count >= 2:
-                candidates.sort(
-                    key=lambda c: (
+                if subject_profile.key == "male":
+                    sort_key = lambda c: (
+                        c["male_medium_fit_penalty"] is None,
+                        c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
+                        c["accessory_penalty"] is None,
+                        c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                        c["color_distance"] is None,
+                        c["color_distance"] if c["color_distance"] is not None else 1e9,
+                        c["gen_idx"],
+                    )
+                else:
+                    sort_key = lambda c: (
                         c["accessory_penalty"] is None,
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
                         c["male_medium_fit_penalty"] is None,
@@ -3964,6 +4003,8 @@ class MirrAISDPipeline:
                         c["color_distance"] if c["color_distance"] is not None else 1e9,
                         c["gen_idx"],
                     )
+                candidates.sort(
+                    key=sort_key
                 )
                 logger.info("[SDPipeline] 컬러 유사도 기준으로 결과 재정렬 완료")
             else:
@@ -3972,14 +4013,24 @@ class MirrAISDPipeline:
             accessory_sortable = sum(c["accessory_penalty"] is not None for c in candidates)
             fit_sortable = sum(c["male_medium_fit_penalty"] is not None for c in candidates)
             if accessory_sortable >= 2 or fit_sortable >= 2:
-                candidates.sort(
-                    key=lambda c: (
+                if subject_profile.key == "male":
+                    sort_key = lambda c: (
+                        c["male_medium_fit_penalty"] is None,
+                        c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
+                        c["accessory_penalty"] is None,
+                        c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
+                        c["gen_idx"],
+                    )
+                else:
+                    sort_key = lambda c: (
                         c["accessory_penalty"] is None,
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
                         c["male_medium_fit_penalty"] is None,
                         c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
                         c["gen_idx"],
                     )
+                candidates.sort(
+                    key=sort_key
                 )
                 if fit_sortable >= 2:
                     logger.info("[SDPipeline] male medium fit ranking applied")
@@ -5807,21 +5858,35 @@ class MirrAISDPipeline:
             result_face_bbox = face_bbox
             if output_crop_box is not None:
                 crop_x1, crop_y1, crop_x2, crop_y2 = output_crop_box
-                cropped_bgr = final_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
+                if (
+                    crop_x1 < 0
+                    or crop_y1 < 0
+                    or crop_x2 > final_bgr.shape[1]
+                    or crop_y2 > final_bgr.shape[0]
+                ):
+                    cropped_bgr = crop_with_padding(final_bgr, output_crop_box)
+                else:
+                    cropped_bgr = final_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
                 if cropped_bgr.size > 0:
                     result_bgr = cropped_bgr.copy()
                     if (
                         isinstance(hair_mask_for_sd, np.ndarray)
                         and hair_mask_for_sd.shape[:2] == final_bgr.shape[:2]
                     ):
-                        result_mask = hair_mask_for_sd[crop_y1:crop_y2, crop_x1:crop_x2].copy()
+                        result_mask = crop_with_padding(
+                            hair_mask_for_sd,
+                            output_crop_box,
+                            border_mode=cv2.BORDER_CONSTANT,
+                            constant_value=0,
+                            blur_padding=False,
+                        ).copy()
                     if face_bbox is not None:
                         fx1, fy1, fx2, fy2 = [int(v) for v in face_bbox]
                         result_face_bbox = (
                             max(0, fx1 - crop_x1),
                             max(0, fy1 - crop_y1),
-                            max(0, fx2 - crop_x1),
-                            max(0, fy2 - crop_y1),
+                            min(result_bgr.shape[1], max(0, fx2 - crop_x1)),
+                            min(result_bgr.shape[0], max(0, fy2 - crop_y1)),
                         )
             if debug_data_common is not None and rank == 0:
                 debug_data_common["output_crop"] = {
