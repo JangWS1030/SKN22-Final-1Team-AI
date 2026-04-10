@@ -745,11 +745,11 @@ class MirrAISDPipeline:
             f"[SDPipeline] 헤어 길이 분류: {hair_length}, subject_gender={subject_gender_mode}"
         )
         effective_hairstyle_lower = str(effective_hairstyle_text or "").strip().lower()
-        short_bangs_requested = any(
+        bangs_requested = any(
             token in effective_hairstyle_lower
             for token in ("bang", "fringe", "앞머리", "시스루")
         )
-        short_no_bangs_target = bool(hair_length == "short" and not short_bangs_requested)
+        short_no_bangs_target = bool(hair_length == "short" and not bangs_requested)
         source_cloth_preclean_analysis = self._analyze_source_cloth_preclean_need(
             source_hair_mask=hair_mask_base,
             cloth_mask=cloth_mask,
@@ -2107,11 +2107,42 @@ class MirrAISDPipeline:
                     bangs_restore_for_sd,
                     face_bbox=face_bbox,
                     hair_length=hair_length,
+                    subject_gender=subject_gender_mode,
+                    fringe_requested=bangs_requested,
                 )
                 if float(soft_bangs_generation_mask.sum()) > 0.0:
-                    _bangs_dilate_k = (5, 7) if hair_length == "short" else (7, 9)
-                    _bangs_sx = 2.2 if hair_length == "short" else 2.4
-                    _bangs_sy = 2.6 if hair_length == "short" else 2.8
+                    preserve_fringe_detail = bool(
+                        subject_gender_mode == "male"
+                        and bangs_requested
+                        and hair_length in ("short", "medium")
+                    )
+                    _bangs_dilate_k = (
+                        (5, 5)
+                        if preserve_fringe_detail and hair_length == "short"
+                        else (5, 7)
+                        if preserve_fringe_detail
+                        else (5, 7)
+                        if hair_length == "short"
+                        else (7, 9)
+                    )
+                    _bangs_sx = (
+                        1.8
+                        if preserve_fringe_detail and hair_length == "short"
+                        else 2.0
+                        if preserve_fringe_detail
+                        else 2.2
+                        if hair_length == "short"
+                        else 2.4
+                    )
+                    _bangs_sy = (
+                        2.1
+                        if preserve_fringe_detail and hair_length == "short"
+                        else 2.3
+                        if preserve_fringe_detail
+                        else 2.6
+                        if hair_length == "short"
+                        else 2.8
+                    )
                     _bangs_u8 = cv2.dilate(
                         (np.clip(soft_bangs_generation_mask.astype(np.float32), 0.0, 1.0) > 0.04).astype(np.uint8) * 255,
                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, _bangs_dilate_k),
@@ -2125,7 +2156,12 @@ class MirrAISDPipeline:
                     ).astype(np.float32)
                     soft_bangs_generation_mask = np.clip(soft_bangs_generation_mask * 1.10, 0.0, 1.0)
                 composite_bangs_release_mask = np.clip(
-                    soft_bangs_generation_mask.astype(np.float32) * 1.15,
+                    soft_bangs_generation_mask.astype(np.float32)
+                    * (
+                        1.24
+                        if subject_gender_mode == "male" and bangs_requested and hair_length in ("short", "medium")
+                        else 1.15
+                    ),
                     0.0,
                     1.0,
                 )
@@ -3704,6 +3740,8 @@ class MirrAISDPipeline:
                     else None
                 ),
                 hair_length=hair_length,
+                subject_gender=subject_gender_mode,
+                fringe_requested=bangs_requested,
             )
             composite_after_core_mask_bgr = self._composite(
                 composite_base_bgr,
@@ -3721,6 +3759,8 @@ class MirrAISDPipeline:
                     else None
                 ),
                 hair_length=hair_length,
+                subject_gender=subject_gender_mode,
+                fringe_requested=bangs_requested,
             )
             composite_mask = composite_hair_mask.astype(np.float32)
             if hair_length == "short":
@@ -3773,6 +3813,8 @@ class MirrAISDPipeline:
                 protect_mask=protect_mask_for_sd,   # 얼굴 영역 alpha 침범 방지
                 protect_release_mask=composite_bangs_release_mask if float(composite_bangs_release_mask.sum()) > 0.0 else None,
                 hair_length=hair_length,
+                subject_gender=subject_gender_mode,
+                fringe_requested=bangs_requested,
             )
             if float(composite_bangs_release_mask.sum()) > 60.0:
                 try:
@@ -5552,6 +5594,8 @@ class MirrAISDPipeline:
                     face_bbox=face_bbox,
                     hair_length=hair_length,
                     final_hair_mask=final_hair_mask,
+                    subject_gender=subject_gender_mode,
+                    fringe_requested=bangs_requested,
                 )
                 if (
                     float(eye_restore_mask.sum()) <= 0.0
@@ -5563,11 +5607,18 @@ class MirrAISDPipeline:
                         face_bbox=face_bbox,
                     )
                 if float(eye_restore_mask.sum()) > 0.0:
+                    eye_restore_strength = 0.96 if hair_length == "long" else 0.92
+                    if (
+                        subject_gender_mode == "male"
+                        and bangs_requested
+                        and hair_length in ("short", "medium")
+                    ):
+                        eye_restore_strength = 0.84
                     final_rgb = self._restore_reference_region(
                         final_rgb,
                         img_rgb,
                         eye_restore_mask,
-                        strength=0.96 if hair_length == "long" else 0.92,
+                        strength=eye_restore_strength,
                     )
                     final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
                     eye_restore_applied = True

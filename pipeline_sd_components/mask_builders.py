@@ -8707,8 +8707,15 @@ def _build_soft_bangs_generation_mask(
     bangs_mask: np.ndarray,
     face_bbox: Tuple[int, int, int, int],
     hair_length: str = "long",
+    subject_gender: str = "unknown",
+    fringe_requested: bool = False,
 ) -> np.ndarray:
     H, W = bangs_mask.shape[:2]
+    preserve_fringe_detail = bool(
+        subject_gender == "male"
+        and fringe_requested
+        and hair_length in ("short", "medium")
+    )
     base = (np.clip(bangs_mask.astype(np.float32), 0.0, 1.0) > 0.05).astype(np.uint8) * 255
     if int((base > 0).sum()) < 8:
         return np.zeros((H, W), dtype=np.float32)
@@ -8754,21 +8761,28 @@ def _build_soft_bangs_generation_mask(
     )
     soft_u8 = cv2.dilate(
         soft_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9)),
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (5, 7) if preserve_fringe_detail else (5, 9),
+        ),
         iterations=1,
     )
     if int((soft_u8 > 0).sum()) < 8:
         return np.zeros((H, W), dtype=np.float32)
 
-    _sx = 2.2 if hair_length == "short" else 2.4 if hair_length == "medium" else 2.6
-    _sy = 2.6 if hair_length == "short" else 2.8 if hair_length == "medium" else 3.0
+    if preserve_fringe_detail:
+        _sx = 1.8 if hair_length == "short" else 2.0
+        _sy = 2.1 if hair_length == "short" else 2.3
+    else:
+        _sx = 2.2 if hair_length == "short" else 2.4 if hair_length == "medium" else 2.6
+        _sy = 2.6 if hair_length == "short" else 2.8 if hair_length == "medium" else 3.0
     alpha = cv2.GaussianBlur(
         soft_u8.astype(np.float32) / 255.0,
         (0, 0),
         sigmaX=_sx,
         sigmaY=_sy,
     )
-    alpha = np.clip((alpha - 0.02) / 0.94, 0.0, 1.0)
+    alpha = np.clip((alpha - (0.01 if preserve_fringe_detail else 0.02)) / 0.94, 0.0, 1.0)
 
     fade = np.zeros((H,), dtype=np.float32)
     if band_bottom > band_top:
@@ -8777,22 +8791,22 @@ def _build_soft_bangs_generation_mask(
         inner_low = min(band_bottom, band_top + max(16, int((band_bottom - band_top) * 0.72)))
         if inner_mid > inner_top:
             fade[inner_top:inner_mid] = np.linspace(
-                0.16,
-                0.42,
+                0.22 if preserve_fringe_detail else 0.16,
+                0.50 if preserve_fringe_detail else 0.42,
                 inner_mid - inner_top,
                 dtype=np.float32,
             )
         if inner_low > inner_mid:
             fade[inner_mid:inner_low] = np.linspace(
-                0.42,
-                0.72,
+                0.50 if preserve_fringe_detail else 0.42,
+                0.80 if preserve_fringe_detail else 0.72,
                 inner_low - inner_mid,
                 dtype=np.float32,
             )
         if band_bottom > inner_low:
             fade[inner_low:band_bottom] = np.linspace(
-                0.72,
-                0.52,
+                0.80 if preserve_fringe_detail else 0.72,
+                0.62 if preserve_fringe_detail else 0.52,
                 band_bottom - inner_low,
                 dtype=np.float32,
             )
@@ -8809,9 +8823,13 @@ def _build_soft_bangs_generation_mask(
     x_coords = np.arange(W, dtype=np.float32)
     side_scale = max(float(side_keep), 1.0)
     x_dist = np.abs(x_coords - float(cx)) / side_scale
-    x_fade = np.clip(1.0 - (x_dist ** 1.55) * 0.52, 0.44, 1.0).astype(np.float32)
+    x_fade = np.clip(
+        1.0 - (x_dist ** 1.55) * 0.52,
+        0.52 if preserve_fringe_detail else 0.44,
+        1.0,
+    ).astype(np.float32)
     alpha = alpha * x_fade[np.newaxis, :]
-    return np.clip(alpha, 0.0, 0.68).astype(np.float32)
+    return np.clip(alpha, 0.0, 0.82 if preserve_fringe_detail else 0.68).astype(np.float32)
 
 
 def _build_eye_region_restore_mask(
@@ -8821,8 +8839,15 @@ def _build_eye_region_restore_mask(
     face_bbox: Tuple[int, int, int, int],
     hair_length: str = "long",
     final_hair_mask: Optional[np.ndarray] = None,
+    subject_gender: str = "unknown",
+    fringe_requested: bool = False,
 ) -> np.ndarray:
     H, W = image_shape
+    preserve_fringe_detail = bool(
+        subject_gender == "male"
+        and fringe_requested
+        and hair_length in ("short", "medium")
+    )
     if not isinstance(landmark_debug_data, dict):
         return np.zeros((H, W), dtype=np.float32)
 
@@ -8852,8 +8877,8 @@ def _build_eye_region_restore_mask(
     x1, y1, x2, y2 = face_bbox
     face_h = max(int(y2 - y1), 1)
     face_w = max(int(x2 - x1), 1)
-    dilate_px = max(9, int(face_h * 0.10))
-    brow_dilate_px = max(7, int(face_h * 0.07))
+    dilate_px = max(8, int(face_h * (0.085 if preserve_fringe_detail else 0.10)))
+    brow_dilate_px = max(6, int(face_h * (0.060 if preserve_fringe_detail else 0.07)))
 
     left_mask = self._build_landmark_hull_mask(left_eye_pts, (H, W), dilate_px=dilate_px)
     right_mask = self._build_landmark_hull_mask(right_eye_pts, (H, W), dilate_px=dilate_px)
@@ -8892,7 +8917,10 @@ def _build_eye_region_restore_mask(
     )
     eye_u8 = cv2.dilate(
         eye_u8,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 9)),
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (5, 7) if preserve_fringe_detail else (7, 9),
+        ),
         iterations=1,
     )
     band_pts = [left_eye_pts, right_eye_pts]
@@ -8913,16 +8941,30 @@ def _build_eye_region_restore_mask(
             band_u8 = np.zeros((H, W), dtype=np.uint8)
             band_u8[band_top:band_bottom, band_x1:band_x2] = 255
             band_u8 = cv2.bitwise_and(band_u8, corridor_u8)
-            band_u8 = cv2.GaussianBlur(band_u8, (0, 0), sigmaX=2.2, sigmaY=1.6)
-            eye_u8 = cv2.bitwise_or(eye_u8, (band_u8 > 24).astype(np.uint8) * 255)
+            band_u8 = cv2.GaussianBlur(
+                band_u8,
+                (0, 0),
+                sigmaX=1.8 if preserve_fringe_detail else 2.2,
+                sigmaY=1.3 if preserve_fringe_detail else 1.6,
+            )
+            eye_u8 = cv2.bitwise_or(
+                eye_u8,
+                (band_u8 > (32 if preserve_fringe_detail else 24)).astype(np.uint8) * 255,
+            )
     if (
         hair_length != "long"
         and final_hair_mask is not None
         and final_hair_mask.shape == (H, W)
     ):
         hair_u8 = cv2.dilate(
-            (np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) > 0.28).astype(np.uint8) * 255,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 7)),
+            (
+                np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0)
+                > (0.18 if preserve_fringe_detail else 0.28)
+            ).astype(np.uint8) * 255,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (7, 9) if preserve_fringe_detail else (5, 7),
+            ),
             iterations=1,
         )
         eye_u8 = cv2.bitwise_and(eye_u8, cv2.bitwise_not(hair_u8))
@@ -8932,8 +8974,8 @@ def _build_eye_region_restore_mask(
     return cv2.GaussianBlur(
         eye_u8.astype(np.float32) / 255.0,
         (0, 0),
-        sigmaX=2.0,
-        sigmaY=2.4,
+        sigmaX=1.6 if preserve_fringe_detail else 2.0,
+        sigmaY=1.9 if preserve_fringe_detail else 2.4,
     ).astype(np.float32)
 
 

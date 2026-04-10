@@ -1353,6 +1353,8 @@ def _composite(
     protect_mask: Optional[np.ndarray] = None,  # H×W float32: 이 영역은 alpha=0 강제 (얼굴 보호)
     protect_release_mask: Optional[np.ndarray] = None,
     hair_length: str = "long",
+    subject_gender: str = "unknown",
+    fringe_requested: bool = False,
 ) -> np.ndarray:
     """
     SD 생성 이미지를 원본에 합성.
@@ -1376,16 +1378,29 @@ def _composite(
     gen_orig = cv2.resize(gen_cropped, (W, H), interpolation=cv2.INTER_LANCZOS4)
 
     # alpha 블렌딩: short/medium는 경계를 더 또렷하게 유지
+    preserve_fringe_detail = bool(
+        subject_gender == "male"
+        and fringe_requested
+        and hair_length in ("short", "medium")
+    )
     sigma = 6.0
     if hair_length == "short":
         sigma = 4.2
     elif hair_length == "medium":
-        sigma = 4.8
+        sigma = 4.1 if preserve_fringe_detail else 4.8
     hair_alpha = cv2.GaussianBlur(hair_mask, (0, 0), sigmaX=sigma, sigmaY=sigma)
     if hair_length == "short":
         hair_alpha = np.clip((hair_alpha - 0.10) / 0.90, 0.0, 1.0)
     elif hair_length == "medium":
-        hair_alpha = np.clip((hair_alpha - 0.07) / 0.93, 0.0, 1.0)
+        if preserve_fringe_detail:
+            hair_alpha = np.clip((hair_alpha - 0.04) / 0.96, 0.0, 1.0)
+        else:
+            hair_alpha = np.clip((hair_alpha - 0.07) / 0.93, 0.0, 1.0)
+    if preserve_fringe_detail and protect_release_mask is not None:
+        hair_alpha = np.maximum(
+            hair_alpha,
+            np.clip(protect_release_mask.astype(np.float32), 0.0, 1.0) * 0.72,
+        )
     hair_alpha = np.clip(hair_alpha, 0.0, 1.0)
 
     garment_alpha = np.zeros((H, W), dtype=np.float32)
@@ -1404,11 +1419,20 @@ def _composite(
     # → Gaussian blur가 얼굴 경계로 번지더라도 원본 픽셀 100% 유지
     if protect_mask is not None:
         # protect_mask도 살짝 dilate해서 경계까지 확실히 보호
-        protect_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        protect_k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (3, 3) if preserve_fringe_detail else (5, 5),
+        )
         protect_dilated = cv2.dilate(protect_mask.astype(np.float32), protect_k)
         if protect_release_mask is not None:
             protect_dilated = np.clip(
-                protect_dilated - np.clip(protect_release_mask.astype(np.float32) * 1.35, 0.0, 1.0),
+                protect_dilated
+                - np.clip(
+                    protect_release_mask.astype(np.float32)
+                    * (1.55 if preserve_fringe_detail else 1.35),
+                    0.0,
+                    1.0,
+                ),
                 0.0,
                 1.0,
             )
