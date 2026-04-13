@@ -33,6 +33,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import logging
 import os
 import time
@@ -59,10 +60,23 @@ DOWNLOAD_TIMEOUT   = 30
 
 # ── 파이프라인 싱글톤 ───────────────────────────────────────────────────────────
 _PIPELINE = None
+_ANALYZER_PIPELINE = None
 
 MASK_DEBUG_KEYWORDS = (
     "mask",
 )
+
+_CANONICAL_TARGET_LENGTHS = frozenset({"short", "medium", "long", "bob"})
+_CANONICAL_TARGET_VIBES = frozenset({"natural", "chic", "cute", "elegant"})
+_CANONICAL_SCALP_TYPES = frozenset({"straight", "waved", "curly", "damaged"})
+_CANONICAL_HAIR_COLOURS = frozenset({"black", "brown", "ash", "bleach"})
+_CANONICAL_BUDGET_RANGES = frozenset({"low", "mid", "high"})
+_SURVEY_HAIR_COLOUR_TEXT = {
+    "black": "black",
+    "brown": "brown",
+    "ash": "ash",
+    "bleach": "bleach blonde",
+}
 
 _IMPORT_ERROR: Optional[str] = None
 MirrAISDPipeline = None
@@ -71,6 +85,7 @@ try:
     import cv2
     import numpy as np
     from PIL import Image
+    from utils.face_metrics import classify_face_shape, golden_ratio_score
 except Exception as _e:
     _IMPORT_ERROR = f"{type(_e).__name__}: {_e}\n{traceback.format_exc()}"
     logger.error(f"[handler_sd] import 실패:\n{_IMPORT_ERROR}")
@@ -176,6 +191,115 @@ def _extract_sd_prompt_data(inp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             logger.warning("[handler_sd] invalid sd_guidance ignored: %r", guidance)
 
     return data
+
+
+def _normalize_choice(value: Any, allowed: frozenset[str]) -> str:
+    lowered = str(value or "").strip().lower()
+    return lowered if lowered in allowed else ""
+
+
+def _coerce_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _clean_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _normalize_gender_branch(value: Any) -> str:
+    lowered = _clean_text(value).lower()
+    if lowered in {"m", "male", "man", "men", "boy", "masculine", "남자", "남성"}:
+        return "male"
+    if lowered in {"f", "female", "woman", "women", "girl", "feminine", "여자", "여성"}:
+        return "female"
+    return ""
+
+
+def _merge_legacy_style_text(*values: Any) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _clean_text(value)
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(text)
+    return ", ".join(parts)
+
+
+def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
+    survey_data = _coerce_dict(inp.get("survey_data"))
+    survey_profile = _coerce_dict(survey_data.get("survey_profile"))
+
+    canonical_preferences = {
+        "target_length": _normalize_choice(survey_data.get("target_length"), _CANONICAL_TARGET_LENGTHS),
+        "target_vibe": _normalize_choice(survey_data.get("target_vibe"), _CANONICAL_TARGET_VIBES),
+        "scalp_type": _normalize_choice(survey_data.get("scalp_type"), _CANONICAL_SCALP_TYPES),
+        "hair_colour": _normalize_choice(survey_data.get("hair_colour"), _CANONICAL_HAIR_COLOURS),
+        "budget_range": _normalize_choice(survey_data.get("budget_range"), _CANONICAL_BUDGET_RANGES),
+    }
+    gender_branch = _normalize_choice(
+        survey_profile.get("gender_branch"),
+        frozenset({"male", "female"}),
+    )
+
+    legacy_hairstyle_text = _clean_text(inp.get("hairstyle_text"))
+    legacy_preference_text = _clean_text(inp.get("preference_text"))
+    legacy_preference = _clean_text(inp.get("preference"))
+    legacy_color_text = _clean_text(inp.get("color_text"))
+    legacy_style_text = _merge_legacy_style_text(
+        legacy_hairstyle_text,
+        legacy_preference_text,
+        legacy_preference,
+    )
+
+    resolved_color_text = legacy_color_text
+    if canonical_preferences["hair_colour"]:
+        resolved_color_text = _SURVEY_HAIR_COLOUR_TEXT.get(
+            canonical_preferences["hair_colour"],
+            canonical_preferences["hair_colour"],
+        )
+
+    legacy_subject_gender = _clean_text(inp.get("subject_gender", inp.get("gender", "")))
+    normalized_legacy_gender = _normalize_gender_branch(legacy_subject_gender)
+    resolved_subject_gender = gender_branch or normalized_legacy_gender or legacy_subject_gender or None
+    fallback_mode = bool(survey_data) and not bool(survey_profile)
+    structured_payload_used = bool(
+        survey_data
+        or gender_branch
+        or any(canonical_preferences.values())
+        or survey_profile.get("style_axes")
+        or survey_profile.get("derived_preferences")
+        or survey_data.get("question_answers")
+    )
+    prompt_context = {
+        "structured_payload_present": structured_payload_used,
+        "fallback_mode": fallback_mode,
+        "gender_branch": gender_branch,
+        "canonical_preferences": canonical_preferences,
+        "style_axes": survey_profile.get("style_axes") if isinstance(survey_profile.get("style_axes"), dict) else {},
+        "derived_preferences": survey_profile.get("derived_preferences"),
+        "question_answers": survey_data.get("question_answers"),
+        "legacy_fields": {
+            "hairstyle_text": legacy_hairstyle_text,
+            "preference_text": legacy_preference_text,
+            "preference": legacy_preference,
+            "color_text": legacy_color_text,
+        },
+    }
+    return {
+        "hairstyle_text": legacy_style_text,
+        "color_text": resolved_color_text,
+        "subject_gender": resolved_subject_gender,
+        "prompt_context": prompt_context,
+        "resolved_canonical_preferences": canonical_preferences,
+        "resolved_gender_branch": gender_branch or normalized_legacy_gender,
+        "structured_payload_used": structured_payload_used,
+        "fallback_mode": fallback_mode,
+    }
 
 
 def _is_mask_debug_image(name: str) -> bool:
@@ -307,6 +431,105 @@ def _image_to_base64(img_bgr: "np.ndarray", quality: int = 92) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+def _crop_bgr_with_output_box(
+    img_bgr: "np.ndarray",
+    crop_box: Tuple[int, int, int, int],
+) -> "np.ndarray":
+    from pipeline_sd_components.output import crop_with_padding
+
+    return crop_with_padding(img_bgr, crop_box)
+
+
+class FaceAnalysisError(RuntimeError):
+    def __init__(self, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.message = message
+
+
+def _round_nullable(value: Any, digits: int = 4) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return round(float(value), digits)
+    except Exception:
+        return None
+
+
+def _serialize_face_bbox(face_bbox: Tuple[int, int, int, int]) -> Dict[str, int]:
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    return {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+
+
+def _create_analysis_pipeline() -> "MirrAISDPipeline":
+    _ensure_pipeline_module_imported()
+    import dataclasses
+
+    cfg_fields = {f.name for f in dataclasses.fields(SDInpaintConfig)}
+    cfg_kwargs: Dict[str, Any] = {
+        "use_sam2": False,
+        "use_clip_ranking": False,
+    }
+    cfg = SDInpaintConfig(**{k: v for k, v in cfg_kwargs.items() if k in cfg_fields})
+    pipeline = MirrAISDPipeline(cfg)
+    pipeline._load_mediapipe()
+    return pipeline
+
+
+def _get_analysis_pipeline() -> "MirrAISDPipeline":
+    global _ANALYZER_PIPELINE
+    if _ANALYZER_PIPELINE is None:
+        _ANALYZER_PIPELINE = _create_analysis_pipeline()
+    return _ANALYZER_PIPELINE
+
+
+def analyze_face_input(
+    inp: Dict[str, Any],
+    *,
+    include_visualization: bool = False,
+) -> Dict[str, Any]:
+    img_bgr = _load_image_from_input(inp)
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    pipeline = _get_analysis_pipeline()
+
+    face_bbox = pipeline._detect_face(img_rgb)
+    if face_bbox is None:
+        raise FaceAnalysisError(
+            error_code="FACE_NOT_DETECTED",
+            message="No face was detected in the provided image.",
+        )
+
+    landmark_obs = pipeline._detect_landmark_data(img_rgb, face_bbox)
+    if not bool(landmark_obs.get("detected")):
+        raise FaceAnalysisError(
+            error_code="LANDMARKS_NOT_DETECTED",
+            message="Face mesh landmarks could not be detected from the provided image.",
+        )
+
+    debug_data = landmark_obs.get("debug_data") or {}
+    face_ratios = dict(debug_data.get("ratios") or {})
+    face_shape, face_shape_scores = classify_face_shape(face_ratios)
+    golden_score = golden_ratio_score(face_ratios)
+
+    payload: Dict[str, Any] = {
+        "face_shape": face_shape,
+        "face_shape_scores": {
+            key: round(float(value), 4) for key, value in face_shape_scores.items()
+        },
+        "golden_ratio_score": round(float(golden_score), 4),
+        "face_ratios": {key: _round_nullable(value, 6) for key, value in face_ratios.items()},
+        "face_bbox": _serialize_face_bbox(face_bbox),
+    }
+
+    if include_visualization:
+        debug_images = landmark_obs.get("debug_images") or {}
+        contour_bgr = debug_images.get("mediapipe_face_mesh_contours")
+        if contour_bgr is not None:
+            payload["visualization_image_bgr"] = contour_bgr
+
+    return payload
+
+
 # ── RunPod Handler ──────────────────────────────────────────────────────────────
 
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -317,27 +540,6 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": f"파이프라인 import 실패:\n{_IMPORT_ERROR}"}
 
     inp = (job or {}).get("input") or {}
-
-    # ── action 라우팅 ─────────────────────────────────────────────────────
-    action = str(inp.get("action", "")).strip().lower()
-
-    # 헬스체크
-    if action == "health_check" or _coerce_bool(inp.get("health_check")):
-        import torch
-        return {
-            "status": "ok",
-            "build_tag": os.environ.get("MIRRAI_BUILD_TAG", "unknown"),
-            "runpod": {
-                "endpoint_id": os.environ.get("RUNPOD_ENDPOINT_ID"),
-                "pod_id": os.environ.get("RUNPOD_POD_ID"),
-                "gpu_type_id": os.environ.get("RUNPOD_GPU_TYPE_ID"),
-            },
-            "cuda": {
-                "available": torch.cuda.is_available(),
-                "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-            },
-        }
-
     runtime_meta = {
         "build_tag": os.environ.get("MIRRAI_BUILD_TAG", "unknown"),
         "runpod": {
@@ -347,31 +549,71 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         },
     }
 
+    # ── action 라우팅 ─────────────────────────────────────────────────────
+    action = str(inp.get("action", "")).strip().lower().replace("-", "_")
+
+    # 헬스체크
+    if action == "health_check" or _coerce_bool(inp.get("health_check")):
+        import torch
+        return {
+            "status": "ok",
+            "build_tag": runtime_meta["build_tag"],
+            "runpod": runtime_meta["runpod"],
+            "cuda": {
+                "available": torch.cuda.is_available(),
+                "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+            },
+        }
+    if action == "analyze_face" or _coerce_bool(inp.get("analyze_face")):
+        include_visualization = _coerce_bool(inp.get("include_visualization"), default=False)
+        try:
+            analysis = analyze_face_input(inp, include_visualization=include_visualization)
+            visualization_image = analysis.pop("visualization_image_bgr", None)
+            response: Dict[str, Any] = {
+                "status": "ok",
+                "build_tag": runtime_meta["build_tag"],
+                "runpod": runtime_meta["runpod"],
+                **analysis,
+            }
+            if visualization_image is not None:
+                response["visualization_base64"] = _image_to_base64(visualization_image)
+            return response
+        except FaceAnalysisError as e:
+            return {
+                "status": "error",
+                "error_code": e.error_code,
+                "error": e.message,
+                "build_tag": runtime_meta["build_tag"],
+                "runpod": runtime_meta["runpod"],
+            }
+
     try:
         # ── 입력 파싱 ────────────────────────────────────────────────────────
-        hairstyle_text = str(inp.get("hairstyle_text", "")).strip()
-        color_text     = str(inp.get("color_text", "")).strip()
+        request_context = _extract_generation_request_context(inp)
+        hairstyle_text = request_context["hairstyle_text"]
+        color_text     = request_context["color_text"]
         top_k          = max(1, min(5, int(inp.get("top_k", 3))))
         return_base64  = _coerce_bool(inp.get("return_base64"), default=True)
         return_intermediates = _coerce_bool(inp.get("return_intermediates"), default=False)
         mask_debug_only = _coerce_bool(inp.get("mask_debug_only"), default=False)
         bg_fill_mode   = str(inp.get("bg_fill_mode", "cv2")).strip()  # "cv2" | "sd"
         mask_refine_mode = str(inp.get("mask_refine_mode", "")).strip().lower() or None
-        subject_gender = str(inp.get("subject_gender", inp.get("gender", ""))).strip() or None
+        subject_gender = request_context["subject_gender"]
         sd_prompt_data = _extract_sd_prompt_data(inp)
+        prompt_context = request_context["prompt_context"]
         white_tshirt_experiment = _coerce_bool(inp.get("white_tshirt_experiment"), default=False)
         lora_path = str(inp.get("lora_path", "")).strip() or None
         lora_scale = float(inp.get("lora_scale", 1.0))
 
-        deprecated_recommend_keys = ("face_ratios", "preference", "preference_text", "age", "weights")
+        deprecated_recommend_keys = ("face_ratios", "age", "weights")
         deprecated_inputs = [key for key in deprecated_recommend_keys if inp.get(key) not in (None, "", {}, [])]
         if deprecated_inputs:
             return {
-                "error": "추천 입력은 더 이상 지원하지 않습니다. hairstyle_text 또는 sd_prompt_data를 사용하세요.",
+                "error": "추천 입력은 더 이상 지원하지 않습니다. survey_data, hairstyle_text, color_text, sd_prompt_data를 사용하세요.",
                 "unsupported_inputs": deprecated_inputs,
             }
 
-        if not hairstyle_text and not color_text:
+        if not hairstyle_text and not color_text and not request_context["structured_payload_used"]:
             return {"error": "hairstyle_text 또는 color_text 중 하나 이상 필요합니다."}
 
         # ── 이미지 로드 ──────────────────────────────────────────────────────
@@ -384,6 +626,13 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             f"subject_gender={subject_gender or 'auto'}, "
             f"sd_prompt_data={'yes' if sd_prompt_data else 'no'}, "
             f"white_tshirt_experiment={white_tshirt_experiment}"
+        )
+        logger.info(
+            "[handler_sd] request_resolution: gender_branch=%s canonical=%s structured=%s fallback=%s",
+            request_context["resolved_gender_branch"] or "legacy",
+            request_context["resolved_canonical_preferences"],
+            request_context["structured_payload_used"],
+            request_context["fallback_mode"],
         )
 
         # ── 파이프라인 실행 ───────────────────────────────────────────────────
@@ -403,6 +652,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             lora_path=lora_path,
             lora_scale=lora_scale,
             sd_prompt_data=sd_prompt_data,
+            prompt_context=prompt_context,
             white_tshirt_experiment=white_tshirt_experiment,
         )
 
@@ -440,8 +690,10 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     overlay_base_bgr = img_bgr
                     crop_box = getattr(r, "output_crop_box", None)
                     if crop_box is not None:
-                        crop_x1, crop_y1, crop_x2, crop_y2 = [int(v) for v in crop_box]
-                        cropped_overlay_base = overlay_base_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
+                        cropped_overlay_base = _crop_bgr_with_output_box(
+                            overlay_base_bgr,
+                            tuple(int(v) for v in crop_box),
+                        )
                         if cropped_overlay_base.size > 0:
                             overlay_base_bgr = cropped_overlay_base
                     standardized_bgr = debug_images_for_overlay.get("pipeline_standardized_input_image")
@@ -494,6 +746,18 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(debug_data, dict) and debug_data:
                 intermediate_data = debug_data
 
+        request_resolution = None
+        if results:
+            request_resolution = results[0].style_meta or None
+        if request_resolution is None:
+            request_resolution = {
+                "resolved_gender_branch": request_context["resolved_gender_branch"] or "legacy",
+                "resolved_canonical_preferences": request_context["resolved_canonical_preferences"],
+                "blocked_vocabulary": [],
+                "fallback_mode": request_context["fallback_mode"],
+                "structured_payload_used": request_context["structured_payload_used"],
+            }
+
         elapsed = time.time() - t0
         logger.info(f"[handler_sd] 완료: {elapsed:.1f}s, {len(results)}개 결과")
 
@@ -502,6 +766,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             "elapsed_seconds": round(elapsed, 2),
             "build_tag":       runtime_meta["build_tag"],
             "runpod":          runtime_meta["runpod"],
+            "request_resolution": request_resolution,
         }
         if intermediates:
             response["intermediates"] = intermediates

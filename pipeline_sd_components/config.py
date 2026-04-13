@@ -165,6 +165,56 @@ _HAIR_COLOR_TARGET_RGB: List[Tuple[str, Tuple[int, int, int]]] = [
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
 
+@dataclasses.dataclass(frozen=True)
+class SubjectPipelineProfile:
+    """성별별 파이프라인 실행 프로파일."""
+    key: str
+    use_source_garment_prompt_hints: bool = True
+    garment_positive_hint_limit: int = 3
+    short_internal_candidate_min: int = 3
+    medium_internal_candidate_min: int = 0
+    short_ip_adapter_scale: Optional[float] = None
+    short_controlnet_scale_cap: Optional[float] = None
+    medium_ip_adapter_scale: Optional[float] = None
+    medium_controlnet_scale_cap: Optional[float] = None
+    long_ip_adapter_scale: Optional[float] = None
+    long_controlnet_scale: Optional[float] = None
+    generation_protect_neck_guard_scale: float = 1.0
+    generation_protect_side_release_strength: float = 0.0
+    removal_protect_face_scale: float = 1.0
+    removal_protect_neck_cut_scale: float = 1.0
+    removal_protect_side_release_strength: float = 0.0
+
+
+NEUTRAL_SUBJECT_PIPELINE_PROFILE = SubjectPipelineProfile(
+    key="neutral",
+    use_source_garment_prompt_hints=True,
+    garment_positive_hint_limit=2,
+)
+
+FEMALE_SUBJECT_PIPELINE_PROFILE = SubjectPipelineProfile(
+    key="female",
+    use_source_garment_prompt_hints=True,
+    garment_positive_hint_limit=3,
+)
+
+MALE_SUBJECT_PIPELINE_PROFILE = SubjectPipelineProfile(
+    key="male",
+    use_source_garment_prompt_hints=False,
+    garment_positive_hint_limit=1,
+    short_internal_candidate_min=4,
+    medium_internal_candidate_min=4,
+    short_ip_adapter_scale=0.12,
+    short_controlnet_scale_cap=0.03,
+    medium_ip_adapter_scale=0.24,
+    medium_controlnet_scale_cap=0.16,
+    generation_protect_neck_guard_scale=0.72,
+    generation_protect_side_release_strength=0.22,
+    removal_protect_face_scale=0.94,
+    removal_protect_neck_cut_scale=1.18,
+    removal_protect_side_release_strength=0.30,
+)
+
 @dataclasses.dataclass
 class SDInpaintConfig:
     """SD Inpainting 파이프라인 설정"""

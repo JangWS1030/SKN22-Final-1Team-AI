@@ -50,6 +50,66 @@ def _shift_box_within_bounds(
     return left, top, right, bottom
 
 
+def crop_with_padding(
+    image: np.ndarray,
+    crop_box: Tuple[int, int, int, int],
+    *,
+    border_mode: int = cv2.BORDER_REFLECT_101,
+    constant_value: int = 0,
+    blur_padding: bool = True,
+) -> np.ndarray:
+    left, top, right, bottom = [int(v) for v in crop_box]
+    height, width = image.shape[:2]
+
+    pad_left = max(0, -left)
+    pad_top = max(0, -top)
+    pad_right = max(0, right - width)
+    pad_bottom = max(0, bottom - height)
+
+    padded = image
+    if pad_left or pad_top or pad_right or pad_bottom:
+        border_value = constant_value if image.ndim == 2 else (constant_value,) * image.shape[2]
+        padded = cv2.copyMakeBorder(
+            image,
+            pad_top,
+            pad_bottom,
+            pad_left,
+            pad_right,
+            border_mode,
+            value=border_value,
+        )
+        if blur_padding and border_mode != cv2.BORDER_CONSTANT:
+            pad_mask = np.zeros(padded.shape[:2], dtype=np.float32)
+            if pad_top:
+                pad_mask[:pad_top, :] = 1.0
+            if pad_bottom:
+                pad_mask[-pad_bottom:, :] = 1.0
+            if pad_left:
+                pad_mask[:, :pad_left] = 1.0
+            if pad_right:
+                pad_mask[:, -pad_right:] = 1.0
+            pad_mask = cv2.GaussianBlur(pad_mask, (0, 0), sigmaX=7.0, sigmaY=7.0)
+
+            blurred = cv2.GaussianBlur(padded, (0, 0), sigmaX=18.0, sigmaY=18.0)
+            if image.ndim == 2:
+                padded = (
+                    padded.astype(np.float32) * (1.0 - pad_mask)
+                    + blurred.astype(np.float32) * pad_mask
+                )
+            else:
+                padded = (
+                    padded.astype(np.float32) * (1.0 - pad_mask[..., np.newaxis])
+                    + blurred.astype(np.float32) * pad_mask[..., np.newaxis]
+                )
+            padded = np.clip(padded, 0, 255).astype(image.dtype)
+
+    x1 = left + pad_left
+    y1 = top + pad_top
+    x2 = right + pad_left
+    y2 = bottom + pad_top
+    return padded[y1:y2, x1:x2]
+
+
 def build_length_aware_output_crop_box(
     config: SDInpaintConfig,
     image_shape: Tuple[int, int],
@@ -161,15 +221,24 @@ def build_length_aware_output_crop_box(
     crop_top = int(round(cy - crop_h * 0.5))
     crop_right = crop_left + crop_w
     crop_bottom = crop_top + crop_h
-    crop_left, crop_top, crop_right, crop_bottom = _shift_box_within_bounds(
-        crop_left,
-        crop_top,
-        crop_right,
-        crop_bottom,
-        width=width,
-        height=height,
-    )
 
-    if crop_left <= 0 and crop_top <= 0 and crop_right >= width and crop_bottom >= height:
+    needs_padding = crop_w > width or crop_h > height
+    if not needs_padding:
+        crop_left, crop_top, crop_right, crop_bottom = _shift_box_within_bounds(
+            crop_left,
+            crop_top,
+            crop_right,
+            crop_bottom,
+            width=width,
+            height=height,
+        )
+
+    if (
+        not needs_padding
+        and crop_left <= 0
+        and crop_top <= 0
+        and crop_right >= width
+        and crop_bottom >= height
+    ):
         return None
     return crop_left, crop_top, crop_right, crop_bottom

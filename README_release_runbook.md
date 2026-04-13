@@ -25,6 +25,12 @@ python -c "import requests,dotenv; print('deps_ok')"
 python test_runpod.py --health-check
 ```
 
+얼굴형 분석 확인:
+
+```bash
+python test_runpod.py --analyze-face --image images/1234.jpg --include-visualization
+```
+
 샘플 생성 확인:
 
 ```bash
