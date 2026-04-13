@@ -162,6 +162,7 @@ class MirrAISDPipeline:
         lora_path: Optional[str] = None,
         lora_scale: Optional[float] = None,
         sd_prompt_data: Optional[Dict[str, Any]] = None,
+        prompt_context: Optional[Dict[str, Any]] = None,
         white_tshirt_experiment: bool = False,
     ) -> List[SDInpaintResult]:
         """
@@ -198,9 +199,14 @@ class MirrAISDPipeline:
         requested_color_text = self._normalize_color_text(color_text)
         effective_hairstyle_text = requested_hairstyle_text
         effective_color_text = requested_color_text
-        target_hair_length = self._classify_hair_length(effective_hairstyle_text)
+        normalized_prompt_context = self._normalize_prompt_context(prompt_context)
+        target_hair_length = self._resolve_requested_hair_length(
+            effective_hairstyle_text,
+            normalized_prompt_context,
+        )
         normalized_color_text = self._normalize_color_text(effective_color_text)
-        subject_gender_mode = self._infer_subject_gender(
+        explicit_branch = normalized_prompt_context.get("gender_branch")
+        subject_gender_mode = explicit_branch or self._infer_subject_gender(
             effective_hairstyle_text,
             subject_gender=subject_gender,
         )
@@ -222,12 +228,22 @@ class MirrAISDPipeline:
                 "hairstyle_text": requested_hairstyle_text,
                 "color_text": requested_color_text,
                 "sd_prompt_data_provided": bool(sd_prompt_data and sd_prompt_data.get("sd_positive")),
+                "prompt_context_provided": bool(normalized_prompt_context.get("structured_payload_present")),
                 "white_tshirt_experiment": bool(white_tshirt_experiment),
             }
+            debug_data_common["request_resolution"] = {
+                "resolved_gender_branch": subject_gender_mode,
+                "resolved_canonical_preferences": normalized_prompt_context.get("canonical_preferences", {}),
+                "fallback_mode": bool(normalized_prompt_context.get("fallback_mode")),
+                "structured_payload_used": bool(normalized_prompt_context.get("structured_payload_present")),
+            }
         logger.info(
-            "[SDPipeline] subject pipeline branch=%s (subject_gender=%s)",
+            "[SDPipeline] subject pipeline branch=%s (subject_gender=%s, structured=%s, canonical=%s, fallback=%s)",
             subject_profile.key,
             subject_gender_mode,
+            bool(normalized_prompt_context.get("structured_payload_present")),
+            normalized_prompt_context.get("canonical_preferences", {}),
+            bool(normalized_prompt_context.get("fallback_mode")),
         )
 
         def _store_mask(name: str, mask: Optional[np.ndarray]) -> None:
@@ -2614,6 +2630,7 @@ class MirrAISDPipeline:
                             cloth_mask=cloth_mask_dilated,
                             hair_length=hair_length,
                             seed=fill_seed,
+                            subject_gender=subject_gender_mode,
                             white_tshirt_experiment=white_tshirt_experiment,
                         )
                         logger.info("[SDPipeline] bg_fill_mode=sd: 제거 영역 SD 보정 완료")
@@ -2651,6 +2668,7 @@ class MirrAISDPipeline:
                         hair_length=hair_length,
                         seed=source_garment_seed,
                         refine_mode="garment",
+                        subject_gender=subject_gender_mode,
                         white_tshirt_experiment=white_tshirt_experiment,
                     )
                     source_garment_prepass_applied = True
@@ -3651,15 +3669,27 @@ class MirrAISDPipeline:
             )
 
         # ── Step 6: 프롬프트 ─────────────────────────────────────────────────
-        prompt, neg_prompt, guidance = self._build_prompt(
+        prompt, neg_prompt, guidance, prompt_meta = self._build_prompt(
             effective_hairstyle_text,
             normalized_color_text,
             hair_length,
             subject_gender=subject_gender_mode,
             sd_prompt_data=sd_prompt_data,
+            prompt_context=normalized_prompt_context,
             source_garment_hints=source_garment_prompt_hints,
             white_tshirt_experiment=white_tshirt_experiment,
         )
+        request_resolution = {
+            "resolved_gender_branch": prompt_meta.get("resolved_gender_branch", subject_gender_mode),
+            "resolved_canonical_preferences": prompt_meta.get("canonical_preferences", {}),
+            "final_internal_prompt": prompt,
+            "negative_prompt": neg_prompt,
+            "blocked_vocabulary": prompt_meta.get("blocked_vocabulary", []),
+            "fallback_mode": bool(prompt_meta.get("fallback_mode")),
+            "structured_payload_used": bool(prompt_meta.get("structured_payload_used")),
+            "style_source": prompt_meta.get("style_source"),
+            "normalized_style": prompt_meta.get("normalized_style"),
+        }
         generation_ip_scale, generation_control_scale = self._resolve_generation_conditioning(
             hair_length,
             subject_gender=subject_gender_mode,
@@ -3667,6 +3697,7 @@ class MirrAISDPipeline:
         logger.info(f"[SDPipeline] 프롬프트: {prompt}")
         logger.info(f"[SDPipeline] 네거티브: {neg_prompt}")
         logger.info(f"[SDPipeline] guidance_scale: {guidance}")
+        logger.info("[SDPipeline] request_resolution=%s", request_resolution)
         logger.info(
             "[SDPipeline] generation conditioning: ip_adapter_scale=%.4f controlnet_scale=%.4f internal_candidates=%d",
             generation_ip_scale,
@@ -3679,6 +3710,7 @@ class MirrAISDPipeline:
                 "negative": neg_prompt,
                 "guidance_scale": float(guidance),
             }
+            debug_data_common["request_resolution"] = request_resolution
             debug_data_common["generation_conditioning"] = {
                 "ip_adapter_scale": float(generation_ip_scale),
                 "controlnet_scale": float(generation_control_scale),
@@ -4339,6 +4371,7 @@ class MirrAISDPipeline:
                             hair_length=hair_length,
                             seed=int(cand["seed"]) + 1701,
                             refine_mode="cloth",
+                            subject_gender=subject_gender_mode,
                             white_tshirt_experiment=white_tshirt_experiment,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
@@ -4701,6 +4734,7 @@ class MirrAISDPipeline:
                                 hair_length=hair_length,
                                 seed=int(cand["seed"]) + 1739,
                                 refine_mode="cloth",
+                                subject_gender=subject_gender_mode,
                                 white_tshirt_experiment=white_tshirt_experiment,
                             )
                         if 100 <= shoulder_refine_px < 8000:
@@ -4819,6 +4853,7 @@ class MirrAISDPipeline:
                                 hair_length=hair_length,
                                 seed=int(cand["seed"]) + 1787,
                                 refine_mode="cloth",
+                                subject_gender=subject_gender_mode,
                                 white_tshirt_experiment=white_tshirt_experiment,
                             )
                         if hair_length == "short":
@@ -5561,6 +5596,7 @@ class MirrAISDPipeline:
                             hair_length=hair_length,
                             seed=int(cand["seed"]) + 2411,
                             refine_mode="garment",
+                            subject_gender=subject_gender_mode,
                             white_tshirt_experiment=white_tshirt_experiment,
                         )
                         final_bgr = cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)
@@ -5964,6 +6000,7 @@ class MirrAISDPipeline:
                 face_bbox=result_face_bbox,
                 debug_images=debug_images_common if (debug_images_common is not None and rank == 0) else None,
                 debug_data=debug_data_common if (debug_data_common is not None and rank == 0) else None,
+                style_meta=request_resolution if rank == 0 else None,
                 output_crop_box=output_crop_box,
             ))
 

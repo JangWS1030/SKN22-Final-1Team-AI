@@ -294,6 +294,7 @@ def _sd_refine_removed_region(
     hair_length: str,
     seed: int,
     refine_mode: str = "generic",
+    subject_gender: Optional[str] = None,
     white_tshirt_experiment: bool = False,
 ) -> np.ndarray:
     """
@@ -315,6 +316,7 @@ def _sd_refine_removed_region(
     )
     white_tshirt_positive = ", ".join(_WHITE_TSHIRT_POSITIVE_HINTS[:2])
     white_tshirt_negative = ", ".join(_WHITE_TSHIRT_NEGATIVE_HINTS)
+    normalized_gender = self._normalize_subject_gender(subject_gender)
 
     if refine_mode == "garment":
         if white_tshirt_experiment:
@@ -366,23 +368,44 @@ def _sd_refine_removed_region(
     elif refine_mode == "short_tail" and hair_length == "short":
         garment_phrase = "same plain white t-shirt preserved" if white_tshirt_experiment else "same shirt or blouse preserved"
         cloth_phrase = "realistic white cotton tee texture continuity" if white_tshirt_experiment else "realistic clothing fabric texture continuity"
-        fill_prompt = (
-            "professional portrait photo, neat compact short jaw-length bob haircut, "
-            "clean side silhouette above the shoulders, visible neck and shoulders, "
-            f"{garment_phrase}, {cloth_phrase}, "
-            "clean neckline, no hair below jawline, no shoulder-length side hair, "
-            "no dangling strands in masked region, photorealistic details"
-        )
+        if normalized_gender == "male":
+            fill_prompt = (
+                "professional portrait photo, clean male short haircut with a soft two-block balance, "
+                "clean side line above the ears, visible neck and shoulders, "
+                f"{garment_phrase}, {cloth_phrase}, "
+                "non-bob masculine short silhouette, no hair below jawline, no dangling strands in masked region, "
+                "photorealistic details"
+            )
+        else:
+            fill_prompt = (
+                "professional portrait photo, neat compact short jaw-length bob haircut, "
+                "clean side silhouette above the shoulders, visible neck and shoulders, "
+                f"{garment_phrase}, {cloth_phrase}, "
+                "clean neckline, no hair below jawline, no shoulder-length side hair, "
+                "no dangling strands in masked region, photorealistic details"
+            )
         fill_guidance = 8.2
-        fill_negative = (
-            f"{white_tshirt_negative}, " if white_tshirt_experiment else ""
-        ) + (
-            "long hair, shoulder-length hair, medium hair, lob haircut, hair below jawline, "
-            "hair touching shoulders, dangling side tails, loose strands, extra hair mass, "
-            "warped shirt, warped blouse, melted fabric, deformed neck, artifacts, blurry, "
-            "smudged texture, cartoon, painting, "
-            f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
-        )
+        if normalized_gender == "male":
+            fill_negative = (
+                f"{white_tshirt_negative}, " if white_tshirt_experiment else ""
+            ) + (
+                "bob, lob, mini bob, c-curl bob, feminine bob silhouette, feminine face-framing layers, "
+                "long hair, shoulder-length hair, medium hair, hair below jawline, "
+                "hair touching shoulders, dangling side tails, loose strands, extra hair mass, "
+                "warped shirt, warped blouse, melted fabric, deformed neck, artifacts, blurry, "
+                "smudged texture, cartoon, painting, "
+                f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
+            )
+        else:
+            fill_negative = (
+                f"{white_tshirt_negative}, " if white_tshirt_experiment else ""
+            ) + (
+                "long hair, shoulder-length hair, medium hair, lob haircut, hair below jawline, "
+                "hair touching shoulders, dangling side tails, loose strands, extra hair mass, "
+                "warped shirt, warped blouse, melted fabric, deformed neck, artifacts, blurry, "
+                "smudged texture, cartoon, painting, "
+                f"{_COMMON_STYLE_BLOCK_NEGATIVE}"
+            )
     elif hair_length == "short":
         garment_phrase = "same plain white t-shirt preserved" if white_tshirt_experiment else "same shirt or blouse preserved"
         cloth_phrase = "realistic white cotton tee texture continuity" if white_tshirt_experiment else "realistic clothing fabric texture continuity"
