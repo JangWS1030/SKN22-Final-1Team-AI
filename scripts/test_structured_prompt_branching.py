@@ -82,6 +82,11 @@ def main() -> int:
     assert male_result["meta"]["resolved_gender_branch"] == "male", male_result
     assert male_result["meta"]["style_source"] == "structured_male", male_result
     assert male_result["request"]["structured_payload_used"] is True, male_result
+    assert prompt_module._resolve_requested_bangs_state(
+        male_result["request"]["hairstyle_text"],
+        male_result["request"]["prompt_context"],
+        male_result["request"]["subject_gender"],
+    ) is True, male_result
     normalized_male_style = str(male_result["meta"]["normalized_style"]).lower()
     positive_male = male_result["positive"].lower()
     negative_male = male_result["negative"].lower()
@@ -123,6 +128,27 @@ def main() -> int:
     assert legacy_result["request"]["structured_payload_used"] is False, legacy_result
     assert legacy_result["meta"]["style_source"] == "legacy_text", legacy_result
     _assert_contains(legacy_result["positive"].lower(), "bob")
+
+    no_bangs_payload = {
+        "survey_data": {
+            "target_length": "short",
+            "target_vibe": "chic",
+            "scalp_type": "straight",
+            "survey_profile": {
+                "gender_branch": "male",
+                "style_axes": {
+                    "front_styling": "lifted",
+                    "parting": "parted",
+                },
+            },
+        },
+    }
+    no_bangs_request = handler_sd._extract_generation_request_context(no_bangs_payload)
+    assert prompt_module._resolve_requested_bangs_state(
+        no_bangs_request["hairstyle_text"],
+        no_bangs_request["prompt_context"],
+        no_bangs_request["subject_gender"],
+    ) is False, no_bangs_request
 
     print(
         json.dumps(

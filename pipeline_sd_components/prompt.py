@@ -238,6 +238,58 @@ def _resolve_axis_value(style_axes: Dict[str, Any], *keys: str) -> str:
     return ""
 
 
+def _resolve_requested_bangs_state(
+    hairstyle_text: str,
+    prompt_context: Optional[Dict[str, Any]] = None,
+    subject_gender: Optional[str] = None,
+) -> bool:
+    lowered = " ".join(str(hairstyle_text or "").strip().lower().split())
+    if any(token in lowered for token in ("bang", "bangs", "fringe", "앞머리", "시스루")):
+        return True
+
+    context = _normalize_prompt_context(prompt_context)
+    style_axes = context["style_axes"]
+    structured_text = _stringify_structured_request(
+        context,
+        include_legacy_fields=False,
+    ).lower()
+    normalized_gender = _normalize_subject_gender(subject_gender) or context.get("gender_branch", "")
+
+    front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
+    parting = _resolve_axis_value(style_axes, "parting", "part")
+
+    if front_styling in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}:
+        return True
+
+    if any(
+        token in structured_text
+        for token in (
+            "bang",
+            "bangs",
+            "fringe",
+            "앞머리",
+            "시스루",
+            "내리는 스타일",
+            "다운펌",
+            "down style",
+            "down perm",
+        )
+    ):
+        return True
+
+    if (
+        normalized_gender == "male"
+        and parting in {"non_parted", "nonparted", "no_part"}
+        and any(
+            token in structured_text
+            for token in ("비가르마", "soft", "부드", "컬", "curly", "wavy", "wave")
+        )
+    ):
+        return True
+
+    return False
+
+
 def _male_explicit_female_coded_request(
     legacy_text: str,
     prompt_context: Dict[str, Any],
@@ -1727,6 +1779,7 @@ def bind_prompt_methods_to_pipeline(cls) -> None:
     cls._infer_subject_gender = staticmethod(_infer_subject_gender)
     cls._normalize_prompt_context = staticmethod(_normalize_prompt_context)
     cls._resolve_requested_hair_length = staticmethod(_resolve_requested_hair_length)
+    cls._resolve_requested_bangs_state = staticmethod(_resolve_requested_bangs_state)
     cls._resolve_subject_pipeline_profile = staticmethod(_resolve_subject_pipeline_profile)
     cls._normalize_male_short_hairstyle_prompt_text = staticmethod(_normalize_male_short_hairstyle_prompt_text)
     cls._normalize_male_medium_hairstyle_prompt_text = staticmethod(_normalize_male_medium_hairstyle_prompt_text)

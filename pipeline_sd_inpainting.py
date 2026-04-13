@@ -760,12 +760,18 @@ class MirrAISDPipeline:
         logger.info(
             f"[SDPipeline] 헤어 길이 분류: {hair_length}, subject_gender={subject_gender_mode}"
         )
-        effective_hairstyle_lower = str(effective_hairstyle_text or "").strip().lower()
-        bangs_requested = any(
-            token in effective_hairstyle_lower
-            for token in ("bang", "fringe", "앞머리", "시스루")
+        bangs_requested = self._resolve_requested_bangs_state(
+            effective_hairstyle_text,
+            normalized_prompt_context,
+            subject_gender=subject_gender_mode,
         )
         short_no_bangs_target = bool(hair_length == "short" and not bangs_requested)
+        logger.info(
+            "[SDPipeline] front coverage resolution: bangs_requested=%s short_no_bangs_target=%s style_axes=%s",
+            bangs_requested,
+            short_no_bangs_target,
+            normalized_prompt_context.get("style_axes", {}),
+        )
         source_cloth_preclean_analysis = self._analyze_source_cloth_preclean_need(
             source_hair_mask=hair_mask_base,
             cloth_mask=cloth_mask,
@@ -801,6 +807,8 @@ class MirrAISDPipeline:
                 "hair_bottom_ratio": float(source_cloth_preclean_analysis.get("hair_bottom_ratio", 0.0)),
                 "torso_hair_ratio": float(source_cloth_preclean_analysis.get("torso_hair_ratio", 0.0)),
                 "cloth_overlap_ratio": float(source_cloth_preclean_analysis.get("cloth_overlap_ratio", 0.0)),
+                "bangs_requested": bool(bangs_requested),
+                "short_no_bangs_target": bool(short_no_bangs_target),
             }
         source_garment_prepass_mask: Optional[np.ndarray] = None
         source_garment_prepass_enabled = False
