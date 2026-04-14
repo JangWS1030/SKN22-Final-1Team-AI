@@ -322,6 +322,10 @@ class SDInpaintConfig:
     bg_fill_mode: str = "cv2"
 
     enable_post_cloth_refine: bool = True
+    accessory_exclusion_penalty_threshold: float = 0.58
+    accessory_exclusion_headwear_threshold: float = 0.34
+    accessory_exclusion_glasses_threshold: float = 0.26
+    accessory_exclusion_jewelry_threshold: float = 0.28
 
     # salon-photo style portrait standardization
     enable_input_standardization: bool = True

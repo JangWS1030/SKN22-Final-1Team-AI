@@ -1077,50 +1077,382 @@ def _estimate_accessory_penalty(
     img_rgb: np.ndarray,
     face_bbox: Tuple[int, int, int, int],
 ) -> Optional[float]:
-    H, W = img_rgb.shape[:2]
-    _ = self._segface_hair_mask(img_rgb, face_bbox)
-    segface_debug = self._last_segface_mask_debug or {}
-    earring_mask = segface_debug.get("earring_mask")
-    necklace_mask = segface_debug.get("necklace_mask")
-    if not isinstance(earring_mask, np.ndarray) or not isinstance(necklace_mask, np.ndarray):
+    details = _estimate_accessory_penalty_details(
+        self,
+        img_rgb,
+        face_bbox,
+        source_accessory_profile=None,
+    )
+    if not isinstance(details, dict):
         return None
-    if earring_mask.shape != (H, W) or necklace_mask.shape != (H, W):
-        return None
+    return float(details.get("total_penalty", 0.0))
 
-    x1, y1, x2, y2 = face_bbox
+
+def _build_accessory_region_masks(
+    face_bbox: Tuple[int, int, int, int],
+    image_shape: Tuple[int, int],
+) -> Dict[str, np.ndarray]:
+    H, W = [int(v) for v in image_shape]
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
     face_w = max(int(x2 - x1), 1)
     face_h = max(int(y2 - y1), 1)
-    corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    top = max(0, int(y1 - face_h * 0.16))
-    bottom = min(H, int(y2 + face_h * 0.92))
-    left = max(0, int(x1 - face_w * 0.92))
-    right = min(W, int(x2 + face_w * 0.92))
-    if top >= bottom or left >= right:
-        return None
-    corridor_u8[top:bottom, left:right] = 255
 
-    earring_u8 = cv2.dilate(
-        (np.clip(earring_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
-        iterations=1,
-    )
-    necklace_u8 = cv2.dilate(
-        (np.clip(necklace_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
-        iterations=1,
-    )
-    earring_u8 = cv2.bitwise_and(earring_u8, corridor_u8)
-    necklace_u8 = cv2.bitwise_and(necklace_u8, corridor_u8)
+    def _rect_mask(top: float, bottom: float, left: float, right: float) -> np.ndarray:
+        mask = np.zeros((H, W), dtype=np.uint8)
+        top_i = max(0, int(round(top)))
+        bottom_i = min(H, int(round(bottom)))
+        left_i = max(0, int(round(left)))
+        right_i = min(W, int(round(right)))
+        if top_i < bottom_i and left_i < right_i:
+            mask[top_i:bottom_i, left_i:right_i] = 255
+        return mask
 
-    earring_px = int((earring_u8 > 0).sum())
-    necklace_px = int((necklace_u8 > 0).sum())
-    if earring_px < 2 and necklace_px < 6:
+    return {
+        "glasses": _rect_mask(
+            y1 - face_h * 0.10,
+            y1 + face_h * 0.66,
+            x1 - face_w * 0.18,
+            x2 + face_w * 0.18,
+        ),
+        "earring": _rect_mask(
+            y1 - face_h * 0.16,
+            y2 + face_h * 0.54,
+            x1 - face_w * 0.92,
+            x2 + face_w * 0.92,
+        ),
+        "necklace": _rect_mask(
+            y2 + face_h * 0.04,
+            y2 + face_h * 0.92,
+            x1 - face_w * 0.72,
+            x2 + face_w * 0.72,
+        ),
+        "headwear": _rect_mask(
+            y1 - face_h * 0.92,
+            y1 + face_h * 0.18,
+            x1 - face_w * 0.74,
+            x2 + face_w * 0.74,
+        ),
+    }
+
+
+def _estimate_mask_presence_ratio(
+    mask: Optional[np.ndarray],
+    region_mask: Optional[np.ndarray],
+    *,
+    face_area: float,
+    threshold: float = 0.08,
+    dilate_ksize: int = 7,
+) -> float:
+    if (
+        mask is None
+        or region_mask is None
+        or mask.ndim != 2
+        or region_mask.ndim != 2
+        or mask.shape != region_mask.shape
+    ):
         return 0.0
 
-    norm = float(max(face_w * face_h, 1))
-    earring_penalty = min(float(earring_px) / norm * 36.0, 1.0)
-    necklace_penalty = min(float(necklace_px) / norm * 20.0, 1.0)
-    return 0.74 * earring_penalty + 0.26 * necklace_penalty
+    work_u8 = (np.clip(mask.astype(np.float32), 0.0, 1.0) > threshold).astype(np.uint8) * 255
+    if dilate_ksize >= 3:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_ksize, dilate_ksize))
+        work_u8 = cv2.dilate(work_u8, kernel, iterations=1)
+    work_u8 = cv2.bitwise_and(work_u8, region_mask.astype(np.uint8))
+    return float((work_u8 > 0).sum()) / max(float(face_area), 1.0)
+
+
+def _estimate_relative_accessory_penalty(
+    candidate_value: float,
+    source_value: float,
+    *,
+    tolerance_abs: float,
+    tolerance_scale: float,
+    ramp: float,
+) -> float:
+    allowed_value = max(
+        float(tolerance_abs),
+        float(source_value) + float(tolerance_abs),
+        float(source_value) * float(tolerance_scale),
+    )
+    excess_value = max(float(candidate_value) - allowed_value, 0.0)
+    return float(np.clip(excess_value / max(float(ramp), 1e-6), 0.0, 1.0))
+
+
+def _estimate_headwear_penalty(
+    self,
+    img_rgb: np.ndarray,
+    face_bbox: Tuple[int, int, int, int],
+    *,
+    hair_mask: Optional[np.ndarray] = None,
+    face_mask: Optional[np.ndarray] = None,
+) -> float:
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
+        return 0.0
+
+    H, W = img_rgb.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    face_area = float(max(face_w * face_h, 1))
+    regions = _build_accessory_region_masks(face_bbox, (H, W))
+    headwear_region = regions.get("headwear")
+    if headwear_region is None or int((headwear_region > 0).sum()) == 0:
+        return 0.0
+
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    face_crop = gray[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+    face_gray_median = float(np.median(face_crop)) if face_crop.size > 0 else 150.0
+    dark_threshold = int(np.clip(face_gray_median - 26.0, 42.0, 148.0))
+
+    protect_mask = np.zeros((H, W), dtype=np.uint8)
+    if isinstance(hair_mask, np.ndarray) and hair_mask.shape == (H, W):
+        protect_mask = np.maximum(
+            protect_mask,
+            (np.clip(hair_mask.astype(np.float32), 0.0, 1.0) > 0.12).astype(np.uint8) * 255,
+        )
+    if isinstance(face_mask, np.ndarray) and face_mask.shape == (H, W):
+        protect_mask = np.maximum(
+            protect_mask,
+            (np.clip(face_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+        )
+    protect_mask = cv2.dilate(
+        protect_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+        iterations=1,
+    )
+
+    dark_mask = (gray < dark_threshold).astype(np.uint8) * 255
+    dark_mask = cv2.bitwise_and(dark_mask, headwear_region)
+    dark_mask = cv2.bitwise_and(dark_mask, cv2.bitwise_not(protect_mask))
+    dark_mask = cv2.morphologyEx(
+        dark_mask,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+        iterations=1,
+    )
+    dark_mask = cv2.morphologyEx(
+        dark_mask,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    )
+    if int((dark_mask > 0).sum()) < max(18, int(face_area * 0.008)):
+        return 0.0
+
+    comp_mask = (dark_mask > 0).astype(np.uint8)
+    comp_count, labels, stats, _ = cv2.connectedComponentsWithStats(comp_mask, connectivity=8)
+    if comp_count <= 1:
+        return 0.0
+
+    best_idx = 0
+    best_area = 0
+    for comp_idx in range(1, comp_count):
+        comp_area = int(stats[comp_idx, cv2.CC_STAT_AREA])
+        if comp_area > best_area:
+            best_area = comp_area
+            best_idx = comp_idx
+    if best_idx <= 0 or best_area < max(18, int(face_area * 0.008)):
+        return 0.0
+
+    largest_mask = (labels == best_idx).astype(np.uint8)
+    comp_x = int(stats[best_idx, cv2.CC_STAT_LEFT])
+    comp_y = int(stats[best_idx, cv2.CC_STAT_TOP])
+    comp_w = int(stats[best_idx, cv2.CC_STAT_WIDTH])
+    comp_h = int(stats[best_idx, cv2.CC_STAT_HEIGHT])
+    comp_y2 = comp_y + comp_h
+
+    forehead_band = np.zeros((H, W), dtype=np.uint8)
+    band_top = max(0, int(round(y1 - face_h * 0.02)))
+    band_bottom = min(H, int(round(y1 + face_h * 0.18)))
+    band_left = max(0, int(round(x1 - face_w * 0.34)))
+    band_right = min(W, int(round(x2 + face_w * 0.34)))
+    if band_top < band_bottom and band_left < band_right:
+        forehead_band[band_top:band_bottom, band_left:band_right] = 255
+    forehead_band_area = max(int((forehead_band > 0).sum()), 1)
+    forehead_coverage = float(
+        (cv2.bitwise_and(largest_mask * 255, forehead_band) > 0).sum()
+    ) / float(forehead_band_area)
+
+    edges = cv2.Canny(gray, 32, 96)
+    edge_density = float((edges[largest_mask > 0] > 0).mean()) if best_area > 0 else 1.0
+
+    area_score = float(np.clip((float(best_area) / face_area - 0.02) / 0.16, 0.0, 1.0))
+    width_score = float(np.clip((float(comp_w) / float(face_w) - 0.52) / 0.90, 0.0, 1.0))
+    height_score = float(np.clip((float(comp_h) / float(face_h) - 0.10) / 0.44, 0.0, 1.0))
+    bottom_alignment = float(
+        np.clip((float(comp_y2) - float(y1 - face_h * 0.24)) / max(float(face_h) * 0.42, 1.0), 0.0, 1.0)
+    )
+    smoothness_score = float(np.clip((0.18 - edge_density) / 0.18, 0.0, 1.0))
+
+    return float(
+        0.24 * area_score
+        + 0.22 * width_score
+        + 0.16 * height_score
+        + 0.18 * bottom_alignment
+        + 0.20 * max(forehead_coverage, smoothness_score)
+    )
+
+
+def _build_accessory_profile(
+    self,
+    img_rgb: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    *,
+    hair_mask: Optional[np.ndarray] = None,
+    face_mask: Optional[np.ndarray] = None,
+    glasses_mask: Optional[np.ndarray] = None,
+    earring_mask: Optional[np.ndarray] = None,
+    necklace_mask: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
+        return {
+            "glasses_ratio": 0.0,
+            "earring_ratio": 0.0,
+            "necklace_ratio": 0.0,
+            "headwear_score": 0.0,
+        }
+
+    H, W = img_rgb.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    face_area = float(max(face_w * face_h, 1))
+    regions = _build_accessory_region_masks(face_bbox, (H, W))
+
+    glasses_ratio = _estimate_mask_presence_ratio(
+        glasses_mask,
+        regions.get("glasses"),
+        face_area=face_area,
+        threshold=0.08,
+        dilate_ksize=5,
+    )
+    earring_ratio = _estimate_mask_presence_ratio(
+        earring_mask,
+        regions.get("earring"),
+        face_area=face_area,
+        threshold=0.08,
+        dilate_ksize=7,
+    )
+    necklace_ratio = _estimate_mask_presence_ratio(
+        necklace_mask,
+        regions.get("necklace"),
+        face_area=face_area,
+        threshold=0.08,
+        dilate_ksize=7,
+    )
+    headwear_score = _estimate_headwear_penalty(
+        self,
+        img_rgb,
+        face_bbox,
+        hair_mask=hair_mask,
+        face_mask=face_mask,
+    )
+    return {
+        "glasses_ratio": float(glasses_ratio),
+        "earring_ratio": float(earring_ratio),
+        "necklace_ratio": float(necklace_ratio),
+        "headwear_score": float(headwear_score),
+    }
+
+
+def _estimate_accessory_penalty_details(
+    self,
+    img_rgb: np.ndarray,
+    face_bbox: Tuple[int, int, int, int],
+    *,
+    source_accessory_profile: Optional[Dict[str, float]] = None,
+) -> Optional[Dict[str, Any]]:
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
+        return None
+
+    H, W = img_rgb.shape[:2]
+    hair_mask, face_mask, _ = self._segface_hair_mask(img_rgb, face_bbox)
+    segface_debug = self._last_segface_mask_debug or {}
+    glasses_mask = segface_debug.get("glasses_mask")
+    earring_mask = segface_debug.get("earring_mask")
+    necklace_mask = segface_debug.get("necklace_mask")
+    for accessory_mask in (glasses_mask, earring_mask, necklace_mask):
+        if accessory_mask is not None and (
+            not isinstance(accessory_mask, np.ndarray) or accessory_mask.shape != (H, W)
+        ):
+            return None
+
+    candidate_profile = _build_accessory_profile(
+        self,
+        img_rgb,
+        face_bbox,
+        hair_mask=hair_mask,
+        face_mask=face_mask,
+        glasses_mask=glasses_mask,
+        earring_mask=earring_mask,
+        necklace_mask=necklace_mask,
+    )
+    source_profile = source_accessory_profile if isinstance(source_accessory_profile, dict) else {}
+    source_glasses_ratio = float(source_profile.get("glasses_ratio", 0.0) or 0.0)
+    source_earring_ratio = float(source_profile.get("earring_ratio", 0.0) or 0.0)
+    source_necklace_ratio = float(source_profile.get("necklace_ratio", 0.0) or 0.0)
+    source_headwear_score = float(source_profile.get("headwear_score", 0.0) or 0.0)
+
+    headwear_penalty = _estimate_relative_accessory_penalty(
+        candidate_profile["headwear_score"],
+        source_headwear_score,
+        tolerance_abs=0.08,
+        tolerance_scale=1.30,
+        ramp=0.45,
+    )
+    glasses_penalty = _estimate_relative_accessory_penalty(
+        candidate_profile["glasses_ratio"],
+        source_glasses_ratio,
+        tolerance_abs=0.018,
+        tolerance_scale=1.55,
+        ramp=0.10,
+    )
+    earring_penalty = _estimate_relative_accessory_penalty(
+        candidate_profile["earring_ratio"],
+        source_earring_ratio,
+        tolerance_abs=0.008,
+        tolerance_scale=1.40,
+        ramp=0.06,
+    )
+    necklace_penalty = _estimate_relative_accessory_penalty(
+        candidate_profile["necklace_ratio"],
+        source_necklace_ratio,
+        tolerance_abs=0.012,
+        tolerance_scale=1.45,
+        ramp=0.09,
+    )
+    jewelry_penalty = float(np.clip(0.72 * earring_penalty + 0.28 * necklace_penalty, 0.0, 1.0))
+    total_penalty = float(
+        np.clip(
+            0.52 * headwear_penalty
+            + 0.30 * glasses_penalty
+            + 0.18 * jewelry_penalty,
+            0.0,
+            1.0,
+        )
+    )
+
+    exclude = bool(
+        headwear_penalty >= float(getattr(self.config, "accessory_exclusion_headwear_threshold", 0.34))
+        or glasses_penalty >= float(getattr(self.config, "accessory_exclusion_glasses_threshold", 0.26))
+        or jewelry_penalty >= float(getattr(self.config, "accessory_exclusion_jewelry_threshold", 0.28))
+        or total_penalty >= float(getattr(self.config, "accessory_exclusion_penalty_threshold", 0.58))
+    )
+    return {
+        "exclude": exclude,
+        "total_penalty": total_penalty,
+        "headwear_penalty": float(headwear_penalty),
+        "glasses_penalty": float(glasses_penalty),
+        "earring_penalty": float(earring_penalty),
+        "necklace_penalty": float(necklace_penalty),
+        "jewelry_penalty": float(jewelry_penalty),
+        "candidate_profile": candidate_profile,
+        "source_profile": {
+            "glasses_ratio": source_glasses_ratio,
+            "earring_ratio": source_earring_ratio,
+            "necklace_ratio": source_necklace_ratio,
+            "headwear_score": source_headwear_score,
+        },
+    }
 
 def _estimate_hair_shape_profile(
     self,
@@ -2023,6 +2355,8 @@ def bind_prompt_methods_to_pipeline(cls) -> None:
     cls._estimate_hair_color_distance = _estimate_hair_color_distance
     cls._estimate_short_tail_penalty = _estimate_short_tail_penalty
     cls._estimate_short_silhouette_penalty = _estimate_short_silhouette_penalty
+    cls._build_accessory_profile = _build_accessory_profile
+    cls._estimate_accessory_penalty_details = _estimate_accessory_penalty_details
     cls._estimate_accessory_penalty = _estimate_accessory_penalty
     cls._estimate_hair_shape_profile = _estimate_hair_shape_profile
     cls._estimate_male_medium_fit_penalty = _estimate_male_medium_fit_penalty
