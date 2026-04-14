@@ -150,6 +150,44 @@ def main() -> int:
         no_bangs_request["prompt_context"],
         no_bangs_request["subject_gender"],
     ) is False, no_bangs_request
+    neutral_structured_payload = {
+        "hairstyle_text": "short chic",
+        "preference_text": "short, chic, straight, brown, mid",
+        "survey_data": {
+            "target_length": "short",
+            "target_vibe": "chic",
+            "scalp_type": "straight",
+            "hair_colour": "brown",
+            "budget_range": "mid",
+            "survey_profile": {},
+        },
+    }
+    neutral_result = _build_from_payload(neutral_structured_payload)
+    assert neutral_result["meta"]["style_source"] == "structured_neutral", neutral_result
+    _assert_not_contains(neutral_result["positive"].lower(), "bob")
+    _assert_not_contains(neutral_result["positive"].lower(), "lob")
+    legacy_preference_gender_payload = {
+        "hairstyle_text": "short chic",
+        "preference_text": "short, chic, straight, brown, mid",
+        "preference": {
+            "length": "short",
+            "hair_type": "straight",
+            "budget": "medium",
+            "gender_branch": "male",
+        },
+        "survey_data": {
+            "target_length": "short",
+            "target_vibe": "chic",
+            "scalp_type": "straight",
+            "hair_colour": "brown",
+            "budget_range": "mid",
+            "survey_profile": {},
+        },
+    }
+    legacy_preference_gender_result = _build_from_payload(legacy_preference_gender_payload)
+    assert legacy_preference_gender_result["meta"]["resolved_gender_branch"] == "male", legacy_preference_gender_result
+    assert legacy_preference_gender_result["meta"]["style_source"] == "structured_male", legacy_preference_gender_result
+    _assert_not_contains(legacy_preference_gender_result["positive"].lower(), "bob")
     requested_front_mask = mask_builders_module._build_requested_front_coverage_mask(
         (512, 512),
         (156, 132, 356, 348),
@@ -175,6 +213,9 @@ def main() -> int:
                 },
                 "legacy_prompt": {
                     "positive": legacy_result["positive"],
+                },
+                "neutral_structured_prompt": {
+                    "positive": neutral_result["positive"],
                 },
             },
             ensure_ascii=False,
