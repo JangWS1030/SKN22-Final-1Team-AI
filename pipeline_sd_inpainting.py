@@ -765,10 +765,17 @@ class MirrAISDPipeline:
             normalized_prompt_context,
             subject_gender=subject_gender_mode,
         )
+        explicit_no_bangs_requested = self._resolve_requested_no_bangs_state(
+            effective_hairstyle_text,
+            normalized_prompt_context,
+            subject_gender=subject_gender_mode,
+        )
         short_no_bangs_target = bool(hair_length == "short" and not bangs_requested)
         logger.info(
-            "[SDPipeline] front coverage resolution: bangs_requested=%s short_no_bangs_target=%s style_axes=%s",
+            "[SDPipeline] front coverage resolution: bangs_requested=%s explicit_no_bangs_requested=%s "
+            "short_no_bangs_target=%s style_axes=%s",
             bangs_requested,
+            explicit_no_bangs_requested,
             short_no_bangs_target,
             normalized_prompt_context.get("style_axes", {}),
         )
@@ -808,6 +815,7 @@ class MirrAISDPipeline:
                 "torso_hair_ratio": float(source_cloth_preclean_analysis.get("torso_hair_ratio", 0.0)),
                 "cloth_overlap_ratio": float(source_cloth_preclean_analysis.get("cloth_overlap_ratio", 0.0)),
                 "bangs_requested": bool(bangs_requested),
+                "explicit_no_bangs_requested": bool(explicit_no_bangs_requested),
                 "short_no_bangs_target": bool(short_no_bangs_target),
             }
         source_garment_prepass_mask: Optional[np.ndarray] = None
@@ -927,7 +935,7 @@ class MirrAISDPipeline:
         )
         no_bangs_forehead_lama_preclean_seed_mask = np.zeros((H, W), dtype=np.float32)
         if (
-            short_no_bangs_target
+            (short_no_bangs_target or explicit_no_bangs_requested)
             and bool(getattr(self.config, "short_no_bangs_disable_bangs_recovery", True))
         ):
             no_bangs_forehead_lama_preclean_seed_mask = np.maximum(
@@ -957,6 +965,9 @@ class MirrAISDPipeline:
             debug_data_common.setdefault("source_cloth_preclean", {})
             debug_data_common["source_cloth_preclean"]["requested_front_coverage_px"] = int(
                 self._count_active_mask_px(requested_front_coverage_mask)
+            )
+            debug_data_common["source_cloth_preclean"]["explicit_no_bangs_requested"] = bool(
+                explicit_no_bangs_requested
             )
         logger.info(
             f"[SDPipeline] 얼굴 픽셀 제거 완료, gen_px={hair_mask.sum():.0f}, removal_px={hair_mask_for_removal.sum():.0f}"
@@ -3321,6 +3332,10 @@ class MirrAISDPipeline:
                 _store_rgb("cv2_background_conditioning_cleaned_rgb", img_rgb_cleaned)
 
             _store_rgb("cv2_background_cleaned_rgb", img_rgb_cleaned)
+            _store_mask(
+                "pipeline_no_bangs_forehead_lama_preclean_mask",
+                no_bangs_forehead_lama_preclean_mask,
+            )
             _store_mask("pipeline_short_generation_mask", gen_mask)
 
             composite_hair_mask = gen_mask.astype(np.float32)
@@ -3352,6 +3367,36 @@ class MirrAISDPipeline:
             hair_mask_for_sd_before_core = hair_mask_for_sd.copy()
             img_rgb_for_sd   = img_rgb
             img_rgb_cleaned  = img_rgb
+            if (
+                explicit_no_bangs_requested
+                and bool(getattr(self.config, "short_no_bangs_forehead_lama_preclean", True))
+                and no_bangs_forehead_lama_preclean_seed_mask.shape == (H, W)
+            ):
+                dilate_kernel = (9, 13) if hair_length == "medium" else (11, 15)
+                no_bangs_forehead_lama_preclean_u8 = cv2.dilate(
+                    self._mask_to_u8(
+                        no_bangs_forehead_lama_preclean_seed_mask,
+                        threshold=0.08,
+                    ),
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, dilate_kernel),
+                    iterations=1,
+                )
+                no_bangs_forehead_lama_preclean_mask = (
+                    no_bangs_forehead_lama_preclean_u8.astype(np.float32) / 255.0
+                )
+                no_bangs_forehead_lama_preclean_px = int((no_bangs_forehead_lama_preclean_u8 > 0).sum())
+                if no_bangs_forehead_lama_preclean_px >= 24:
+                    img_rgb_cleaned = self._lama_inpaint(
+                        img_rgb_cleaned,
+                        no_bangs_forehead_lama_preclean_u8,
+                    )
+                    img_rgb_for_sd = img_rgb_cleaned
+                    no_bangs_forehead_lama_preclean_applied = True
+                    logger.info(
+                        "[SDPipeline] %s no-bangs forehead LaMa preclean applied: pixels=%d",
+                        hair_length,
+                        no_bangs_forehead_lama_preclean_px,
+                    )
             if float(bangs_restore_for_sd.sum()) > 0.0:
                 long_soft_bangs_mask = self._build_soft_bangs_generation_mask(
                     bangs_restore_for_sd,
@@ -3385,6 +3430,14 @@ class MirrAISDPipeline:
         _store_mask("pipeline_sd_inpaint_mask_before_core", hair_mask_for_sd_before_core)
         _store_mask("sd_inpaint_mask", hair_mask_for_sd)
         _store_rgb("sd_input_rgb", img_rgb_for_sd)
+        if debug_data_common is not None:
+            debug_data_common.setdefault("source_cloth_preclean", {})
+            debug_data_common["source_cloth_preclean"]["no_bangs_forehead_lama_preclean_px"] = int(
+                no_bangs_forehead_lama_preclean_px
+            )
+            debug_data_common["source_cloth_preclean"]["no_bangs_forehead_lama_preclean_applied"] = bool(
+                no_bangs_forehead_lama_preclean_applied
+            )
         if debug_images_common is not None:
             _store_rgb(
                 "pipeline_source_with_overwrite_core_overlay",

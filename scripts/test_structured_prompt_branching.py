@@ -150,6 +150,47 @@ def main() -> int:
         no_bangs_request["prompt_context"],
         no_bangs_request["subject_gender"],
     ) is False, no_bangs_request
+    explicit_no_bangs_payload = {
+        "hairstyle_text": "long elegant",
+        "preference_text": "long, elegant, curly, black, high",
+        "survey_data": {
+            "target_length": "long",
+            "target_vibe": "elegant",
+            "scalp_type": "curly",
+            "hair_colour": "black",
+            "budget_range": "high",
+            "question_answers": {
+                "q1": "길게",
+                "q2": "볼륨감 있는 스타일",
+                "q3": "앞머리 없이",
+                "q4": "끝선 위주 자연스러운 컬",
+                "q5": "고급스러운",
+                "q6": "확실히 이미지 변신하고 싶음",
+            },
+            "survey_profile": {
+                "gender_branch": "female",
+                "style_axes": {
+                    "front_styling": "up",
+                    "parting": "side_part",
+                },
+            },
+        },
+    }
+    explicit_no_bangs_result = _build_from_payload(explicit_no_bangs_payload)
+    explicit_no_bangs_request = explicit_no_bangs_result["request"]
+    assert prompt_module._resolve_requested_no_bangs_state(
+        explicit_no_bangs_request["hairstyle_text"],
+        explicit_no_bangs_request["prompt_context"],
+        explicit_no_bangs_request["subject_gender"],
+    ) is True, explicit_no_bangs_request
+    assert prompt_module._resolve_requested_bangs_state(
+        explicit_no_bangs_request["hairstyle_text"],
+        explicit_no_bangs_request["prompt_context"],
+        explicit_no_bangs_request["subject_gender"],
+    ) is False, explicit_no_bangs_request
+    _assert_contains(explicit_no_bangs_result["positive"].lower(), "open forehead")
+    _assert_contains(explicit_no_bangs_result["positive"].lower(), "no bangs")
+    _assert_contains(explicit_no_bangs_result["negative"].lower(), "full bangs")
     neutral_structured_payload = {
         "hairstyle_text": "short chic",
         "preference_text": "short, chic, straight, brown, mid",
@@ -213,6 +254,10 @@ def main() -> int:
                 },
                 "legacy_prompt": {
                     "positive": legacy_result["positive"],
+                },
+                "explicit_no_bangs_prompt": {
+                    "positive": explicit_no_bangs_result["positive"],
+                    "negative": explicit_no_bangs_result["negative"],
                 },
                 "neutral_structured_prompt": {
                     "positive": neutral_result["positive"],

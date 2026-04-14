@@ -243,6 +243,13 @@ def _resolve_requested_bangs_state(
     prompt_context: Optional[Dict[str, Any]] = None,
     subject_gender: Optional[str] = None,
 ) -> bool:
+    if _resolve_requested_no_bangs_state(
+        hairstyle_text,
+        prompt_context,
+        subject_gender=subject_gender,
+    ):
+        return False
+
     lowered = " ".join(str(hairstyle_text or "").strip().lower().split())
     if any(token in lowered for token in ("bang", "bangs", "fringe", "앞머리", "시스루")):
         return True
@@ -286,6 +293,72 @@ def _resolve_requested_bangs_state(
         )
     ):
         return True
+
+    return False
+
+
+def _resolve_requested_no_bangs_state(
+    hairstyle_text: str,
+    prompt_context: Optional[Dict[str, Any]] = None,
+    subject_gender: Optional[str] = None,
+) -> bool:
+    no_bangs_tokens = (
+        "no bangs",
+        "without bangs",
+        "no fringe",
+        "without fringe",
+        "open forehead",
+        "exposed forehead",
+        "forehead exposed",
+        "앞머리 없이",
+        "앞머리 없음",
+        "앞머리 없는",
+        "앞머리 x",
+        "앞머리 없는 스타일",
+        "이마 보이",
+        "이마가 보이",
+        "이마를 드러",
+    )
+    lowered = " ".join(str(hairstyle_text or "").strip().lower().split())
+    if any(token in lowered for token in no_bangs_tokens):
+        return True
+
+    context = _normalize_prompt_context(prompt_context)
+    style_axes = context["style_axes"]
+    structured_text = _stringify_structured_request(
+        context,
+        include_legacy_fields=False,
+    ).lower()
+    normalized_gender = _normalize_subject_gender(subject_gender) or context.get("gender_branch", "")
+
+    front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
+    parting = _resolve_axis_value(style_axes, "parting", "part")
+
+    if front_styling in {
+        "lifted",
+        "up",
+        "up_style",
+        "updo",
+        "slick_back",
+        "back",
+        "open_forehead",
+        "forehead_open",
+    }:
+        return True
+
+    if any(token in structured_text for token in no_bangs_tokens):
+        return True
+
+    if (
+        normalized_gender != "male"
+        and front_styling in {"parted", "side_part", "middle_part", "center_part"}
+        and parting in {"parted", "side_part", "middle_part", "center_part"}
+        and any(
+            token in structured_text
+            for token in ("앞머리", "fringe", "bang")
+        )
+    ):
+        return False
 
     return False
 
@@ -419,9 +492,29 @@ def _build_female_structured_style_text(
     legacy_text: str,
 ) -> str:
     canonical = prompt_context["canonical_preferences"]
+    style_axes = prompt_context["style_axes"]
+    structured_text = _stringify_structured_request(
+        prompt_context,
+        include_legacy_fields=False,
+    )
+    combined_text = " ".join(
+        text for text in [structured_text, legacy_text] if text
+    ).lower()
     target_length = canonical.get("target_length")
     target_vibe = canonical.get("target_vibe")
     scalp_type = canonical.get("scalp_type")
+    front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
+    parting = _resolve_axis_value(style_axes, "parting", "part")
+    no_bangs_requested = _resolve_requested_no_bangs_state(
+        legacy_text,
+        prompt_context,
+        subject_gender="female",
+    )
+    bangs_requested = _resolve_requested_bangs_state(
+        legacy_text,
+        prompt_context,
+        subject_gender="female",
+    )
 
     seed_parts: List[str] = []
     if target_length == "bob":
@@ -448,6 +541,21 @@ def _build_female_structured_style_text(
         seed_parts.append("wavy")
     elif scalp_type == "straight":
         seed_parts.append("straight")
+
+    if no_bangs_requested or front_styling in {"lifted", "up", "up_style"}:
+        seed_parts.append("open forehead")
+        seed_parts.append("no bangs")
+    elif (
+        front_styling in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}
+        or bangs_requested
+        or any(token in combined_text for token in ("bang", "bangs", "fringe", "앞머리", "시스루"))
+    ):
+        seed_parts.append("soft see-through bangs")
+
+    if parting in {"side_part", "parted"}:
+        seed_parts.append("soft side part")
+    elif parting in {"middle_part", "center_part"}:
+        seed_parts.append("center part")
 
     synthetic_text = ", ".join(seed_parts)
     return _normalize_hairstyle_prompt_text(
@@ -1481,12 +1589,25 @@ def _build_prompt(
     gender_mode = explicit_branch or _infer_subject_gender(
         hairstyle_text, subject_gender
     )
+    explicit_no_bangs_requested = _resolve_requested_no_bangs_state(
+        hairstyle_text,
+        normalized_prompt_context,
+        subject_gender=gender_mode,
+    )
     subject_profile = _resolve_subject_pipeline_profile(gender_mode)
     male_fringe_positive_hint = ""
     male_fringe_negative_hint = ""
     if gender_mode == "male":
         male_fringe_positive_hint, male_fringe_negative_hint = _resolve_male_fringe_prompt_hints(
             hairstyle_text
+        )
+    no_bangs_positive_hint = ""
+    no_bangs_negative_hint = ""
+    if explicit_no_bangs_requested:
+        no_bangs_positive_hint = "open forehead, no bangs"
+        no_bangs_negative_hint = (
+            "full bangs, blunt bangs, heavy fringe, thick curtain bangs, forehead-covering front hair, "
+            "thick face-covering front panels, dense cheek-covering side fringe, "
         )
     structured_payload_used = bool(normalized_prompt_context.get("structured_payload_present"))
     neutral_safe_structured_short = (
@@ -1538,6 +1659,13 @@ def _build_prompt(
             hair_length,
             subject_gender=gender_mode,
         )
+    normalized_style_lower = normalized_style.lower()
+    if (
+        no_bangs_positive_hint
+        and "open forehead" in normalized_style_lower
+        and "no bangs" in normalized_style_lower
+    ):
+        no_bangs_positive_hint = ""
     if male_bob_blocking_enabled and not blocked_vocabulary:
         blocked_vocabulary = list(_MALE_BRANCH_BLOCKED_VOCAB)
     preserve_source_garment = True
@@ -1703,6 +1831,8 @@ def _build_prompt(
             positive_parts.append(color_pos_hint)
         if male_fringe_positive_hint:
             positive_parts.append(male_fringe_positive_hint)
+        if no_bangs_positive_hint:
+            positive_parts.append(no_bangs_positive_hint)
         positive_parts.extend([
             "clean neckline",
             "photorealistic, natural lighting, sharp focus",
@@ -1714,6 +1844,7 @@ def _build_prompt(
             + (", " if sd_neg else "")
             + male_fringe_negative_hint
             + color_neg_hint
+            + no_bangs_negative_hint
             + garment_negative_hint
             + negative_base
         )
@@ -1835,6 +1966,8 @@ def _build_prompt(
             positive_parts.append("strict short bob silhouette, hair mass ending above the neckline")
     if male_fringe_positive_hint:
         positive_parts.append(male_fringe_positive_hint)
+    if no_bangs_positive_hint:
+        positive_parts.append(no_bangs_positive_hint)
     if color_pos_hint:
         positive_parts.append(color_pos_hint)
     positive_parts.extend([
@@ -1857,6 +1990,7 @@ def _build_prompt(
         + male_block_negative
         + male_fringe_negative_hint
         + color_neg_hint
+        + no_bangs_negative_hint
         + garment_negative_hint
         + negative_base
     )
@@ -1879,6 +2013,7 @@ def bind_prompt_methods_to_pipeline(cls) -> None:
     cls._infer_subject_gender = staticmethod(_infer_subject_gender)
     cls._normalize_prompt_context = staticmethod(_normalize_prompt_context)
     cls._resolve_requested_hair_length = staticmethod(_resolve_requested_hair_length)
+    cls._resolve_requested_no_bangs_state = staticmethod(_resolve_requested_no_bangs_state)
     cls._resolve_requested_bangs_state = staticmethod(_resolve_requested_bangs_state)
     cls._resolve_subject_pipeline_profile = staticmethod(_resolve_subject_pipeline_profile)
     cls._normalize_male_short_hairstyle_prompt_text = staticmethod(_normalize_male_short_hairstyle_prompt_text)
