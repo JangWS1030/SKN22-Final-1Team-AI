@@ -10,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import handler_sd
+from pipeline_sd_components import mask_builders as mask_builders_module
 from pipeline_sd_components import prompt as prompt_module
 
 
@@ -82,6 +83,11 @@ def main() -> int:
     assert male_result["meta"]["resolved_gender_branch"] == "male", male_result
     assert male_result["meta"]["style_source"] == "structured_male", male_result
     assert male_result["request"]["structured_payload_used"] is True, male_result
+    assert prompt_module._resolve_requested_bangs_state(
+        male_result["request"]["hairstyle_text"],
+        male_result["request"]["prompt_context"],
+        male_result["request"]["subject_gender"],
+    ) is True, male_result
     normalized_male_style = str(male_result["meta"]["normalized_style"]).lower()
     positive_male = male_result["positive"].lower()
     negative_male = male_result["negative"].lower()
@@ -124,6 +130,75 @@ def main() -> int:
     assert legacy_result["meta"]["style_source"] == "legacy_text", legacy_result
     _assert_contains(legacy_result["positive"].lower(), "bob")
 
+    no_bangs_payload = {
+        "survey_data": {
+            "target_length": "short",
+            "target_vibe": "chic",
+            "scalp_type": "straight",
+            "survey_profile": {
+                "gender_branch": "male",
+                "style_axes": {
+                    "front_styling": "lifted",
+                    "parting": "parted",
+                },
+            },
+        },
+    }
+    no_bangs_request = handler_sd._extract_generation_request_context(no_bangs_payload)
+    assert prompt_module._resolve_requested_bangs_state(
+        no_bangs_request["hairstyle_text"],
+        no_bangs_request["prompt_context"],
+        no_bangs_request["subject_gender"],
+    ) is False, no_bangs_request
+    neutral_structured_payload = {
+        "hairstyle_text": "short chic",
+        "preference_text": "short, chic, straight, brown, mid",
+        "survey_data": {
+            "target_length": "short",
+            "target_vibe": "chic",
+            "scalp_type": "straight",
+            "hair_colour": "brown",
+            "budget_range": "mid",
+            "survey_profile": {},
+        },
+    }
+    neutral_result = _build_from_payload(neutral_structured_payload)
+    assert neutral_result["meta"]["style_source"] == "structured_neutral", neutral_result
+    _assert_not_contains(neutral_result["positive"].lower(), "bob")
+    _assert_not_contains(neutral_result["positive"].lower(), "lob")
+    legacy_preference_gender_payload = {
+        "hairstyle_text": "short chic",
+        "preference_text": "short, chic, straight, brown, mid",
+        "preference": {
+            "length": "short",
+            "hair_type": "straight",
+            "budget": "medium",
+            "gender_branch": "male",
+        },
+        "survey_data": {
+            "target_length": "short",
+            "target_vibe": "chic",
+            "scalp_type": "straight",
+            "hair_colour": "brown",
+            "budget_range": "mid",
+            "survey_profile": {},
+        },
+    }
+    legacy_preference_gender_result = _build_from_payload(legacy_preference_gender_payload)
+    assert legacy_preference_gender_result["meta"]["resolved_gender_branch"] == "male", legacy_preference_gender_result
+    assert legacy_preference_gender_result["meta"]["style_source"] == "structured_male", legacy_preference_gender_result
+    _assert_not_contains(legacy_preference_gender_result["positive"].lower(), "bob")
+    requested_front_mask = mask_builders_module._build_requested_front_coverage_mask(
+        (512, 512),
+        (156, 132, 356, 348),
+        male_result["request"]["prompt_context"],
+        hair_length="short",
+        subject_gender=male_result["request"]["subject_gender"] or "male",
+        fringe_requested=True,
+    )
+    if int((requested_front_mask > 0.05).sum()) <= 0:
+        raise AssertionError("Expected synthetic front coverage mask for structured male down/non-parted request")
+
     print(
         json.dumps(
             {
@@ -131,12 +206,16 @@ def main() -> int:
                     "positive": male_result["positive"],
                     "negative_has_block": "mini bob" in negative_male,
                     "normalized_style": male_result["meta"]["normalized_style"],
+                    "front_coverage_mask_px": int((requested_front_mask > 0.05).sum()),
                 },
                 "female_prompt": {
                     "positive": female_result["positive"],
                 },
                 "legacy_prompt": {
                     "positive": legacy_result["positive"],
+                },
+                "neutral_structured_prompt": {
+                    "positive": neutral_result["positive"],
                 },
             },
             ensure_ascii=False,

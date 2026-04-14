@@ -230,9 +230,31 @@ def _merge_legacy_style_text(*values: Any) -> str:
     return ", ".join(parts)
 
 
+def _stringify_legacy_preference(preference: Dict[str, Any]) -> str:
+    if not isinstance(preference, dict):
+        return ""
+    parts: list[str] = []
+    for key in ("length", "hair_type", "budget"):
+        text = _clean_text(preference.get(key))
+        if text:
+            parts.append(text)
+    mood_value = preference.get("mood")
+    if isinstance(mood_value, (list, tuple)):
+        for item in mood_value:
+            text = _clean_text(item)
+            if text:
+                parts.append(text)
+    else:
+        text = _clean_text(mood_value)
+        if text:
+            parts.append(text)
+    return _merge_legacy_style_text(*parts)
+
+
 def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
     survey_data = _coerce_dict(inp.get("survey_data"))
     survey_profile = _coerce_dict(survey_data.get("survey_profile"))
+    legacy_preference_dict = _coerce_dict(inp.get("preference"))
 
     canonical_preferences = {
         "target_length": _normalize_choice(survey_data.get("target_length"), _CANONICAL_TARGET_LENGTHS),
@@ -248,7 +270,9 @@ def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
 
     legacy_hairstyle_text = _clean_text(inp.get("hairstyle_text"))
     legacy_preference_text = _clean_text(inp.get("preference_text"))
-    legacy_preference = _clean_text(inp.get("preference"))
+    legacy_preference = _stringify_legacy_preference(legacy_preference_dict)
+    if not legacy_preference:
+        legacy_preference = _clean_text(inp.get("preference"))
     legacy_color_text = _clean_text(inp.get("color_text"))
     legacy_style_text = _merge_legacy_style_text(
         legacy_hairstyle_text,
@@ -265,7 +289,16 @@ def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
 
     legacy_subject_gender = _clean_text(inp.get("subject_gender", inp.get("gender", "")))
     normalized_legacy_gender = _normalize_gender_branch(legacy_subject_gender)
-    resolved_subject_gender = gender_branch or normalized_legacy_gender or legacy_subject_gender or None
+    legacy_preference_gender = _normalize_gender_branch(
+        legacy_preference_dict.get("gender_branch")
+    )
+    resolved_subject_gender = (
+        gender_branch
+        or normalized_legacy_gender
+        or legacy_preference_gender
+        or legacy_subject_gender
+        or None
+    )
     fallback_mode = bool(survey_data) and not bool(survey_profile)
     structured_payload_used = bool(
         survey_data
@@ -296,7 +329,7 @@ def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
         "subject_gender": resolved_subject_gender,
         "prompt_context": prompt_context,
         "resolved_canonical_preferences": canonical_preferences,
-        "resolved_gender_branch": gender_branch or normalized_legacy_gender,
+        "resolved_gender_branch": gender_branch or normalized_legacy_gender or legacy_preference_gender,
         "structured_payload_used": structured_payload_used,
         "fallback_mode": fallback_mode,
     }

@@ -1460,6 +1460,11 @@ def _composite(
                 1.0,
             )
         alpha = alpha * (1.0 - np.clip(protect_dilated, 0.0, 1.0))
+        if preserve_fringe_detail and protect_release_mask is not None:
+            alpha = np.maximum(
+                alpha,
+                np.clip(protect_release_mask.astype(np.float32), 0.0, 1.0) * 0.90,
+            )
 
     alpha = alpha[..., np.newaxis]   # H×W×1
 

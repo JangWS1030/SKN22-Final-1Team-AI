@@ -8702,6 +8702,233 @@ def _build_bangs_recovery_mask(
     return (keep_u8 > 0).astype(np.float32)
 
 
+def _normalize_front_mask_axis_key(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _flatten_front_mask_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return " ".join(value.strip().split())
+    if isinstance(value, dict):
+        return " ".join(
+            text
+            for text in (_flatten_front_mask_text(item) for item in value.values())
+            if text
+        ).strip()
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(
+            text
+            for text in (_flatten_front_mask_text(item) for item in value)
+            if text
+        ).strip()
+    return _flatten_front_mask_text(str(value))
+
+
+def _resolve_front_mask_axis_value(style_axes: Any, *keys: str) -> str:
+    if not isinstance(style_axes, dict):
+        return ""
+    normalized_axes = {
+        _normalize_front_mask_axis_key(key): value
+        for key, value in style_axes.items()
+        if _normalize_front_mask_axis_key(key)
+    }
+    for key in keys:
+        norm_key = _normalize_front_mask_axis_key(key)
+        if norm_key not in normalized_axes:
+            continue
+        value = normalized_axes.get(norm_key)
+        if isinstance(value, dict):
+            for candidate in ("value", "label", "name", "slug", "id"):
+                if candidate in value:
+                    normalized = _normalize_front_mask_axis_key(value.get(candidate))
+                    if normalized:
+                        return normalized
+            normalized = _normalize_front_mask_axis_key(_flatten_front_mask_text(value))
+            if normalized:
+                return normalized
+            continue
+        normalized = _normalize_front_mask_axis_key(_flatten_front_mask_text(value))
+        if normalized:
+            return normalized
+    return ""
+
+
+def _build_requested_front_coverage_mask(
+    image_shape: Tuple[int, int],
+    face_bbox: Tuple[int, int, int, int],
+    prompt_context: Optional[Dict[str, Any]] = None,
+    *,
+    hair_length: str = "short",
+    subject_gender: str = "unknown",
+    fringe_requested: bool = False,
+) -> np.ndarray:
+    H, W = image_shape
+    if H <= 0 or W <= 0:
+        return np.zeros((1, 1), dtype=np.float32)
+    if hair_length not in ("short", "medium") or not fringe_requested:
+        return np.zeros((H, W), dtype=np.float32)
+
+    context = prompt_context if isinstance(prompt_context, dict) else {}
+    style_axes = context.get("style_axes") if isinstance(context.get("style_axes"), dict) else {}
+    combined_text = " ".join(
+        text
+        for text in (
+            _flatten_front_mask_text(style_axes),
+            _flatten_front_mask_text(context.get("question_answers")),
+            _flatten_front_mask_text(context.get("derived_preferences")),
+            _flatten_front_mask_text(context.get("legacy_fields")),
+        )
+        if text
+    ).lower()
+
+    normalized_gender = _normalize_front_mask_axis_key(subject_gender)
+    if normalized_gender not in {"male", "female"}:
+        branch = _normalize_front_mask_axis_key(context.get("gender_branch"))
+        normalized_gender = branch if branch in {"male", "female"} else "unknown"
+
+    front_styling = _resolve_front_mask_axis_value(style_axes, "front_styling", "front_style", "front")
+    parting = _resolve_front_mask_axis_value(style_axes, "parting", "part")
+    non_parted = parting in {"non_parted", "nonparted", "no_part"}
+    parted = parting in {"parted", "side_part", "middle_part", "center_part"}
+    down_requested = front_styling in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}
+    if not down_requested:
+        down_requested = any(
+            token in combined_text
+            for token in (
+                "bang",
+                "bangs",
+                "fringe",
+                "앞머리",
+                "시스루",
+                "내리는 스타일",
+                "다운펌",
+                "down style",
+                "down perm",
+            )
+        )
+    if not (down_requested or non_parted or fringe_requested):
+        return np.zeros((H, W), dtype=np.float32)
+
+    curly_requested = any(
+        token in combined_text
+        for token in ("curly", "wavy", "wave", "컬", "웨이브", "텍스처", "texture")
+    )
+    full_front = bool(down_requested or non_parted)
+
+    x1, y1, x2, y2 = face_bbox
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    cx = int(0.5 * (x1 + x2))
+
+    coverage_u8 = np.zeros((H, W), dtype=np.uint8)
+    band_top = max(0, int(y1 - face_h * (0.12 if normalized_gender == "male" else 0.08)))
+    band_bottom = min(
+        H,
+        int(
+            y1
+            + face_h
+            * (
+                0.56 if normalized_gender == "male" and hair_length == "short" and full_front
+                else 0.50 if normalized_gender == "male" and full_front
+                else 0.46 if full_front
+                else 0.38
+            )
+        ),
+    )
+    half_w = max(
+        22,
+        int(
+            face_w
+            * (
+                0.70 if normalized_gender == "male" and full_front
+                else 0.62 if full_front
+                else 0.52
+            )
+        ),
+    )
+    band_x1 = max(0, cx - half_w)
+    band_x2 = min(W, cx + half_w)
+    if band_top >= band_bottom or band_x1 >= band_x2:
+        return np.zeros((H, W), dtype=np.float32)
+    coverage_u8[band_top:band_bottom, band_x1:band_x2] = 255
+
+    arc_center = (
+        cx,
+        max(0, min(H - 1, int(y1 + face_h * (0.16 if normalized_gender == "male" else 0.18)))),
+    )
+    arc_axes = (
+        max(
+            18,
+            int(
+                face_w
+                * (
+                    0.64 if normalized_gender == "male" and full_front
+                    else 0.56 if full_front
+                    else 0.46
+                )
+            ),
+        ),
+        max(
+            14,
+            int(
+                face_h
+                * (
+                    0.30 if normalized_gender == "male" and full_front
+                    else 0.26 if full_front
+                    else 0.22
+                )
+            ),
+        ),
+    )
+    cv2.ellipse(coverage_u8, arc_center, arc_axes, 0, 0, 360, 255, -1)
+
+    if normalized_gender == "male" and full_front:
+        block_top = max(0, int(y1 + face_h * 0.02))
+        block_bottom = min(H, int(y1 + face_h * (0.34 if hair_length == "short" else 0.30)))
+        if block_top < block_bottom:
+            coverage_u8[block_top:block_bottom, band_x1:band_x2] = 255
+
+    if parted and not non_parted:
+        keepout_half = max(8, int(face_w * (0.07 if normalized_gender == "male" else 0.08)))
+        keepout_top = max(band_top, int(y1 - face_h * 0.02))
+        keepout_bottom = min(band_bottom, int(y1 + face_h * 0.18))
+        if keepout_top < keepout_bottom:
+            coverage_u8[
+                keepout_top:keepout_bottom,
+                max(0, cx - keepout_half):min(W, cx + keepout_half),
+            ] = 0
+
+    coverage_u8 = cv2.morphologyEx(
+        coverage_u8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (9, 11) if normalized_gender == "male" and full_front else (7, 9),
+        ),
+    )
+    if curly_requested:
+        coverage_u8 = cv2.dilate(
+            coverage_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 9)),
+            iterations=1,
+        )
+
+    alpha = cv2.GaussianBlur(
+        coverage_u8.astype(np.float32) / 255.0,
+        (0, 0),
+        sigmaX=2.4 if normalized_gender == "male" and full_front else 2.1,
+        sigmaY=2.8 if normalized_gender == "male" and full_front else 2.4,
+    )
+    strength = (
+        0.98 if normalized_gender == "male" and hair_length == "short" and full_front
+        else 0.90 if normalized_gender == "male"
+        else 0.82
+    )
+    return np.clip(alpha * strength, 0.0, 1.0).astype(np.float32)
+
+
 def _build_soft_bangs_generation_mask(
     self,
     bangs_mask: np.ndarray,
@@ -9233,6 +9460,7 @@ def bind_mask_builder_methods_to_pipeline(cls) -> None:
     cls._trim_blocky_short_restore_mask_u8 = _trim_blocky_short_restore_mask_u8
     cls._build_sparse_dark_cloth_support_mask = _build_sparse_dark_cloth_support_mask
     cls._build_bangs_recovery_mask = _build_bangs_recovery_mask
+    cls._build_requested_front_coverage_mask = staticmethod(_build_requested_front_coverage_mask)
     cls._build_soft_bangs_generation_mask = _build_soft_bangs_generation_mask
     cls._build_eye_region_restore_mask = _build_eye_region_restore_mask
     cls._build_face_eye_band_restore_mask = _build_face_eye_band_restore_mask
