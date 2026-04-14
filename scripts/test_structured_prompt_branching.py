@@ -99,6 +99,8 @@ def main() -> int:
     _assert_contains(normalized_male_style, "non-parted front")
     _assert_contains(normalized_male_style, "curly texture")
     _assert_contains(negative_male, "mini bob")
+    _assert_contains(negative_male, "baseball cap")
+    _assert_contains(negative_male, "earbuds")
 
     female_payload = {
         "survey_data": {
@@ -191,6 +193,8 @@ def main() -> int:
     _assert_contains(explicit_no_bangs_result["positive"].lower(), "open forehead")
     _assert_contains(explicit_no_bangs_result["positive"].lower(), "no bangs")
     _assert_contains(explicit_no_bangs_result["negative"].lower(), "full bangs")
+    _assert_contains(explicit_no_bangs_result["negative"].lower(), "baseball cap")
+    _assert_contains(explicit_no_bangs_result["negative"].lower(), "earbuds")
     neutral_structured_payload = {
         "hairstyle_text": "short chic",
         "preference_text": "short, chic, straight, brown, mid",
