@@ -1292,6 +1292,130 @@ def _estimate_headwear_penalty(
     )
 
 
+def _estimate_headwear_brim_score(
+    self,
+    img_rgb: np.ndarray,
+    face_bbox: Tuple[int, int, int, int],
+    *,
+    glasses_mask: Optional[np.ndarray] = None,
+) -> float:
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
+        return 0.0
+
+    H, W = img_rgb.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    face_area = float(max(face_w * face_h, 1))
+
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    face_crop = gray[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+    face_gray_median = float(np.median(face_crop)) if face_crop.size > 0 else 150.0
+    dark_threshold = int(np.clip(face_gray_median - 24.0, 40.0, 146.0))
+
+    brim_band = np.zeros((H, W), dtype=np.uint8)
+    brim_top = max(0, int(round(y1 - face_h * 0.10)))
+    brim_bottom = min(H, int(round(y1 + face_h * 0.24)))
+    brim_left = max(0, int(round(x1 - face_w * 0.48)))
+    brim_right = min(W, int(round(x2 + face_w * 0.48)))
+    if brim_top >= brim_bottom or brim_left >= brim_right:
+        return 0.0
+    brim_band[brim_top:brim_bottom, brim_left:brim_right] = 255
+
+    center_band = np.zeros((H, W), dtype=np.uint8)
+    center_top = max(0, int(round(y1 - face_h * 0.04)))
+    center_bottom = min(H, int(round(y1 + face_h * 0.18)))
+    center_left = max(0, int(round(x1 - face_w * 0.34)))
+    center_right = min(W, int(round(x2 + face_w * 0.34)))
+    if center_top < center_bottom and center_left < center_right:
+        center_band[center_top:center_bottom, center_left:center_right] = 255
+
+    dark_mask = (gray < dark_threshold).astype(np.uint8) * 255
+    dark_mask = cv2.bitwise_and(dark_mask, brim_band)
+    if isinstance(glasses_mask, np.ndarray) and glasses_mask.shape == (H, W):
+        glasses_u8 = cv2.dilate(
+            (np.clip(glasses_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+            iterations=1,
+        )
+        dark_mask = cv2.bitwise_and(dark_mask, cv2.bitwise_not(glasses_u8))
+
+    dark_mask = cv2.morphologyEx(
+        dark_mask,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (17, 5)),
+        iterations=1,
+    )
+    dark_mask = cv2.morphologyEx(
+        dark_mask,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (7, 3)),
+        iterations=1,
+    )
+    if int((dark_mask > 0).sum()) < max(16, int(face_area * 0.006)):
+        return 0.0
+
+    comp_mask = (dark_mask > 0).astype(np.uint8)
+    comp_count, labels, stats, _ = cv2.connectedComponentsWithStats(comp_mask, connectivity=8)
+    if comp_count <= 1:
+        return 0.0
+
+    best_idx = 0
+    best_score = -1.0
+    center_band_area = max(int((center_band > 0).sum()), 1)
+    for comp_idx in range(1, comp_count):
+        comp_area = int(stats[comp_idx, cv2.CC_STAT_AREA])
+        if comp_area < max(16, int(face_area * 0.006)):
+            continue
+        comp_w = int(stats[comp_idx, cv2.CC_STAT_WIDTH])
+        comp_h = int(stats[comp_idx, cv2.CC_STAT_HEIGHT])
+        component_mask = (labels == comp_idx).astype(np.uint8) * 255
+        center_overlap = float((cv2.bitwise_and(component_mask, center_band) > 0).sum()) / float(center_band_area)
+        width_ratio = float(comp_w) / float(face_w)
+        height_ratio = float(comp_h) / float(face_h)
+        score = center_overlap * 1.8 + width_ratio - max(height_ratio - 0.28, 0.0) * 2.0
+        if score > best_score:
+            best_score = score
+            best_idx = comp_idx
+
+    if best_idx <= 0:
+        return 0.0
+
+    largest_mask = (labels == best_idx).astype(np.uint8)
+    best_area = int(stats[best_idx, cv2.CC_STAT_AREA])
+    comp_x = int(stats[best_idx, cv2.CC_STAT_LEFT])
+    comp_y = int(stats[best_idx, cv2.CC_STAT_TOP])
+    comp_w = int(stats[best_idx, cv2.CC_STAT_WIDTH])
+    comp_h = int(stats[best_idx, cv2.CC_STAT_HEIGHT])
+    center_overlap = float((cv2.bitwise_and(largest_mask * 255, center_band) > 0).sum()) / float(center_band_area)
+
+    edges = cv2.Canny(gray, 32, 96)
+    edge_density = float((edges[largest_mask > 0] > 0).mean()) if best_area > 0 else 1.0
+    comp_gray = gray[largest_mask > 0]
+    gray_std = float(np.std(comp_gray)) if comp_gray.size > 0 else 255.0
+
+    width_score = float(np.clip((float(comp_w) / float(face_w) - 0.62) / 0.42, 0.0, 1.0))
+    area_score = float(np.clip((float(best_area) / face_area - 0.018) / 0.09, 0.0, 1.0))
+    thinness_score = float(np.clip((0.30 - float(comp_h) / float(face_h)) / 0.16, 0.0, 1.0))
+    position_center = float(comp_y) + float(comp_h) * 0.5
+    target_center = float(y1) + float(face_h) * 0.08
+    position_score = float(
+        np.clip(1.0 - abs(position_center - target_center) / max(float(face_h) * 0.18, 1.0), 0.0, 1.0)
+    )
+    smoothness_score = float(np.clip((0.20 - edge_density) / 0.20, 0.0, 1.0))
+    uniformity_score = float(np.clip((24.0 - gray_std) / 24.0, 0.0, 1.0))
+
+    return float(
+        0.24 * width_score
+        + 0.20 * center_overlap
+        + 0.16 * area_score
+        + 0.14 * thinness_score
+        + 0.14 * position_score
+        + 0.06 * smoothness_score
+        + 0.06 * uniformity_score
+    )
+
+
 def _build_accessory_profile(
     self,
     img_rgb: Optional[np.ndarray],
@@ -1309,6 +1433,7 @@ def _build_accessory_profile(
             "earring_ratio": 0.0,
             "necklace_ratio": 0.0,
             "headwear_score": 0.0,
+            "headwear_brim_score": 0.0,
         }
 
     H, W = img_rgb.shape[:2]
@@ -1346,11 +1471,18 @@ def _build_accessory_profile(
         hair_mask=hair_mask,
         face_mask=face_mask,
     )
+    headwear_brim_score = _estimate_headwear_brim_score(
+        self,
+        img_rgb,
+        face_bbox,
+        glasses_mask=glasses_mask,
+    )
     return {
         "glasses_ratio": float(glasses_ratio),
         "earring_ratio": float(earring_ratio),
         "necklace_ratio": float(necklace_ratio),
         "headwear_score": float(headwear_score),
+        "headwear_brim_score": float(headwear_brim_score),
     }
 
 
@@ -1391,14 +1523,40 @@ def _estimate_accessory_penalty_details(
     source_earring_ratio = float(source_profile.get("earring_ratio", 0.0) or 0.0)
     source_necklace_ratio = float(source_profile.get("necklace_ratio", 0.0) or 0.0)
     source_headwear_score = float(source_profile.get("headwear_score", 0.0) or 0.0)
+    source_headwear_brim_score = float(source_profile.get("headwear_brim_score", 0.0) or 0.0)
 
-    headwear_penalty = _estimate_relative_accessory_penalty(
+    headwear_surface_penalty = _estimate_relative_accessory_penalty(
         candidate_profile["headwear_score"],
         source_headwear_score,
         tolerance_abs=0.08,
         tolerance_scale=1.30,
         ramp=0.45,
     )
+    headwear_brim_penalty = _estimate_relative_accessory_penalty(
+        candidate_profile["headwear_brim_score"],
+        source_headwear_brim_score,
+        tolerance_abs=0.10,
+        tolerance_scale=1.35,
+        ramp=0.40,
+    )
+    headwear_brim_penalty = float(
+        max(
+            headwear_brim_penalty,
+            np.clip(
+                (
+                    float(candidate_profile["headwear_brim_score"])
+                    - max(
+                        0.58,
+                        source_headwear_brim_score + 0.08,
+                        source_headwear_brim_score * 1.18,
+                    )
+                ) / 0.20,
+                0.0,
+                1.0,
+            ),
+        )
+    )
+    headwear_penalty = float(max(headwear_surface_penalty, headwear_brim_penalty))
     glasses_penalty = _estimate_relative_accessory_penalty(
         candidate_profile["glasses_ratio"],
         source_glasses_ratio,
@@ -1441,6 +1599,8 @@ def _estimate_accessory_penalty_details(
         "exclude": exclude,
         "total_penalty": total_penalty,
         "headwear_penalty": float(headwear_penalty),
+        "headwear_surface_penalty": float(headwear_surface_penalty),
+        "headwear_brim_penalty": float(headwear_brim_penalty),
         "glasses_penalty": float(glasses_penalty),
         "earring_penalty": float(earring_penalty),
         "necklace_penalty": float(necklace_penalty),
@@ -1451,6 +1611,7 @@ def _estimate_accessory_penalty_details(
             "earring_ratio": source_earring_ratio,
             "necklace_ratio": source_necklace_ratio,
             "headwear_score": source_headwear_score,
+            "headwear_brim_score": source_headwear_brim_score,
         },
     }
 

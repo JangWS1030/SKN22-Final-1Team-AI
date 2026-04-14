@@ -87,6 +87,29 @@ def _make_hat_image(shape: tuple[int, int, int], face_bbox: tuple[int, int, int,
     return image
 
 
+def _make_brim_only_image(shape: tuple[int, int, int], face_bbox: tuple[int, int, int, int]) -> np.ndarray:
+    image = _make_base_image(shape, face_bbox)
+    x1, y1, x2, _ = face_bbox
+    cv2.ellipse(
+        image,
+        center=((x1 + x2) // 2, y1 + 6),
+        axes=(54, 18),
+        angle=0,
+        startAngle=180,
+        endAngle=360,
+        color=(22, 22, 22),
+        thickness=-1,
+    )
+    cv2.rectangle(
+        image,
+        (x1 - 8, y1 - 6),
+        (x2 + 8, y1 + 10),
+        color=(24, 24, 24),
+        thickness=-1,
+    )
+    return image
+
+
 class _StubPipeline:
     def __init__(self) -> None:
         self.config = SDInpaintConfig()
@@ -127,18 +150,20 @@ def main() -> int:
 
     hat_candidate = _paint_mask(_make_hat_image(rgb_shape, face_bbox), hair_mask, (28, 28, 28))
     hat_candidate = _paint_mask(hat_candidate, glasses_mask, (36, 36, 36))
+    brim_candidate = _paint_mask(_make_brim_only_image(rgb_shape, face_bbox), hair_mask, (28, 28, 28))
+    brim_candidate = _paint_mask(brim_candidate, glasses_mask, (36, 36, 36))
     glasses_candidate = _paint_mask(_make_base_image(rgb_shape, face_bbox), hair_mask, (28, 28, 28))
     glasses_candidate = _paint_mask(glasses_candidate, glasses_mask, (36, 36, 36))
 
     pipeline = _StubPipeline()
 
-    source_profile_plain = prompt_module._build_accessory_profile(
+    source_profile_glasses = prompt_module._build_accessory_profile(
         pipeline,
-        plain_source,
+        glasses_source,
         face_bbox,
         hair_mask=hair_mask,
         face_mask=face_mask,
-        glasses_mask=no_glasses,
+        glasses_mask=glasses_mask,
         earring_mask=jewelry,
         necklace_mask=jewelry,
     )
@@ -155,23 +180,26 @@ def main() -> int:
         pipeline,
         hat_candidate,
         face_bbox,
-        source_accessory_profile=source_profile_plain,
+        source_accessory_profile=source_profile_glasses,
     )
     assert hat_details is not None
     assert hat_details["headwear_penalty"] >= 0.34, hat_details
-    assert hat_details["glasses_penalty"] >= 0.26, hat_details
+    assert hat_details["headwear_brim_penalty"] >= 0.34, hat_details
+    assert hat_details["glasses_penalty"] < 0.10, hat_details
     assert hat_details["exclude"] is True, hat_details
 
-    source_profile_glasses = prompt_module._build_accessory_profile(
+    brim_details = prompt_module._estimate_accessory_penalty_details(
         pipeline,
-        glasses_source,
+        brim_candidate,
         face_bbox,
-        hair_mask=hair_mask,
-        face_mask=face_mask,
-        glasses_mask=glasses_mask,
-        earring_mask=jewelry,
-        necklace_mask=jewelry,
+        source_accessory_profile=source_profile_glasses,
     )
+    assert brim_details is not None
+    assert brim_details["headwear_brim_penalty"] >= 0.34, brim_details
+    assert brim_details["headwear_penalty"] >= 0.34, brim_details
+    assert brim_details["glasses_penalty"] < 0.10, brim_details
+    assert brim_details["exclude"] is True, brim_details
+
     pipeline.set_scenario(
         {
             "hair_mask": hair_mask,
@@ -198,12 +226,21 @@ def main() -> int:
                 "hat_candidate": {
                     "exclude": bool(hat_details["exclude"]),
                     "headwear_penalty": round(float(hat_details["headwear_penalty"]), 4),
+                    "headwear_brim_penalty": round(float(hat_details["headwear_brim_penalty"]), 4),
                     "glasses_penalty": round(float(hat_details["glasses_penalty"]), 4),
                     "total_penalty": round(float(hat_details["total_penalty"]), 4),
+                },
+                "brim_candidate": {
+                    "exclude": bool(brim_details["exclude"]),
+                    "headwear_penalty": round(float(brim_details["headwear_penalty"]), 4),
+                    "headwear_brim_penalty": round(float(brim_details["headwear_brim_penalty"]), 4),
+                    "glasses_penalty": round(float(brim_details["glasses_penalty"]), 4),
+                    "total_penalty": round(float(brim_details["total_penalty"]), 4),
                 },
                 "glasses_candidate": {
                     "exclude": bool(glasses_details["exclude"]),
                     "headwear_penalty": round(float(glasses_details["headwear_penalty"]), 4),
+                    "headwear_brim_penalty": round(float(glasses_details["headwear_brim_penalty"]), 4),
                     "glasses_penalty": round(float(glasses_details["glasses_penalty"]), 4),
                     "total_penalty": round(float(glasses_details["total_penalty"]), 4),
                 },

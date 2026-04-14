@@ -4277,6 +4277,8 @@ class MirrAISDPipeline:
                             "exclude": bool(c["accessory_details"].get("exclude", False)),
                             "total_penalty": float(c["accessory_details"].get("total_penalty", 0.0)),
                             "headwear_penalty": float(c["accessory_details"].get("headwear_penalty", 0.0)),
+                            "headwear_surface_penalty": float(c["accessory_details"].get("headwear_surface_penalty", 0.0)),
+                            "headwear_brim_penalty": float(c["accessory_details"].get("headwear_brim_penalty", 0.0)),
                             "glasses_penalty": float(c["accessory_details"].get("glasses_penalty", 0.0)),
                             "jewelry_penalty": float(c["accessory_details"].get("jewelry_penalty", 0.0)),
                             "candidate_profile": {
