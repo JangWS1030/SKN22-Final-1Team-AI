@@ -911,6 +911,20 @@ class MirrAISDPipeline:
             landmark_debug_data=landmark_debug_data,
             hair_length=hair_length,
         )
+        requested_front_coverage_mask = self._build_requested_front_coverage_mask(
+            (H, W),
+            face_bbox,
+            normalized_prompt_context,
+            hair_length=hair_length,
+            subject_gender=subject_gender_mode,
+            fringe_requested=bangs_requested,
+        )
+        logger.info(
+            "[SDPipeline] requested front coverage mask: px=%s bangs_requested=%s style_axes=%s",
+            self._count_active_mask_px(requested_front_coverage_mask),
+            bangs_requested,
+            normalized_prompt_context.get("style_axes", {}),
+        )
         no_bangs_forehead_lama_preclean_seed_mask = np.zeros((H, W), dtype=np.float32)
         if (
             short_no_bangs_target
@@ -922,6 +936,12 @@ class MirrAISDPipeline:
             ).astype(np.float32)
             bangs_restore_for_removal = np.zeros((H, W), dtype=np.float32)
             bangs_restore_for_sd = np.zeros((H, W), dtype=np.float32)
+            requested_front_coverage_mask = np.zeros((H, W), dtype=np.float32)
+        elif float(requested_front_coverage_mask.sum()) > 0.0:
+            bangs_restore_for_sd = np.maximum(
+                np.clip(bangs_restore_for_sd.astype(np.float32), 0.0, 1.0),
+                np.clip(requested_front_coverage_mask.astype(np.float32), 0.0, 1.0),
+            ).astype(np.float32)
         if float(bangs_restore_for_removal.sum()) > 0.0:
             hair_mask_for_removal = np.maximum(hair_mask_for_removal, bangs_restore_for_removal).astype(np.float32)
         if float(bangs_restore_for_sd.sum()) > 0.0:
@@ -931,7 +951,13 @@ class MirrAISDPipeline:
         _store_mask("pipeline_no_bangs_forehead_lama_preclean_seed_mask", no_bangs_forehead_lama_preclean_seed_mask)
         _store_mask("pipeline_bangs_recovery_mask_removal", bangs_restore_for_removal)
         _store_mask("pipeline_bangs_recovery_mask_generation", bangs_restore_for_sd)
+        _store_mask("pipeline_requested_front_coverage_mask", requested_front_coverage_mask)
         _store_mask("pipeline_hair_mask_face_protected", hair_mask_for_removal)
+        if debug_data_common is not None:
+            debug_data_common.setdefault("source_cloth_preclean", {})
+            debug_data_common["source_cloth_preclean"]["requested_front_coverage_px"] = int(
+                self._count_active_mask_px(requested_front_coverage_mask)
+            )
         logger.info(
             f"[SDPipeline] 얼굴 픽셀 제거 완료, gen_px={hair_mask.sum():.0f}, removal_px={hair_mask_for_removal.sum():.0f}"
         )

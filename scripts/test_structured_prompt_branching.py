@@ -10,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import handler_sd
+from pipeline_sd_components import mask_builders as mask_builders_module
 from pipeline_sd_components import prompt as prompt_module
 
 
@@ -149,6 +150,16 @@ def main() -> int:
         no_bangs_request["prompt_context"],
         no_bangs_request["subject_gender"],
     ) is False, no_bangs_request
+    requested_front_mask = mask_builders_module._build_requested_front_coverage_mask(
+        (512, 512),
+        (156, 132, 356, 348),
+        male_result["request"]["prompt_context"],
+        hair_length="short",
+        subject_gender=male_result["request"]["subject_gender"] or "male",
+        fringe_requested=True,
+    )
+    if int((requested_front_mask > 0.05).sum()) <= 0:
+        raise AssertionError("Expected synthetic front coverage mask for structured male down/non-parted request")
 
     print(
         json.dumps(
@@ -157,6 +168,7 @@ def main() -> int:
                     "positive": male_result["positive"],
                     "negative_has_block": "mini bob" in negative_male,
                     "normalized_style": male_result["meta"]["normalized_style"],
+                    "front_coverage_mask_px": int((requested_front_mask > 0.05).sum()),
                 },
                 "female_prompt": {
                     "positive": female_result["positive"],
