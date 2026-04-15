@@ -4315,7 +4315,7 @@ class MirrAISDPipeline:
         if selected_candidates:
             selected_candidates = selected_candidates[:requested_top_k]
         elif candidates:
-            selected_candidates = candidates[:1]
+            selected_candidates = candidates[:requested_top_k]
             logger.warning(
                 "[SDPipeline] all candidates were accessory-filtered; falling back to the least-penalized candidate"
             )
