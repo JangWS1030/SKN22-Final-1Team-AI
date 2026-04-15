@@ -1057,6 +1057,16 @@ def _resolve_male_fringe_prompt_hints(hairstyle_text: str) -> Tuple[str, str]:
     if not any(token in lowered for token in ("bang", "bangs", "fringe", "앞머리")):
         return "", ""
 
+    # "no bangs" / "no fringe" 등 부정 표현이면 fringe 힌트 일체 적용 안 함
+    _bang_negated = (
+        "no bang" in lowered or "no fringe" in lowered
+        or "without bang" in lowered or "without fringe" in lowered
+        or "open forehead" in lowered or "lifted front" in lowered
+        or "앞머리 없" in lowered
+    )
+    if _bang_negated:
+        return "", ""
+
     full_fringe_requested = any(
         token in lowered
         for token in (
