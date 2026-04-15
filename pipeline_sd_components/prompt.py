@@ -88,6 +88,75 @@ _MALE_BRANCH_NEGATIVE_TERMS = (
     "curved inward bob ends",
 )
 
+_DOWN_FRONT_TEXT_TOKENS = (
+    "bang",
+    "bangs",
+    "fringe",
+    "앞머리",
+    "시스루",
+    "내리는 스타일",
+    "다운펌",
+    "down style",
+    "down perm",
+    "front=down",
+    "front_styling=down",
+    "front_style=down",
+)
+_LIFTED_FRONT_TEXT_TOKENS = (
+    "front=flexible",
+    "front_styling=flexible",
+    "front_style=flexible",
+    "front=up",
+    "front_styling=up",
+    "front_style=up",
+    "front=lifted",
+    "front_styling=lifted",
+    "front_style=lifted",
+    "앞머리 올림",
+    "앞머리 올려",
+    "올린 앞머리",
+    "앞머리 업",
+    "이마 보이게",
+    "이마를 보이게",
+    "이마를 드러내",
+    "이마를 드러낸",
+    "open forehead",
+    "exposed forehead",
+    "forehead exposed",
+    "lifted front",
+    "up style",
+    "front up",
+    "slicked back",
+    "slick back",
+    "swept back",
+    "swept-back",
+    "regent",
+)
+_NON_PARTED_TEXT_TOKENS = (
+    "비가르마",
+    "non_parted",
+    "non-parted",
+    "no_part",
+)
+_SIDE_PART_TEXT_TOKENS = (
+    "parting=either",
+    "part=either",
+    "parting=flexible",
+    "part=flexible",
+    "either part",
+    "either-part",
+    "가르마 상관없",
+    "가르마 자유",
+    "side part",
+    "side-part",
+)
+_CENTER_PART_TEXT_TOKENS = (
+    "middle part",
+    "middle-part",
+    "center part",
+    "center-part",
+)
+
 
 def _normalize_choice(value: Any, allowed: frozenset[str]) -> str:
     lowered = str(value or "").strip().lower()
@@ -96,6 +165,75 @@ def _normalize_choice(value: Any, allowed: frozenset[str]) -> str:
 
 def _normalize_axis_key(key: Any) -> str:
     return str(key or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _normalize_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _infer_front_styling_from_text(text: Any) -> str:
+    lowered = _normalize_text(text)
+    if not lowered:
+        return ""
+    if any(token in lowered for token in _LIFTED_FRONT_TEXT_TOKENS):
+        return "lifted"
+    if any(token in lowered for token in _DOWN_FRONT_TEXT_TOKENS):
+        return "down"
+    return ""
+
+
+def _infer_parting_from_text(text: Any) -> str:
+    lowered = _normalize_text(text)
+    if not lowered:
+        return ""
+    if any(token in lowered for token in _NON_PARTED_TEXT_TOKENS):
+        return "non_parted"
+    if any(token in lowered for token in _CENTER_PART_TEXT_TOKENS):
+        return "center_part"
+    if any(token in lowered for token in _SIDE_PART_TEXT_TOKENS):
+        return "side_part"
+    return ""
+
+
+def _canonicalize_axis_value(axis_key: str, value: Any) -> str:
+    norm_key = _normalize_axis_key(axis_key)
+    normalized = _normalize_axis_key(value)
+    lowered = _normalize_text(value)
+
+    if norm_key in {"front_styling", "front_style", "front"}:
+        if normalized in {
+            "lifted",
+            "up",
+            "up_style",
+            "updo",
+            "slick_back",
+            "slicked_back",
+            "back",
+            "open_forehead",
+            "forehead_open",
+            "flexible",
+        }:
+            return "lifted"
+        if normalized in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}:
+            return normalized
+        inferred = _infer_front_styling_from_text(lowered)
+        if inferred:
+            return inferred
+
+    if norm_key in {"parting", "part"}:
+        if normalized in {"non_parted", "nonparted", "no_part"}:
+            return "non_parted"
+        if normalized in {"side_part", "sidepart", "parted"}:
+            return "side_part"
+        if normalized in {"middle_part", "middlepart", "center_part", "centerpart"}:
+            return "center_part"
+        if normalized in {"either", "flexible", "any"}:
+            return "side_part"
+        inferred = _infer_parting_from_text(lowered)
+        if inferred:
+            return inferred
+
+    return normalized
 
 
 def _normalize_style_axes(style_axes: Any) -> Dict[str, Any]:
@@ -225,14 +363,14 @@ def _resolve_axis_value(style_axes: Dict[str, Any], *keys: str) -> str:
         if isinstance(value, dict):
             for candidate in ("value", "label", "name", "slug", "id"):
                 if candidate in value:
-                    normalized = _normalize_axis_key(value.get(candidate))
+                    normalized = _canonicalize_axis_value(norm_key, value.get(candidate))
                     if normalized:
                         return normalized
-            flattened = _normalize_axis_key(_flatten_text(value))
+            flattened = _canonicalize_axis_value(norm_key, _flatten_text(value))
             if flattened:
                 return flattened
             continue
-        normalized = _normalize_axis_key(_flatten_text(value))
+        normalized = _canonicalize_axis_value(norm_key, _flatten_text(value))
         if normalized:
             return normalized
     return ""
@@ -250,7 +388,7 @@ def _resolve_requested_bangs_state(
     ):
         return False
 
-    lowered = " ".join(str(hairstyle_text or "").strip().lower().split())
+    lowered = _normalize_text(hairstyle_text)
     if any(token in lowered for token in ("bang", "bangs", "fringe", "앞머리", "시스루")):
         return True
 
@@ -258,30 +396,22 @@ def _resolve_requested_bangs_state(
     style_axes = context["style_axes"]
     structured_text = _stringify_structured_request(
         context,
-        include_legacy_fields=False,
+        include_legacy_fields=True,
     ).lower()
     normalized_gender = _normalize_subject_gender(subject_gender) or context.get("gender_branch", "")
 
     front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
     parting = _resolve_axis_value(style_axes, "parting", "part")
 
+    if not front_styling:
+        front_styling = _infer_front_styling_from_text(f"{lowered} {structured_text}")
+    if not parting:
+        parting = _infer_parting_from_text(structured_text)
+
     if front_styling in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}:
         return True
 
-    if any(
-        token in structured_text
-        for token in (
-            "bang",
-            "bangs",
-            "fringe",
-            "앞머리",
-            "시스루",
-            "내리는 스타일",
-            "다운펌",
-            "down style",
-            "down perm",
-        )
-    ):
+    if _infer_front_styling_from_text(structured_text) == "down":
         return True
 
     if (
@@ -319,20 +449,26 @@ def _resolve_requested_no_bangs_state(
         "이마가 보이",
         "이마를 드러",
     )
-    lowered = " ".join(str(hairstyle_text or "").strip().lower().split())
+    lowered = _normalize_text(hairstyle_text)
     if any(token in lowered for token in no_bangs_tokens):
+        return True
+    if _infer_front_styling_from_text(lowered) == "lifted":
         return True
 
     context = _normalize_prompt_context(prompt_context)
     style_axes = context["style_axes"]
     structured_text = _stringify_structured_request(
         context,
-        include_legacy_fields=False,
+        include_legacy_fields=True,
     ).lower()
     normalized_gender = _normalize_subject_gender(subject_gender) or context.get("gender_branch", "")
 
     front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
     parting = _resolve_axis_value(style_axes, "parting", "part")
+    if not front_styling:
+        front_styling = _infer_front_styling_from_text(f"{lowered} {structured_text}")
+    if not parting:
+        parting = _infer_parting_from_text(structured_text)
 
     if front_styling in {
         "lifted",
@@ -413,10 +549,10 @@ def _build_male_structured_style_text(
 
     if not two_block and "투블럭" in combined_text:
         two_block = "soft" if "soft" in combined_text or "부드" in combined_text else "natural"
-    if not front_styling and ("내리는 스타일" in combined_text or "down" in combined_text):
-        front_styling = "down"
-    if not parting and ("비가르마" in combined_text or "non_parted" in combined_text or "non-parted" in combined_text):
-        parting = "non_parted"
+    if not front_styling:
+        front_styling = _infer_front_styling_from_text(combined_text)
+    if not parting:
+        parting = _infer_parting_from_text(combined_text)
 
     explicit_bob_request = _male_explicit_female_coded_request(
         legacy_text,
@@ -449,6 +585,8 @@ def _build_male_structured_style_text(
         parts.append("down style")
     elif front_styling in {"lifted", "up", "up_style"}:
         parts.append("soft lifted front")
+        parts.append("open forehead")
+        parts.append("no bangs")
     elif front_styling:
         parts.append("natural front styling")
 
@@ -505,6 +643,10 @@ def _build_female_structured_style_text(
     scalp_type = canonical.get("scalp_type")
     front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
     parting = _resolve_axis_value(style_axes, "parting", "part")
+    if not front_styling:
+        front_styling = _infer_front_styling_from_text(combined_text)
+    if not parting:
+        parting = _infer_parting_from_text(combined_text)
     no_bangs_requested = _resolve_requested_no_bangs_state(
         legacy_text,
         prompt_context,
@@ -584,6 +726,10 @@ def _build_neutral_structured_style_text(
     scalp_type = canonical.get("scalp_type")
     front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
     parting = _resolve_axis_value(style_axes, "parting", "part")
+    if not front_styling:
+        front_styling = _infer_front_styling_from_text(combined_text)
+    if not parting:
+        parting = _infer_parting_from_text(combined_text)
 
     parts: List[str] = []
     if target_length in {"short", "bob"} or hair_length == "short":

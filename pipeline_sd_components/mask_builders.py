@@ -8706,6 +8706,56 @@ def _normalize_front_mask_axis_key(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
+def _canonicalize_front_mask_axis_value(axis_key: str, value: Any) -> str:
+    norm_key = _normalize_front_mask_axis_key(axis_key)
+    normalized = _normalize_front_mask_axis_key(value)
+    lowered = _flatten_front_mask_text(value).lower()
+
+    if norm_key in {"front_styling", "front_style", "front"}:
+        if normalized in {
+            "lifted",
+            "up",
+            "up_style",
+            "updo",
+            "slick_back",
+            "slicked_back",
+            "back",
+            "open_forehead",
+            "forehead_open",
+            "flexible",
+        }:
+            return "lifted"
+        if normalized in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}:
+            return normalized
+        if any(
+            token in lowered
+            for token in (
+                "front=flexible",
+                "front_styling=flexible",
+                "front_style=flexible",
+                "front=up",
+                "front_styling=up",
+                "front_style=up",
+                "앞머리 올림",
+                "앞머리 올려",
+                "올린 앞머리",
+                "이마 보이게",
+                "open forehead",
+                "exposed forehead",
+                "lifted front",
+            )
+        ):
+            return "lifted"
+    if norm_key in {"parting", "part"}:
+        if normalized in {"non_parted", "nonparted", "no_part"}:
+            return "non_parted"
+        if normalized in {"side_part", "sidepart", "parted", "either", "flexible", "any"}:
+            return "side_part"
+        if normalized in {"middle_part", "middlepart", "center_part", "centerpart"}:
+            return "center_part"
+    return normalized
+
+
 def _flatten_front_mask_text(value: Any) -> str:
     if value is None:
         return ""
@@ -8742,14 +8792,14 @@ def _resolve_front_mask_axis_value(style_axes: Any, *keys: str) -> str:
         if isinstance(value, dict):
             for candidate in ("value", "label", "name", "slug", "id"):
                 if candidate in value:
-                    normalized = _normalize_front_mask_axis_key(value.get(candidate))
+                    normalized = _canonicalize_front_mask_axis_value(norm_key, value.get(candidate))
                     if normalized:
                         return normalized
-            normalized = _normalize_front_mask_axis_key(_flatten_front_mask_text(value))
+            normalized = _canonicalize_front_mask_axis_value(norm_key, _flatten_front_mask_text(value))
             if normalized:
                 return normalized
             continue
-        normalized = _normalize_front_mask_axis_key(_flatten_front_mask_text(value))
+        normalized = _canonicalize_front_mask_axis_value(norm_key, _flatten_front_mask_text(value))
         if normalized:
             return normalized
     return ""

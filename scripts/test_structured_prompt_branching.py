@@ -233,6 +233,35 @@ def main() -> int:
     assert legacy_preference_gender_result["meta"]["resolved_gender_branch"] == "male", legacy_preference_gender_result
     assert legacy_preference_gender_result["meta"]["style_source"] == "structured_male", legacy_preference_gender_result
     _assert_not_contains(legacy_preference_gender_result["positive"].lower(), "bob")
+    legacy_alias_payload = {
+        "preference_text": (
+            "gender=male, length=short, mood=chic, texture=straight, "
+            "color=ash, budget=mid, front=flexible, parting=either"
+        ),
+        "survey_data": {
+            "target_length": "short",
+            "target_vibe": "chic",
+            "scalp_type": "straight",
+            "hair_colour": "ash",
+            "budget_range": "mid",
+            "survey_profile": {
+                "gender_branch": "male",
+            },
+        },
+    }
+    legacy_alias_result = _build_from_payload(legacy_alias_payload)
+    legacy_alias_positive = legacy_alias_result["positive"].lower()
+    legacy_alias_style = str(legacy_alias_result["meta"]["normalized_style"]).lower()
+    assert legacy_alias_result["meta"]["style_source"] == "structured_male", legacy_alias_result
+    assert prompt_module._resolve_requested_no_bangs_state(
+        legacy_alias_result["request"]["hairstyle_text"],
+        legacy_alias_result["request"]["prompt_context"],
+        legacy_alias_result["request"]["subject_gender"],
+    ) is True, legacy_alias_result
+    _assert_contains(legacy_alias_style, "soft lifted front")
+    _assert_contains(legacy_alias_style, "parted front")
+    _assert_contains(legacy_alias_positive, "open forehead")
+    _assert_contains(legacy_alias_positive, "no bangs")
     requested_front_mask = mask_builders_module._build_requested_front_coverage_mask(
         (512, 512),
         (156, 132, 356, 348),
@@ -265,6 +294,10 @@ def main() -> int:
                 },
                 "neutral_structured_prompt": {
                     "positive": neutral_result["positive"],
+                },
+                "legacy_alias_prompt": {
+                    "positive": legacy_alias_result["positive"],
+                    "normalized_style": legacy_alias_result["meta"]["normalized_style"],
                 },
             },
             ensure_ascii=False,
