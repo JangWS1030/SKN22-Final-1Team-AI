@@ -105,10 +105,14 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_ENDPOINT_ID: ${{ secrets.RUNPOD_ENDPOINT_ID }}
         run: |
+          # job output이 시크릿 필터에 걸려 비는 경우 env 폴백 사용
           IMAGE="${{ needs.resolve.outputs.image }}"
+          if [ -z "${IMAGE}" ]; then
+            IMAGE="${DOCKER_IMAGE_DEFAULT}"
+          fi
           MODE="${{ needs.resolve.outputs.deploy_mode }}"
 
-          echo "[deploy] image=${IMAGE}  mode=${MODE}"
+          echo "[deploy] mode=${MODE}"
           if [ -z "${IMAGE}" ]; then
             echo "::error::Resolved deploy image is empty."
             exit 1
