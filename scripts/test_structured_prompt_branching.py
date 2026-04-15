@@ -99,6 +99,8 @@ def main() -> int:
     _assert_contains(normalized_male_style, "non-parted front")
     _assert_contains(normalized_male_style, "curly texture")
     _assert_contains(negative_male, "mini bob")
+    _assert_contains(negative_male, "baseball cap")
+    _assert_contains(negative_male, "earbuds")
 
     female_payload = {
         "survey_data": {
@@ -150,6 +152,49 @@ def main() -> int:
         no_bangs_request["prompt_context"],
         no_bangs_request["subject_gender"],
     ) is False, no_bangs_request
+    explicit_no_bangs_payload = {
+        "hairstyle_text": "long elegant",
+        "preference_text": "long, elegant, curly, black, high",
+        "survey_data": {
+            "target_length": "long",
+            "target_vibe": "elegant",
+            "scalp_type": "curly",
+            "hair_colour": "black",
+            "budget_range": "high",
+            "question_answers": {
+                "q1": "길게",
+                "q2": "볼륨감 있는 스타일",
+                "q3": "앞머리 없이",
+                "q4": "끝선 위주 자연스러운 컬",
+                "q5": "고급스러운",
+                "q6": "확실히 이미지 변신하고 싶음",
+            },
+            "survey_profile": {
+                "gender_branch": "female",
+                "style_axes": {
+                    "front_styling": "up",
+                    "parting": "side_part",
+                },
+            },
+        },
+    }
+    explicit_no_bangs_result = _build_from_payload(explicit_no_bangs_payload)
+    explicit_no_bangs_request = explicit_no_bangs_result["request"]
+    assert prompt_module._resolve_requested_no_bangs_state(
+        explicit_no_bangs_request["hairstyle_text"],
+        explicit_no_bangs_request["prompt_context"],
+        explicit_no_bangs_request["subject_gender"],
+    ) is True, explicit_no_bangs_request
+    assert prompt_module._resolve_requested_bangs_state(
+        explicit_no_bangs_request["hairstyle_text"],
+        explicit_no_bangs_request["prompt_context"],
+        explicit_no_bangs_request["subject_gender"],
+    ) is False, explicit_no_bangs_request
+    _assert_contains(explicit_no_bangs_result["positive"].lower(), "open forehead")
+    _assert_contains(explicit_no_bangs_result["positive"].lower(), "no bangs")
+    _assert_contains(explicit_no_bangs_result["negative"].lower(), "full bangs")
+    _assert_contains(explicit_no_bangs_result["negative"].lower(), "baseball cap")
+    _assert_contains(explicit_no_bangs_result["negative"].lower(), "earbuds")
     neutral_structured_payload = {
         "hairstyle_text": "short chic",
         "preference_text": "short, chic, straight, brown, mid",
@@ -188,6 +233,35 @@ def main() -> int:
     assert legacy_preference_gender_result["meta"]["resolved_gender_branch"] == "male", legacy_preference_gender_result
     assert legacy_preference_gender_result["meta"]["style_source"] == "structured_male", legacy_preference_gender_result
     _assert_not_contains(legacy_preference_gender_result["positive"].lower(), "bob")
+    legacy_alias_payload = {
+        "preference_text": (
+            "gender=male, length=short, mood=chic, texture=straight, "
+            "color=ash, budget=mid, front=flexible, parting=either"
+        ),
+        "survey_data": {
+            "target_length": "short",
+            "target_vibe": "chic",
+            "scalp_type": "straight",
+            "hair_colour": "ash",
+            "budget_range": "mid",
+            "survey_profile": {
+                "gender_branch": "male",
+            },
+        },
+    }
+    legacy_alias_result = _build_from_payload(legacy_alias_payload)
+    legacy_alias_positive = legacy_alias_result["positive"].lower()
+    legacy_alias_style = str(legacy_alias_result["meta"]["normalized_style"]).lower()
+    assert legacy_alias_result["meta"]["style_source"] == "structured_male", legacy_alias_result
+    assert prompt_module._resolve_requested_no_bangs_state(
+        legacy_alias_result["request"]["hairstyle_text"],
+        legacy_alias_result["request"]["prompt_context"],
+        legacy_alias_result["request"]["subject_gender"],
+    ) is True, legacy_alias_result
+    _assert_contains(legacy_alias_style, "soft lifted front")
+    _assert_contains(legacy_alias_style, "parted front")
+    _assert_contains(legacy_alias_positive, "open forehead")
+    _assert_contains(legacy_alias_positive, "no bangs")
     requested_front_mask = mask_builders_module._build_requested_front_coverage_mask(
         (512, 512),
         (156, 132, 356, 348),
@@ -214,8 +288,16 @@ def main() -> int:
                 "legacy_prompt": {
                     "positive": legacy_result["positive"],
                 },
+                "explicit_no_bangs_prompt": {
+                    "positive": explicit_no_bangs_result["positive"],
+                    "negative": explicit_no_bangs_result["negative"],
+                },
                 "neutral_structured_prompt": {
                     "positive": neutral_result["positive"],
+                },
+                "legacy_alias_prompt": {
+                    "positive": legacy_alias_result["positive"],
+                    "normalized_style": legacy_alias_result["meta"]["normalized_style"],
                 },
             },
             ensure_ascii=False,

@@ -54,6 +54,18 @@ logger = logging.getLogger(__name__)
 
 # Extracted from pipeline_sd_inpainting.py to keep MirrAISDPipeline smaller.
 
+
+def _cuda_memory_summary() -> str:
+    if not torch.cuda.is_available():
+        return ""
+    try:
+        device_index = torch.cuda.current_device()
+        allocated_gb = torch.cuda.memory_allocated(device_index) / (1024 ** 3)
+        reserved_gb = torch.cuda.memory_reserved(device_index) / (1024 ** 3)
+        return f", cuda_mem_alloc={allocated_gb:.2f}GB, cuda_mem_reserved={reserved_gb:.2f}GB"
+    except Exception as exc:
+        return f", cuda_mem_unavailable={exc}"
+
 def _load_sam2(self) -> None:
     if not self.config.use_sam2:
         logger.info("[SDPipeline] SAM2 비활성화 (config.use_sam2=False)")
@@ -763,9 +775,15 @@ def _load_segface(self) -> None:
         model_variant,
         input_resolution,
     )
+    custom_init_started = time.time()
+    logger.info("[SDPipeline] SegFace custom backbone init start")
     segface = SegFaceCeleb(
         input_resolution=input_resolution,
         model=model_variant,
+    )
+    logger.info(
+        "[SDPipeline] SegFace custom backbone init complete (%.2fs)",
+        time.time() - custom_init_started,
     )
     prepared_ckpt, custom_ckpt_info = self._prepare_custom_segface_checkpoint(
         ckpt,
@@ -786,7 +804,18 @@ def _load_segface(self) -> None:
         )
     )
     # SegFace는 항상 float32로 실행 (내부에 dtype=torch.float32 하드코딩 있음)
+    custom_transfer_started = time.time()
+    logger.info(
+        "[SDPipeline] SegFace custom device transfer start: device=%s%s",
+        self.device,
+        _cuda_memory_summary(),
+    )
     segface.float().to(self.device).eval()
+    logger.info(
+        "[SDPipeline] SegFace custom device transfer complete (%.2fs)%s",
+        time.time() - custom_transfer_started,
+        _cuda_memory_summary(),
+    )
     self._segface = segface
 
     if self._segface_base is None:
@@ -830,9 +859,15 @@ def _load_segface(self) -> None:
             base_model_variant,
             base_input_resolution,
         )
+        base_init_started = time.time()
+        logger.info("[SDPipeline] SegFace base backbone init start")
         segface_base = SegFaceCeleb(
             input_resolution=base_input_resolution,
             model=base_model_variant,
+        )
+        logger.info(
+            "[SDPipeline] SegFace base backbone init complete (%.2fs)",
+            time.time() - base_init_started,
         )
 
         if base_local_ckpt_path:
@@ -865,10 +900,16 @@ def _load_segface(self) -> None:
                 base_source,
             )
 
+        base_ckpt_load_started = time.time()
+        logger.info("[SDPipeline] SegFace base checkpoint torch.load start")
         base_ckpt = torch.load(
             str(base_ckpt_path),
             map_location="cpu",
             weights_only=True,
+        )
+        logger.info(
+            "[SDPipeline] SegFace base checkpoint torch.load complete (%.2fs)",
+            time.time() - base_ckpt_load_started,
         )
         self._segface_base_load_info = self._load_segface_checkpoint(
             segface_base,
@@ -877,7 +918,18 @@ def _load_segface(self) -> None:
         )
         self._segface_base_load_info["checkpoint_path"] = str(base_ckpt_path)
 
+        base_transfer_started = time.time()
+        logger.info(
+            "[SDPipeline] SegFace base device transfer start: device=%s%s",
+            self.device,
+            _cuda_memory_summary(),
+        )
         segface_base.float().to(self.device).eval()
+        logger.info(
+            "[SDPipeline] SegFace base device transfer complete (%.2fs)%s",
+            time.time() - base_transfer_started,
+            _cuda_memory_summary(),
+        )
         self._segface_base = segface_base
 
     logger.info("[SDPipeline] SegFace 로드 완료")

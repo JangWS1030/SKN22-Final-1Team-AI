@@ -206,6 +206,78 @@ def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
 
 
+def _parse_user_negative_tags(
+    inp: Dict[str, Any],
+    hairstyle_text: str = "",
+    preference_text: str = "",
+) -> List[str]:
+    """
+    페이로드에서 사용자 부정 태그를 수집해 정규화된 리스트로 반환.
+
+    지원 입력:
+      - ``negative_prompt`` (str): "perm, curl, wave, bangs"  (Method A)
+      - ``preference.exclude`` (list): ["perm", "curl"]       (Method C)
+      - hairstyle_text / preference_text 내 "no X" 패턴 자동 감지 (backward compat)
+
+    "no X" 패턴 → 정규 태그 변환 테이블:
+      no perm / 펌 없이  → "perm"
+      no curl / 컬 없이  → "curl"
+      no wave / 웨이브 없이 → "wave"
+      no bang(s) / 앞머리 없이 → "bangs"
+      no fringe          → "fringe"
+    """
+    _NO_TAG_MAP = (
+        ("no perm",    "perm"),
+        ("no curl",    "curl"),
+        ("no curls",   "curl"),
+        ("no wave",    "wave"),
+        ("no waves",   "wave"),
+        ("no bang",    "bangs"),
+        ("no bangs",   "bangs"),
+        ("no fringe",  "fringe"),
+        ("without perm",   "perm"),
+        ("without curl",   "curl"),
+        ("without wave",   "wave"),
+        ("without bang",   "bangs"),
+        ("without fringe", "fringe"),
+        ("펌 없이",    "perm"),
+        ("펌 없는",    "perm"),
+        ("컬 없이",    "curl"),
+        ("웨이브 없이", "wave"),
+        ("앞머리 없이", "bangs"),
+        ("앞머리 없는", "bangs"),
+    )
+
+    tags: List[str] = []
+    seen: set = set()
+
+    def _add(tag: str) -> None:
+        key = tag.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            tags.append(key)
+
+    # Method A: negative_prompt 문자열 필드
+    neg_str = _clean_text(inp.get("negative_prompt", ""))
+    if neg_str:
+        for part in neg_str.split(","):
+            _add(part)
+
+    # Method C: preference.exclude 배열 필드
+    preference_dict = inp.get("preference") if isinstance(inp.get("preference"), dict) else {}
+    exclude_list = preference_dict.get("exclude") if isinstance(preference_dict.get("exclude"), list) else []
+    for item in exclude_list:
+        _add(str(item))
+
+    # Backward compat: hairstyle_text / preference_text 내 "no X" 자동 감지
+    combined_lower = " ".join([hairstyle_text, preference_text]).lower()
+    for pattern, tag in _NO_TAG_MAP:
+        if pattern in combined_lower:
+            _add(tag)
+
+    return tags
+
+
 def _normalize_gender_branch(value: Any) -> str:
     lowered = _clean_text(value).lower()
     if lowered in {"m", "male", "man", "men", "boy", "masculine", "남자", "남성"}:
@@ -279,6 +351,11 @@ def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
         legacy_preference_text,
         legacy_preference,
     )
+    user_negative_tags = _parse_user_negative_tags(
+        inp,
+        hairstyle_text=legacy_hairstyle_text,
+        preference_text=legacy_preference_text,
+    )
 
     resolved_color_text = legacy_color_text
     if canonical_preferences["hair_colour"]:
@@ -316,6 +393,7 @@ def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
         "style_axes": survey_profile.get("style_axes") if isinstance(survey_profile.get("style_axes"), dict) else {},
         "derived_preferences": survey_profile.get("derived_preferences"),
         "question_answers": survey_data.get("question_answers"),
+        "user_negative_tags": user_negative_tags,
         "legacy_fields": {
             "hairstyle_text": legacy_hairstyle_text,
             "preference_text": legacy_preference_text,

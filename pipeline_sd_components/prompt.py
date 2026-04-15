@@ -88,6 +88,75 @@ _MALE_BRANCH_NEGATIVE_TERMS = (
     "curved inward bob ends",
 )
 
+_DOWN_FRONT_TEXT_TOKENS = (
+    "bang",
+    "bangs",
+    "fringe",
+    "앞머리",
+    "시스루",
+    "내리는 스타일",
+    "다운펌",
+    "down style",
+    "down perm",
+    "front=down",
+    "front_styling=down",
+    "front_style=down",
+)
+_LIFTED_FRONT_TEXT_TOKENS = (
+    "front=flexible",
+    "front_styling=flexible",
+    "front_style=flexible",
+    "front=up",
+    "front_styling=up",
+    "front_style=up",
+    "front=lifted",
+    "front_styling=lifted",
+    "front_style=lifted",
+    "앞머리 올림",
+    "앞머리 올려",
+    "올린 앞머리",
+    "앞머리 업",
+    "이마 보이게",
+    "이마를 보이게",
+    "이마를 드러내",
+    "이마를 드러낸",
+    "open forehead",
+    "exposed forehead",
+    "forehead exposed",
+    "lifted front",
+    "up style",
+    "front up",
+    "slicked back",
+    "slick back",
+    "swept back",
+    "swept-back",
+    "regent",
+)
+_NON_PARTED_TEXT_TOKENS = (
+    "비가르마",
+    "non_parted",
+    "non-parted",
+    "no_part",
+)
+_SIDE_PART_TEXT_TOKENS = (
+    "parting=either",
+    "part=either",
+    "parting=flexible",
+    "part=flexible",
+    "either part",
+    "either-part",
+    "가르마 상관없",
+    "가르마 자유",
+    "side part",
+    "side-part",
+)
+_CENTER_PART_TEXT_TOKENS = (
+    "middle part",
+    "middle-part",
+    "center part",
+    "center-part",
+)
+
 
 def _normalize_choice(value: Any, allowed: frozenset[str]) -> str:
     lowered = str(value or "").strip().lower()
@@ -96,6 +165,75 @@ def _normalize_choice(value: Any, allowed: frozenset[str]) -> str:
 
 def _normalize_axis_key(key: Any) -> str:
     return str(key or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _normalize_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _infer_front_styling_from_text(text: Any) -> str:
+    lowered = _normalize_text(text)
+    if not lowered:
+        return ""
+    if any(token in lowered for token in _LIFTED_FRONT_TEXT_TOKENS):
+        return "lifted"
+    if any(token in lowered for token in _DOWN_FRONT_TEXT_TOKENS):
+        return "down"
+    return ""
+
+
+def _infer_parting_from_text(text: Any) -> str:
+    lowered = _normalize_text(text)
+    if not lowered:
+        return ""
+    if any(token in lowered for token in _NON_PARTED_TEXT_TOKENS):
+        return "non_parted"
+    if any(token in lowered for token in _CENTER_PART_TEXT_TOKENS):
+        return "center_part"
+    if any(token in lowered for token in _SIDE_PART_TEXT_TOKENS):
+        return "side_part"
+    return ""
+
+
+def _canonicalize_axis_value(axis_key: str, value: Any) -> str:
+    norm_key = _normalize_axis_key(axis_key)
+    normalized = _normalize_axis_key(value)
+    lowered = _normalize_text(value)
+
+    if norm_key in {"front_styling", "front_style", "front"}:
+        if normalized in {
+            "lifted",
+            "up",
+            "up_style",
+            "updo",
+            "slick_back",
+            "slicked_back",
+            "back",
+            "open_forehead",
+            "forehead_open",
+            "flexible",
+        }:
+            return "lifted"
+        if normalized in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}:
+            return normalized
+        inferred = _infer_front_styling_from_text(lowered)
+        if inferred:
+            return inferred
+
+    if norm_key in {"parting", "part"}:
+        if normalized in {"non_parted", "nonparted", "no_part"}:
+            return "non_parted"
+        if normalized in {"side_part", "sidepart", "parted"}:
+            return "side_part"
+        if normalized in {"middle_part", "middlepart", "center_part", "centerpart"}:
+            return "center_part"
+        if normalized in {"either", "flexible", "any"}:
+            return "side_part"
+        inferred = _infer_parting_from_text(lowered)
+        if inferred:
+            return inferred
+
+    return normalized
 
 
 def _normalize_style_axes(style_axes: Any) -> Dict[str, Any]:
@@ -225,14 +363,14 @@ def _resolve_axis_value(style_axes: Dict[str, Any], *keys: str) -> str:
         if isinstance(value, dict):
             for candidate in ("value", "label", "name", "slug", "id"):
                 if candidate in value:
-                    normalized = _normalize_axis_key(value.get(candidate))
+                    normalized = _canonicalize_axis_value(norm_key, value.get(candidate))
                     if normalized:
                         return normalized
-            flattened = _normalize_axis_key(_flatten_text(value))
+            flattened = _canonicalize_axis_value(norm_key, _flatten_text(value))
             if flattened:
                 return flattened
             continue
-        normalized = _normalize_axis_key(_flatten_text(value))
+        normalized = _canonicalize_axis_value(norm_key, _flatten_text(value))
         if normalized:
             return normalized
     return ""
@@ -243,7 +381,14 @@ def _resolve_requested_bangs_state(
     prompt_context: Optional[Dict[str, Any]] = None,
     subject_gender: Optional[str] = None,
 ) -> bool:
-    lowered = " ".join(str(hairstyle_text or "").strip().lower().split())
+    if _resolve_requested_no_bangs_state(
+        hairstyle_text,
+        prompt_context,
+        subject_gender=subject_gender,
+    ):
+        return False
+
+    lowered = _normalize_text(hairstyle_text)
     if any(token in lowered for token in ("bang", "bangs", "fringe", "앞머리", "시스루")):
         return True
 
@@ -251,30 +396,22 @@ def _resolve_requested_bangs_state(
     style_axes = context["style_axes"]
     structured_text = _stringify_structured_request(
         context,
-        include_legacy_fields=False,
+        include_legacy_fields=True,
     ).lower()
     normalized_gender = _normalize_subject_gender(subject_gender) or context.get("gender_branch", "")
 
     front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
     parting = _resolve_axis_value(style_axes, "parting", "part")
 
+    if not front_styling:
+        front_styling = _infer_front_styling_from_text(f"{lowered} {structured_text}")
+    if not parting:
+        parting = _infer_parting_from_text(structured_text)
+
     if front_styling in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}:
         return True
 
-    if any(
-        token in structured_text
-        for token in (
-            "bang",
-            "bangs",
-            "fringe",
-            "앞머리",
-            "시스루",
-            "내리는 스타일",
-            "다운펌",
-            "down style",
-            "down perm",
-        )
-    ):
+    if _infer_front_styling_from_text(structured_text) == "down":
         return True
 
     if (
@@ -288,6 +425,169 @@ def _resolve_requested_bangs_state(
         return True
 
     return False
+
+
+def _resolve_requested_no_bangs_state(
+    hairstyle_text: str,
+    prompt_context: Optional[Dict[str, Any]] = None,
+    subject_gender: Optional[str] = None,
+) -> bool:
+    no_bangs_tokens = (
+        "no bangs",
+        "without bangs",
+        "no fringe",
+        "without fringe",
+        "open forehead",
+        "exposed forehead",
+        "forehead exposed",
+        "앞머리 없이",
+        "앞머리 없음",
+        "앞머리 없는",
+        "앞머리 x",
+        "앞머리 없는 스타일",
+        "이마 보이",
+        "이마가 보이",
+        "이마를 드러",
+    )
+    lowered = _normalize_text(hairstyle_text)
+    if any(token in lowered for token in no_bangs_tokens):
+        return True
+    if _infer_front_styling_from_text(lowered) == "lifted":
+        return True
+
+    context = _normalize_prompt_context(prompt_context)
+    style_axes = context["style_axes"]
+    structured_text = _stringify_structured_request(
+        context,
+        include_legacy_fields=True,
+    ).lower()
+    normalized_gender = _normalize_subject_gender(subject_gender) or context.get("gender_branch", "")
+
+    front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
+    parting = _resolve_axis_value(style_axes, "parting", "part")
+    if not front_styling:
+        front_styling = _infer_front_styling_from_text(f"{lowered} {structured_text}")
+    if not parting:
+        parting = _infer_parting_from_text(structured_text)
+
+    if front_styling in {
+        "lifted",
+        "up",
+        "up_style",
+        "updo",
+        "slick_back",
+        "back",
+        "open_forehead",
+        "forehead_open",
+    }:
+        return True
+
+    if any(token in structured_text for token in no_bangs_tokens):
+        return True
+
+    if (
+        normalized_gender != "male"
+        and front_styling in {"parted", "side_part", "middle_part", "center_part"}
+        and parting in {"parted", "side_part", "middle_part", "center_part"}
+        and any(
+            token in structured_text
+            for token in ("앞머리", "fringe", "bang")
+        )
+    ):
+        return False
+
+    return False
+
+
+# ── 사용자 부정 태그 처리 ─────────────────────────────────────────────────────
+
+# 태그 → SD negative prompt 확장 매핑
+_USER_NEGATIVE_TAG_EXPANSIONS: Dict[str, str] = {
+    "perm":   "perm, permed hair, tight perm waves, spiral perm, chemical perm, wave perm",
+    "curl":   "curly hair, tight curls, spiral curls, ringlet curls, coiled hair",
+    "wave":   "wavy hair, beach waves, loose waves, natural waves, wavy texture",
+    "bangs":  "full bangs, blunt bangs, heavy fringe, thick curtain bangs, forehead-covering front hair",
+    "bang":   "full bangs, blunt bangs, heavy fringe, thick curtain bangs",
+    "fringe": "full bangs, heavy fringe, thick fringe, forehead-covering front hair",
+    "color":  "hair color change, hair dye, unnatural hair color",
+}
+
+# "no X" 패턴 → 정규 태그 추출
+_NO_TAG_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    ("no perm",    "perm"),
+    ("no curl",    "curl"),
+    ("no curls",   "curl"),
+    ("no wave",    "wave"),
+    ("no waves",   "wave"),
+    ("no bang",    "bangs"),
+    ("no bangs",   "bangs"),
+    ("no fringe",  "fringe"),
+    ("without perm",   "perm"),
+    ("without curl",   "curl"),
+    ("without wave",   "wave"),
+    ("without bang",   "bangs"),
+    ("without fringe", "fringe"),
+    ("펌 없이",    "perm"),
+    ("펌 없는",    "perm"),
+    ("컬 없이",    "curl"),
+    ("웨이브 없이", "wave"),
+    ("앞머리 없이", "bangs"),
+    ("앞머리 없는", "bangs"),
+)
+
+
+def _extract_no_tags_from_text(text: str) -> List[str]:
+    """텍스트에서 'no X' 패턴을 감지해 정규 태그 목록을 반환 (중복 제거)."""
+    lowered = _normalize_text(text)
+    found: List[str] = []
+    seen: set = set()
+    for pattern, tag in _NO_TAG_PATTERNS:
+        if pattern in lowered and tag not in seen:
+            seen.add(tag)
+            found.append(tag)
+    return found
+
+
+def _resolve_requested_no_perm_curl_state(
+    hairstyle_text: str,
+    prompt_context: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """'펌 없이' / 'no perm' / 'no curl' / 'no wave' 요청 감지."""
+    no_perm_curl_tokens = (
+        "no perm", "no curl", "no curls", "no wave", "no waves",
+        "without perm", "without curl", "without wave",
+        "straight only", "펌 없이", "펌 없는", "컬 없이", "웨이브 없이",
+    )
+    lowered = _normalize_text(hairstyle_text)
+    if any(token in lowered for token in no_perm_curl_tokens):
+        return True
+
+    context = _normalize_prompt_context(prompt_context)
+    structured_text = _stringify_structured_request(context, include_legacy_fields=True).lower()
+    if any(token in structured_text for token in no_perm_curl_tokens):
+        return True
+
+    user_negative_tags = context.get("user_negative_tags") or []
+    if isinstance(user_negative_tags, (list, tuple)):
+        return any(t in ("perm", "curl", "wave") for t in user_negative_tags)
+    return False
+
+
+def _expand_user_negative_tags(tags: List[str]) -> str:
+    """정규 태그 목록을 SD negative prompt 문자열로 확장."""
+    parts: List[str] = []
+    seen: set = set()
+    for tag in tags:
+        key = str(tag).strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        expanded = _USER_NEGATIVE_TAG_EXPANSIONS.get(key)
+        if expanded:
+            parts.append(expanded)
+        else:
+            parts.append(key)
+    return ", ".join(parts)
 
 
 def _male_explicit_female_coded_request(
@@ -340,10 +640,10 @@ def _build_male_structured_style_text(
 
     if not two_block and "투블럭" in combined_text:
         two_block = "soft" if "soft" in combined_text or "부드" in combined_text else "natural"
-    if not front_styling and ("내리는 스타일" in combined_text or "down" in combined_text):
-        front_styling = "down"
-    if not parting and ("비가르마" in combined_text or "non_parted" in combined_text or "non-parted" in combined_text):
-        parting = "non_parted"
+    if not front_styling:
+        front_styling = _infer_front_styling_from_text(combined_text)
+    if not parting:
+        parting = _infer_parting_from_text(combined_text)
 
     explicit_bob_request = _male_explicit_female_coded_request(
         legacy_text,
@@ -376,6 +676,8 @@ def _build_male_structured_style_text(
         parts.append("down style")
     elif front_styling in {"lifted", "up", "up_style"}:
         parts.append("soft lifted front")
+        parts.append("open forehead")
+        parts.append("no bangs")
     elif front_styling:
         parts.append("natural front styling")
 
@@ -419,9 +721,33 @@ def _build_female_structured_style_text(
     legacy_text: str,
 ) -> str:
     canonical = prompt_context["canonical_preferences"]
+    style_axes = prompt_context["style_axes"]
+    structured_text = _stringify_structured_request(
+        prompt_context,
+        include_legacy_fields=False,
+    )
+    combined_text = " ".join(
+        text for text in [structured_text, legacy_text] if text
+    ).lower()
     target_length = canonical.get("target_length")
     target_vibe = canonical.get("target_vibe")
     scalp_type = canonical.get("scalp_type")
+    front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
+    parting = _resolve_axis_value(style_axes, "parting", "part")
+    if not front_styling:
+        front_styling = _infer_front_styling_from_text(combined_text)
+    if not parting:
+        parting = _infer_parting_from_text(combined_text)
+    no_bangs_requested = _resolve_requested_no_bangs_state(
+        legacy_text,
+        prompt_context,
+        subject_gender="female",
+    )
+    bangs_requested = _resolve_requested_bangs_state(
+        legacy_text,
+        prompt_context,
+        subject_gender="female",
+    )
 
     seed_parts: List[str] = []
     if target_length == "bob":
@@ -448,6 +774,21 @@ def _build_female_structured_style_text(
         seed_parts.append("wavy")
     elif scalp_type == "straight":
         seed_parts.append("straight")
+
+    if no_bangs_requested or front_styling in {"lifted", "up", "up_style"}:
+        seed_parts.append("open forehead")
+        seed_parts.append("no bangs")
+    elif (
+        front_styling in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}
+        or bangs_requested
+        or any(token in combined_text for token in ("bang", "bangs", "fringe", "앞머리", "시스루"))
+    ):
+        seed_parts.append("soft see-through bangs")
+
+    if parting in {"side_part", "parted"}:
+        seed_parts.append("soft side part")
+    elif parting in {"middle_part", "center_part"}:
+        seed_parts.append("center part")
 
     synthetic_text = ", ".join(seed_parts)
     return _normalize_hairstyle_prompt_text(
@@ -476,6 +817,10 @@ def _build_neutral_structured_style_text(
     scalp_type = canonical.get("scalp_type")
     front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
     parting = _resolve_axis_value(style_axes, "parting", "part")
+    if not front_styling:
+        front_styling = _infer_front_styling_from_text(combined_text)
+    if not parting:
+        parting = _infer_parting_from_text(combined_text)
 
     parts: List[str] = []
     if target_length in {"short", "bob"} or hair_length == "short":
@@ -622,12 +967,19 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
             "controlled top texture",
         ])
 
-    if "bang" in lowered or "fringe" in lowered:
+    _has_bang_token = "bang" in lowered or "fringe" in lowered
+    _bang_negated = "no bang" in lowered or "no fringe" in lowered or "without bang" in lowered or "without fringe" in lowered
+    if _has_bang_token and not _bang_negated:
         hints.append("soft masculine fringe with natural forehead coverage")
     else:
         hints.append("natural masculine hairline with balanced forehead coverage")
 
-    if any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
+    _has_texture_token = any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm"))
+    _texture_negated = (
+        "no perm" in lowered or "no curl" in lowered or "no wave" in lowered
+        or "without perm" in lowered or "without curl" in lowered or "without wave" in lowered
+    )
+    if _has_texture_token and not _texture_negated:
         hints.append("light natural texture")
     elif any(token in lowered for token in ("straight", "sleek")):
         hints.append("soft natural finish")
@@ -672,12 +1024,19 @@ def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
             "controlled side silhouette",
         ])
 
-    if any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
+    _has_texture_token_med = any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm"))
+    _texture_negated_med = (
+        "no perm" in lowered or "no curl" in lowered or "no wave" in lowered
+        or "without perm" in lowered or "without curl" in lowered or "without wave" in lowered
+    )
+    if _has_texture_token_med and not _texture_negated_med:
         hints.append("light natural texture")
     elif any(token in lowered for token in ("straight", "sleek")):
         hints.append("soft natural finish")
 
-    if "bang" in lowered or "fringe" in lowered:
+    _has_bang_token_med = "bang" in lowered or "fringe" in lowered
+    _bang_negated_med = "no bang" in lowered or "no fringe" in lowered or "without bang" in lowered or "without fringe" in lowered
+    if _has_bang_token_med and not _bang_negated_med:
         hints.append("soft masculine fringe with natural forehead coverage")
     else:
         hints.append("natural masculine hairline with balanced forehead coverage")
@@ -696,6 +1055,16 @@ def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
 def _resolve_male_fringe_prompt_hints(hairstyle_text: str) -> Tuple[str, str]:
     lowered = " ".join(str(hairstyle_text or "").strip().lower().split())
     if not any(token in lowered for token in ("bang", "bangs", "fringe", "앞머리")):
+        return "", ""
+
+    # "no bangs" / "no fringe" 등 부정 표현이면 fringe 힌트 일체 적용 안 함
+    _bang_negated = (
+        "no bang" in lowered or "no fringe" in lowered
+        or "without bang" in lowered or "without fringe" in lowered
+        or "open forehead" in lowered or "lifted front" in lowered
+        or "앞머리 없" in lowered
+    )
+    if _bang_negated:
         return "", ""
 
     full_fringe_requested = any(
@@ -748,9 +1117,16 @@ def _normalize_hairstyle_prompt_text(
         hints.append("rounded jaw-length bob silhouette")
     if "blunt" in lowered:
         hints.append("clean blunt bob outline")
-    if "bang" in lowered or "fringe" in lowered:
+    _has_bang = "bang" in lowered or "fringe" in lowered
+    _bang_neg = "no bang" in lowered or "no fringe" in lowered or "without bang" in lowered or "without fringe" in lowered
+    if _has_bang and not _bang_neg:
         hints.append("soft see-through bangs")
-    if any(token in lowered for token in ("wave", "wavy", "curl", "curly")):
+    _has_texture = any(token in lowered for token in ("wave", "wavy", "curl", "curly"))
+    _texture_neg = (
+        "no curl" in lowered or "no wave" in lowered
+        or "without curl" in lowered or "without wave" in lowered
+    )
+    if _has_texture and not _texture_neg:
         hints.append("light natural texture")
     if any(token in lowered for token in ("straight", "sleek")):
         hints.append("sleek straight finish")
@@ -969,50 +1345,543 @@ def _estimate_accessory_penalty(
     img_rgb: np.ndarray,
     face_bbox: Tuple[int, int, int, int],
 ) -> Optional[float]:
-    H, W = img_rgb.shape[:2]
-    _ = self._segface_hair_mask(img_rgb, face_bbox)
-    segface_debug = self._last_segface_mask_debug or {}
-    earring_mask = segface_debug.get("earring_mask")
-    necklace_mask = segface_debug.get("necklace_mask")
-    if not isinstance(earring_mask, np.ndarray) or not isinstance(necklace_mask, np.ndarray):
+    details = _estimate_accessory_penalty_details(
+        self,
+        img_rgb,
+        face_bbox,
+        source_accessory_profile=None,
+    )
+    if not isinstance(details, dict):
         return None
-    if earring_mask.shape != (H, W) or necklace_mask.shape != (H, W):
-        return None
+    return float(details.get("total_penalty", 0.0))
 
-    x1, y1, x2, y2 = face_bbox
+
+def _build_accessory_region_masks(
+    face_bbox: Tuple[int, int, int, int],
+    image_shape: Tuple[int, int],
+) -> Dict[str, np.ndarray]:
+    H, W = [int(v) for v in image_shape]
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
     face_w = max(int(x2 - x1), 1)
     face_h = max(int(y2 - y1), 1)
-    corridor_u8 = np.zeros((H, W), dtype=np.uint8)
-    top = max(0, int(y1 - face_h * 0.16))
-    bottom = min(H, int(y2 + face_h * 0.92))
-    left = max(0, int(x1 - face_w * 0.92))
-    right = min(W, int(x2 + face_w * 0.92))
-    if top >= bottom or left >= right:
-        return None
-    corridor_u8[top:bottom, left:right] = 255
 
-    earring_u8 = cv2.dilate(
-        (np.clip(earring_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
-        iterations=1,
-    )
-    necklace_u8 = cv2.dilate(
-        (np.clip(necklace_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
-        iterations=1,
-    )
-    earring_u8 = cv2.bitwise_and(earring_u8, corridor_u8)
-    necklace_u8 = cv2.bitwise_and(necklace_u8, corridor_u8)
+    def _rect_mask(top: float, bottom: float, left: float, right: float) -> np.ndarray:
+        mask = np.zeros((H, W), dtype=np.uint8)
+        top_i = max(0, int(round(top)))
+        bottom_i = min(H, int(round(bottom)))
+        left_i = max(0, int(round(left)))
+        right_i = min(W, int(round(right)))
+        if top_i < bottom_i and left_i < right_i:
+            mask[top_i:bottom_i, left_i:right_i] = 255
+        return mask
 
-    earring_px = int((earring_u8 > 0).sum())
-    necklace_px = int((necklace_u8 > 0).sum())
-    if earring_px < 2 and necklace_px < 6:
+    return {
+        "glasses": _rect_mask(
+            y1 - face_h * 0.10,
+            y1 + face_h * 0.66,
+            x1 - face_w * 0.18,
+            x2 + face_w * 0.18,
+        ),
+        "earring": _rect_mask(
+            y1 - face_h * 0.16,
+            y2 + face_h * 0.54,
+            x1 - face_w * 0.92,
+            x2 + face_w * 0.92,
+        ),
+        "necklace": _rect_mask(
+            y2 + face_h * 0.04,
+            y2 + face_h * 0.92,
+            x1 - face_w * 0.72,
+            x2 + face_w * 0.72,
+        ),
+        "headwear": _rect_mask(
+            y1 - face_h * 0.92,
+            y1 + face_h * 0.18,
+            x1 - face_w * 0.74,
+            x2 + face_w * 0.74,
+        ),
+    }
+
+
+def _estimate_mask_presence_ratio(
+    mask: Optional[np.ndarray],
+    region_mask: Optional[np.ndarray],
+    *,
+    face_area: float,
+    threshold: float = 0.08,
+    dilate_ksize: int = 7,
+) -> float:
+    if (
+        mask is None
+        or region_mask is None
+        or mask.ndim != 2
+        or region_mask.ndim != 2
+        or mask.shape != region_mask.shape
+    ):
         return 0.0
 
-    norm = float(max(face_w * face_h, 1))
-    earring_penalty = min(float(earring_px) / norm * 36.0, 1.0)
-    necklace_penalty = min(float(necklace_px) / norm * 20.0, 1.0)
-    return 0.74 * earring_penalty + 0.26 * necklace_penalty
+    work_u8 = (np.clip(mask.astype(np.float32), 0.0, 1.0) > threshold).astype(np.uint8) * 255
+    if dilate_ksize >= 3:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_ksize, dilate_ksize))
+        work_u8 = cv2.dilate(work_u8, kernel, iterations=1)
+    work_u8 = cv2.bitwise_and(work_u8, region_mask.astype(np.uint8))
+    return float((work_u8 > 0).sum()) / max(float(face_area), 1.0)
+
+
+def _estimate_relative_accessory_penalty(
+    candidate_value: float,
+    source_value: float,
+    *,
+    tolerance_abs: float,
+    tolerance_scale: float,
+    ramp: float,
+) -> float:
+    allowed_value = max(
+        float(tolerance_abs),
+        float(source_value) + float(tolerance_abs),
+        float(source_value) * float(tolerance_scale),
+    )
+    excess_value = max(float(candidate_value) - allowed_value, 0.0)
+    return float(np.clip(excess_value / max(float(ramp), 1e-6), 0.0, 1.0))
+
+
+def _estimate_headwear_penalty(
+    self,
+    img_rgb: np.ndarray,
+    face_bbox: Tuple[int, int, int, int],
+    *,
+    hair_mask: Optional[np.ndarray] = None,
+    face_mask: Optional[np.ndarray] = None,
+) -> float:
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
+        return 0.0
+
+    H, W = img_rgb.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    face_area = float(max(face_w * face_h, 1))
+    regions = _build_accessory_region_masks(face_bbox, (H, W))
+    headwear_region = regions.get("headwear")
+    if headwear_region is None or int((headwear_region > 0).sum()) == 0:
+        return 0.0
+
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    face_crop = gray[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+    face_gray_median = float(np.median(face_crop)) if face_crop.size > 0 else 150.0
+    dark_threshold = int(np.clip(face_gray_median - 26.0, 42.0, 148.0))
+
+    protect_mask = np.zeros((H, W), dtype=np.uint8)
+    if isinstance(hair_mask, np.ndarray) and hair_mask.shape == (H, W):
+        protect_mask = np.maximum(
+            protect_mask,
+            (np.clip(hair_mask.astype(np.float32), 0.0, 1.0) > 0.12).astype(np.uint8) * 255,
+        )
+    if isinstance(face_mask, np.ndarray) and face_mask.shape == (H, W):
+        protect_mask = np.maximum(
+            protect_mask,
+            (np.clip(face_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+        )
+    protect_mask = cv2.dilate(
+        protect_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+        iterations=1,
+    )
+
+    dark_mask = (gray < dark_threshold).astype(np.uint8) * 255
+    dark_mask = cv2.bitwise_and(dark_mask, headwear_region)
+    dark_mask = cv2.bitwise_and(dark_mask, cv2.bitwise_not(protect_mask))
+    dark_mask = cv2.morphologyEx(
+        dark_mask,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+        iterations=1,
+    )
+    dark_mask = cv2.morphologyEx(
+        dark_mask,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    )
+    if int((dark_mask > 0).sum()) < max(18, int(face_area * 0.008)):
+        return 0.0
+
+    comp_mask = (dark_mask > 0).astype(np.uint8)
+    comp_count, labels, stats, _ = cv2.connectedComponentsWithStats(comp_mask, connectivity=8)
+    if comp_count <= 1:
+        return 0.0
+
+    best_idx = 0
+    best_area = 0
+    for comp_idx in range(1, comp_count):
+        comp_area = int(stats[comp_idx, cv2.CC_STAT_AREA])
+        if comp_area > best_area:
+            best_area = comp_area
+            best_idx = comp_idx
+    if best_idx <= 0 or best_area < max(18, int(face_area * 0.008)):
+        return 0.0
+
+    largest_mask = (labels == best_idx).astype(np.uint8)
+    comp_x = int(stats[best_idx, cv2.CC_STAT_LEFT])
+    comp_y = int(stats[best_idx, cv2.CC_STAT_TOP])
+    comp_w = int(stats[best_idx, cv2.CC_STAT_WIDTH])
+    comp_h = int(stats[best_idx, cv2.CC_STAT_HEIGHT])
+    comp_y2 = comp_y + comp_h
+
+    forehead_band = np.zeros((H, W), dtype=np.uint8)
+    band_top = max(0, int(round(y1 - face_h * 0.02)))
+    band_bottom = min(H, int(round(y1 + face_h * 0.18)))
+    band_left = max(0, int(round(x1 - face_w * 0.34)))
+    band_right = min(W, int(round(x2 + face_w * 0.34)))
+    if band_top < band_bottom and band_left < band_right:
+        forehead_band[band_top:band_bottom, band_left:band_right] = 255
+    forehead_band_area = max(int((forehead_band > 0).sum()), 1)
+    forehead_coverage = float(
+        (cv2.bitwise_and(largest_mask * 255, forehead_band) > 0).sum()
+    ) / float(forehead_band_area)
+
+    edges = cv2.Canny(gray, 32, 96)
+    edge_density = float((edges[largest_mask > 0] > 0).mean()) if best_area > 0 else 1.0
+
+    area_score = float(np.clip((float(best_area) / face_area - 0.02) / 0.16, 0.0, 1.0))
+    width_score = float(np.clip((float(comp_w) / float(face_w) - 0.52) / 0.90, 0.0, 1.0))
+    height_score = float(np.clip((float(comp_h) / float(face_h) - 0.10) / 0.44, 0.0, 1.0))
+    bottom_alignment = float(
+        np.clip((float(comp_y2) - float(y1 - face_h * 0.24)) / max(float(face_h) * 0.42, 1.0), 0.0, 1.0)
+    )
+    smoothness_score = float(np.clip((0.18 - edge_density) / 0.18, 0.0, 1.0))
+
+    return float(
+        0.24 * area_score
+        + 0.22 * width_score
+        + 0.16 * height_score
+        + 0.18 * bottom_alignment
+        + 0.20 * max(forehead_coverage, smoothness_score)
+    )
+
+
+def _estimate_headwear_brim_score(
+    self,
+    img_rgb: np.ndarray,
+    face_bbox: Tuple[int, int, int, int],
+    *,
+    glasses_mask: Optional[np.ndarray] = None,
+) -> float:
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
+        return 0.0
+
+    H, W = img_rgb.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    face_area = float(max(face_w * face_h, 1))
+
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    face_crop = gray[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+    face_gray_median = float(np.median(face_crop)) if face_crop.size > 0 else 150.0
+    dark_threshold = int(np.clip(face_gray_median - 24.0, 40.0, 146.0))
+
+    brim_band = np.zeros((H, W), dtype=np.uint8)
+    brim_top = max(0, int(round(y1 - face_h * 0.10)))
+    brim_bottom = min(H, int(round(y1 + face_h * 0.24)))
+    brim_left = max(0, int(round(x1 - face_w * 0.48)))
+    brim_right = min(W, int(round(x2 + face_w * 0.48)))
+    if brim_top >= brim_bottom or brim_left >= brim_right:
+        return 0.0
+    brim_band[brim_top:brim_bottom, brim_left:brim_right] = 255
+
+    center_band = np.zeros((H, W), dtype=np.uint8)
+    center_top = max(0, int(round(y1 - face_h * 0.04)))
+    center_bottom = min(H, int(round(y1 + face_h * 0.18)))
+    center_left = max(0, int(round(x1 - face_w * 0.34)))
+    center_right = min(W, int(round(x2 + face_w * 0.34)))
+    if center_top < center_bottom and center_left < center_right:
+        center_band[center_top:center_bottom, center_left:center_right] = 255
+
+    dark_mask = (gray < dark_threshold).astype(np.uint8) * 255
+    dark_mask = cv2.bitwise_and(dark_mask, brim_band)
+    if isinstance(glasses_mask, np.ndarray) and glasses_mask.shape == (H, W):
+        glasses_u8 = cv2.dilate(
+            (np.clip(glasses_mask.astype(np.float32), 0.0, 1.0) > 0.08).astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+            iterations=1,
+        )
+        dark_mask = cv2.bitwise_and(dark_mask, cv2.bitwise_not(glasses_u8))
+
+    dark_mask = cv2.morphologyEx(
+        dark_mask,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (17, 5)),
+        iterations=1,
+    )
+    dark_mask = cv2.morphologyEx(
+        dark_mask,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (7, 3)),
+        iterations=1,
+    )
+    if int((dark_mask > 0).sum()) < max(16, int(face_area * 0.006)):
+        return 0.0
+
+    comp_mask = (dark_mask > 0).astype(np.uint8)
+    comp_count, labels, stats, _ = cv2.connectedComponentsWithStats(comp_mask, connectivity=8)
+    if comp_count <= 1:
+        return 0.0
+
+    best_idx = 0
+    best_score = -1.0
+    center_band_area = max(int((center_band > 0).sum()), 1)
+    for comp_idx in range(1, comp_count):
+        comp_area = int(stats[comp_idx, cv2.CC_STAT_AREA])
+        if comp_area < max(16, int(face_area * 0.006)):
+            continue
+        comp_w = int(stats[comp_idx, cv2.CC_STAT_WIDTH])
+        comp_h = int(stats[comp_idx, cv2.CC_STAT_HEIGHT])
+        component_mask = (labels == comp_idx).astype(np.uint8) * 255
+        center_overlap = float((cv2.bitwise_and(component_mask, center_band) > 0).sum()) / float(center_band_area)
+        width_ratio = float(comp_w) / float(face_w)
+        height_ratio = float(comp_h) / float(face_h)
+        score = center_overlap * 1.8 + width_ratio - max(height_ratio - 0.28, 0.0) * 2.0
+        if score > best_score:
+            best_score = score
+            best_idx = comp_idx
+
+    if best_idx <= 0:
+        return 0.0
+
+    largest_mask = (labels == best_idx).astype(np.uint8)
+    best_area = int(stats[best_idx, cv2.CC_STAT_AREA])
+    comp_x = int(stats[best_idx, cv2.CC_STAT_LEFT])
+    comp_y = int(stats[best_idx, cv2.CC_STAT_TOP])
+    comp_w = int(stats[best_idx, cv2.CC_STAT_WIDTH])
+    comp_h = int(stats[best_idx, cv2.CC_STAT_HEIGHT])
+    center_overlap = float((cv2.bitwise_and(largest_mask * 255, center_band) > 0).sum()) / float(center_band_area)
+
+    edges = cv2.Canny(gray, 32, 96)
+    edge_density = float((edges[largest_mask > 0] > 0).mean()) if best_area > 0 else 1.0
+    comp_gray = gray[largest_mask > 0]
+    gray_std = float(np.std(comp_gray)) if comp_gray.size > 0 else 255.0
+
+    width_score = float(np.clip((float(comp_w) / float(face_w) - 0.62) / 0.42, 0.0, 1.0))
+    area_score = float(np.clip((float(best_area) / face_area - 0.018) / 0.09, 0.0, 1.0))
+    thinness_score = float(np.clip((0.30 - float(comp_h) / float(face_h)) / 0.16, 0.0, 1.0))
+    position_center = float(comp_y) + float(comp_h) * 0.5
+    target_center = float(y1) + float(face_h) * 0.08
+    position_score = float(
+        np.clip(1.0 - abs(position_center - target_center) / max(float(face_h) * 0.18, 1.0), 0.0, 1.0)
+    )
+    smoothness_score = float(np.clip((0.20 - edge_density) / 0.20, 0.0, 1.0))
+    uniformity_score = float(np.clip((24.0 - gray_std) / 24.0, 0.0, 1.0))
+
+    return float(
+        0.24 * width_score
+        + 0.20 * center_overlap
+        + 0.16 * area_score
+        + 0.14 * thinness_score
+        + 0.14 * position_score
+        + 0.06 * smoothness_score
+        + 0.06 * uniformity_score
+    )
+
+
+def _build_accessory_profile(
+    self,
+    img_rgb: Optional[np.ndarray],
+    face_bbox: Tuple[int, int, int, int],
+    *,
+    hair_mask: Optional[np.ndarray] = None,
+    face_mask: Optional[np.ndarray] = None,
+    glasses_mask: Optional[np.ndarray] = None,
+    earring_mask: Optional[np.ndarray] = None,
+    necklace_mask: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
+        return {
+            "glasses_ratio": 0.0,
+            "earring_ratio": 0.0,
+            "necklace_ratio": 0.0,
+            "headwear_score": 0.0,
+            "headwear_brim_score": 0.0,
+        }
+
+    H, W = img_rgb.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(int(x2 - x1), 1)
+    face_h = max(int(y2 - y1), 1)
+    face_area = float(max(face_w * face_h, 1))
+    regions = _build_accessory_region_masks(face_bbox, (H, W))
+
+    glasses_ratio = _estimate_mask_presence_ratio(
+        glasses_mask,
+        regions.get("glasses"),
+        face_area=face_area,
+        threshold=0.08,
+        dilate_ksize=5,
+    )
+    earring_ratio = _estimate_mask_presence_ratio(
+        earring_mask,
+        regions.get("earring"),
+        face_area=face_area,
+        threshold=0.08,
+        dilate_ksize=7,
+    )
+    necklace_ratio = _estimate_mask_presence_ratio(
+        necklace_mask,
+        regions.get("necklace"),
+        face_area=face_area,
+        threshold=0.08,
+        dilate_ksize=7,
+    )
+    headwear_score = _estimate_headwear_penalty(
+        self,
+        img_rgb,
+        face_bbox,
+        hair_mask=hair_mask,
+        face_mask=face_mask,
+    )
+    headwear_brim_score = _estimate_headwear_brim_score(
+        self,
+        img_rgb,
+        face_bbox,
+        glasses_mask=glasses_mask,
+    )
+    return {
+        "glasses_ratio": float(glasses_ratio),
+        "earring_ratio": float(earring_ratio),
+        "necklace_ratio": float(necklace_ratio),
+        "headwear_score": float(headwear_score),
+        "headwear_brim_score": float(headwear_brim_score),
+    }
+
+
+def _estimate_accessory_penalty_details(
+    self,
+    img_rgb: np.ndarray,
+    face_bbox: Tuple[int, int, int, int],
+    *,
+    source_accessory_profile: Optional[Dict[str, float]] = None,
+) -> Optional[Dict[str, Any]]:
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
+        return None
+
+    H, W = img_rgb.shape[:2]
+    hair_mask, face_mask, _ = self._segface_hair_mask(img_rgb, face_bbox)
+    segface_debug = self._last_segface_mask_debug or {}
+    glasses_mask = segface_debug.get("glasses_mask")
+    earring_mask = segface_debug.get("earring_mask")
+    necklace_mask = segface_debug.get("necklace_mask")
+    for accessory_mask in (glasses_mask, earring_mask, necklace_mask):
+        if accessory_mask is not None and (
+            not isinstance(accessory_mask, np.ndarray) or accessory_mask.shape != (H, W)
+        ):
+            return None
+
+    candidate_profile = _build_accessory_profile(
+        self,
+        img_rgb,
+        face_bbox,
+        hair_mask=hair_mask,
+        face_mask=face_mask,
+        glasses_mask=glasses_mask,
+        earring_mask=earring_mask,
+        necklace_mask=necklace_mask,
+    )
+    source_profile = source_accessory_profile if isinstance(source_accessory_profile, dict) else {}
+    source_glasses_ratio = float(source_profile.get("glasses_ratio", 0.0) or 0.0)
+    source_earring_ratio = float(source_profile.get("earring_ratio", 0.0) or 0.0)
+    source_necklace_ratio = float(source_profile.get("necklace_ratio", 0.0) or 0.0)
+    source_headwear_score = float(source_profile.get("headwear_score", 0.0) or 0.0)
+    source_headwear_brim_score = float(source_profile.get("headwear_brim_score", 0.0) or 0.0)
+
+    headwear_surface_penalty = _estimate_relative_accessory_penalty(
+        candidate_profile["headwear_score"],
+        source_headwear_score,
+        tolerance_abs=0.08,
+        tolerance_scale=1.30,
+        ramp=0.45,
+    )
+    headwear_brim_penalty = _estimate_relative_accessory_penalty(
+        candidate_profile["headwear_brim_score"],
+        source_headwear_brim_score,
+        tolerance_abs=0.10,
+        tolerance_scale=1.35,
+        ramp=0.40,
+    )
+    headwear_brim_penalty = float(
+        max(
+            headwear_brim_penalty,
+            np.clip(
+                (
+                    float(candidate_profile["headwear_brim_score"])
+                    - max(
+                        0.58,
+                        source_headwear_brim_score + 0.08,
+                        source_headwear_brim_score * 1.18,
+                    )
+                ) / 0.20,
+                0.0,
+                1.0,
+            ),
+        )
+    )
+    headwear_penalty = float(max(headwear_surface_penalty, headwear_brim_penalty))
+    glasses_penalty = _estimate_relative_accessory_penalty(
+        candidate_profile["glasses_ratio"],
+        source_glasses_ratio,
+        tolerance_abs=0.018,
+        tolerance_scale=1.55,
+        ramp=0.10,
+    )
+    earring_penalty = _estimate_relative_accessory_penalty(
+        candidate_profile["earring_ratio"],
+        source_earring_ratio,
+        tolerance_abs=0.008,
+        tolerance_scale=1.40,
+        ramp=0.06,
+    )
+    necklace_penalty = _estimate_relative_accessory_penalty(
+        candidate_profile["necklace_ratio"],
+        source_necklace_ratio,
+        tolerance_abs=0.012,
+        tolerance_scale=1.45,
+        ramp=0.09,
+    )
+    jewelry_penalty = float(np.clip(0.72 * earring_penalty + 0.28 * necklace_penalty, 0.0, 1.0))
+    total_penalty = float(
+        np.clip(
+            0.52 * headwear_penalty
+            + 0.30 * glasses_penalty
+            + 0.18 * jewelry_penalty,
+            0.0,
+            1.0,
+        )
+    )
+
+    exclude = bool(
+        headwear_penalty >= float(getattr(self.config, "accessory_exclusion_headwear_threshold", 0.34))
+        or glasses_penalty >= float(getattr(self.config, "accessory_exclusion_glasses_threshold", 0.26))
+        or jewelry_penalty >= float(getattr(self.config, "accessory_exclusion_jewelry_threshold", 0.28))
+        or total_penalty >= float(getattr(self.config, "accessory_exclusion_penalty_threshold", 0.58))
+    )
+    return {
+        "exclude": exclude,
+        "total_penalty": total_penalty,
+        "headwear_penalty": float(headwear_penalty),
+        "headwear_surface_penalty": float(headwear_surface_penalty),
+        "headwear_brim_penalty": float(headwear_brim_penalty),
+        "glasses_penalty": float(glasses_penalty),
+        "earring_penalty": float(earring_penalty),
+        "necklace_penalty": float(necklace_penalty),
+        "jewelry_penalty": float(jewelry_penalty),
+        "candidate_profile": candidate_profile,
+        "source_profile": {
+            "glasses_ratio": source_glasses_ratio,
+            "earring_ratio": source_earring_ratio,
+            "necklace_ratio": source_necklace_ratio,
+            "headwear_score": source_headwear_score,
+            "headwear_brim_score": source_headwear_brim_score,
+        },
+    }
 
 def _estimate_hair_shape_profile(
     self,
@@ -1481,6 +2350,21 @@ def _build_prompt(
     gender_mode = explicit_branch or _infer_subject_gender(
         hairstyle_text, subject_gender
     )
+    explicit_no_bangs_requested = _resolve_requested_no_bangs_state(
+        hairstyle_text,
+        normalized_prompt_context,
+        subject_gender=gender_mode,
+    )
+    explicit_no_perm_curl_requested = _resolve_requested_no_perm_curl_state(
+        hairstyle_text,
+        normalized_prompt_context,
+    )
+    # 페이로드 negative_prompt / preference.exclude 에서 파싱된 태그
+    user_negative_tags: List[str] = list(normalized_prompt_context.get("user_negative_tags") or [])
+    # haystyle_text 내 "no X" 패턴도 자동 반영 (backward compat)
+    for _tag in _extract_no_tags_from_text(hairstyle_text):
+        if _tag not in user_negative_tags:
+            user_negative_tags.append(_tag)
     subject_profile = _resolve_subject_pipeline_profile(gender_mode)
     male_fringe_positive_hint = ""
     male_fringe_negative_hint = ""
@@ -1488,6 +2372,30 @@ def _build_prompt(
         male_fringe_positive_hint, male_fringe_negative_hint = _resolve_male_fringe_prompt_hints(
             hairstyle_text
         )
+    no_bangs_positive_hint = ""
+    no_bangs_negative_hint = ""
+    if explicit_no_bangs_requested:
+        no_bangs_positive_hint = "open forehead, no bangs"
+        no_bangs_negative_hint = (
+            "full bangs, blunt bangs, heavy fringe, thick curtain bangs, forehead-covering front hair, "
+            "thick face-covering front panels, dense cheek-covering side fringe, "
+        )
+    no_perm_curl_negative_hint = ""
+    if explicit_no_perm_curl_requested:
+        no_perm_curl_negative_hint = (
+            "perm, permed hair, tight perm waves, spiral perm, chemical perm, "
+            "curly hair, tight curls, spiral curls, coiled hair, "
+            "wavy hair, beach waves, loose waves, wavy texture, "
+        )
+    # 사용자 전용 negative 태그 확장 (bangs/perm/curl/wave 중복은 위 hint에 흡수)
+    _filtered_user_tags = [
+        t for t in user_negative_tags
+        if t not in ("bangs", "bang", "fringe") or not explicit_no_bangs_requested
+        if t not in ("perm", "curl", "wave") or not explicit_no_perm_curl_requested
+    ]
+    user_negative_hint = _expand_user_negative_tags(_filtered_user_tags)
+    if user_negative_hint:
+        user_negative_hint += ", "
     structured_payload_used = bool(normalized_prompt_context.get("structured_payload_present"))
     neutral_safe_structured_short = (
         structured_payload_used
@@ -1538,6 +2446,13 @@ def _build_prompt(
             hair_length,
             subject_gender=gender_mode,
         )
+    normalized_style_lower = normalized_style.lower()
+    if (
+        no_bangs_positive_hint
+        and "open forehead" in normalized_style_lower
+        and "no bangs" in normalized_style_lower
+    ):
+        no_bangs_positive_hint = ""
     if male_bob_blocking_enabled and not blocked_vocabulary:
         blocked_vocabulary = list(_MALE_BRANCH_BLOCKED_VOCAB)
     preserve_source_garment = True
@@ -1703,6 +2618,8 @@ def _build_prompt(
             positive_parts.append(color_pos_hint)
         if male_fringe_positive_hint:
             positive_parts.append(male_fringe_positive_hint)
+        if no_bangs_positive_hint:
+            positive_parts.append(no_bangs_positive_hint)
         positive_parts.extend([
             "clean neckline",
             "photorealistic, natural lighting, sharp focus",
@@ -1712,8 +2629,11 @@ def _build_prompt(
         negative = (
             sd_neg
             + (", " if sd_neg else "")
+            + user_negative_hint
             + male_fringe_negative_hint
             + color_neg_hint
+            + no_bangs_negative_hint
+            + no_perm_curl_negative_hint
             + garment_negative_hint
             + negative_base
         )
@@ -1835,6 +2755,8 @@ def _build_prompt(
             positive_parts.append("strict short bob silhouette, hair mass ending above the neckline")
     if male_fringe_positive_hint:
         positive_parts.append(male_fringe_positive_hint)
+    if no_bangs_positive_hint:
+        positive_parts.append(no_bangs_positive_hint)
     if color_pos_hint:
         positive_parts.append(color_pos_hint)
     positive_parts.extend([
@@ -1854,9 +2776,12 @@ def _build_prompt(
         male_block_negative = ", ".join(_MALE_BRANCH_NEGATIVE_TERMS) + ", "
     negative = (
         neg_prefix
+        + user_negative_hint
         + male_block_negative
         + male_fringe_negative_hint
         + color_neg_hint
+        + no_bangs_negative_hint
+        + no_perm_curl_negative_hint
         + garment_negative_hint
         + negative_base
     )
@@ -1879,6 +2804,7 @@ def bind_prompt_methods_to_pipeline(cls) -> None:
     cls._infer_subject_gender = staticmethod(_infer_subject_gender)
     cls._normalize_prompt_context = staticmethod(_normalize_prompt_context)
     cls._resolve_requested_hair_length = staticmethod(_resolve_requested_hair_length)
+    cls._resolve_requested_no_bangs_state = staticmethod(_resolve_requested_no_bangs_state)
     cls._resolve_requested_bangs_state = staticmethod(_resolve_requested_bangs_state)
     cls._resolve_subject_pipeline_profile = staticmethod(_resolve_subject_pipeline_profile)
     cls._normalize_male_short_hairstyle_prompt_text = staticmethod(_normalize_male_short_hairstyle_prompt_text)
@@ -1888,6 +2814,8 @@ def bind_prompt_methods_to_pipeline(cls) -> None:
     cls._estimate_hair_color_distance = _estimate_hair_color_distance
     cls._estimate_short_tail_penalty = _estimate_short_tail_penalty
     cls._estimate_short_silhouette_penalty = _estimate_short_silhouette_penalty
+    cls._build_accessory_profile = _build_accessory_profile
+    cls._estimate_accessory_penalty_details = _estimate_accessory_penalty_details
     cls._estimate_accessory_penalty = _estimate_accessory_penalty
     cls._estimate_hair_shape_profile = _estimate_hair_shape_profile
     cls._estimate_male_medium_fit_penalty = _estimate_male_medium_fit_penalty

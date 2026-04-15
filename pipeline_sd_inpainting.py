@@ -142,11 +142,21 @@ class MirrAISDPipeline:
         if self._loaded:
             return
         logger.info("[SDPipeline] 모델 로딩 시작...")
+        stage_started = time.time()
         self._load_segface()
+        logger.info("[SDPipeline] load stage complete: segface (%.2fs)", time.time() - stage_started)
+        stage_started = time.time()
         self._load_sam2()
+        logger.info("[SDPipeline] load stage complete: sam2 (%.2fs)", time.time() - stage_started)
+        stage_started = time.time()
         self._load_mediapipe()
+        logger.info("[SDPipeline] load stage complete: mediapipe (%.2fs)", time.time() - stage_started)
+        stage_started = time.time()
         self._load_sd_pipeline()
+        logger.info("[SDPipeline] load stage complete: sd_pipeline (%.2fs)", time.time() - stage_started)
+        stage_started = time.time()
         self._load_lama()
+        logger.info("[SDPipeline] load stage complete: lama (%.2fs)", time.time() - stage_started)
         self._loaded = True
         logger.info("[SDPipeline] 모든 모델 로드 완료")
 
@@ -732,6 +742,22 @@ class MirrAISDPipeline:
         if debug_data_common is not None and segface_debug.get("meta"):
             debug_data_common["segface_mask_debug"] = segface_debug["meta"]
 
+        source_accessory_profile = self._build_accessory_profile(
+            img_rgb,
+            face_bbox,
+            hair_mask=hair_mask_base,
+            face_mask=face_region_mask,
+            glasses_mask=glasses_mask,
+            earring_mask=earring_mask,
+            necklace_mask=necklace_mask,
+        )
+        if debug_data_common is not None:
+            debug_data_common.setdefault("diagnostics", {})
+            debug_data_common["diagnostics"]["source_accessory_profile"] = {
+                key: float(value)
+                for key, value in source_accessory_profile.items()
+            }
+
         # ── Step 3: SAM2 refinement ───────────────────────────────────────────
         hair_mask, mask_source, mask_refine_mode_used = self._refine_with_sam2(
             img_rgb,
@@ -765,10 +791,17 @@ class MirrAISDPipeline:
             normalized_prompt_context,
             subject_gender=subject_gender_mode,
         )
+        explicit_no_bangs_requested = self._resolve_requested_no_bangs_state(
+            effective_hairstyle_text,
+            normalized_prompt_context,
+            subject_gender=subject_gender_mode,
+        )
         short_no_bangs_target = bool(hair_length == "short" and not bangs_requested)
         logger.info(
-            "[SDPipeline] front coverage resolution: bangs_requested=%s short_no_bangs_target=%s style_axes=%s",
+            "[SDPipeline] front coverage resolution: bangs_requested=%s explicit_no_bangs_requested=%s "
+            "short_no_bangs_target=%s style_axes=%s",
             bangs_requested,
+            explicit_no_bangs_requested,
             short_no_bangs_target,
             normalized_prompt_context.get("style_axes", {}),
         )
@@ -808,6 +841,7 @@ class MirrAISDPipeline:
                 "torso_hair_ratio": float(source_cloth_preclean_analysis.get("torso_hair_ratio", 0.0)),
                 "cloth_overlap_ratio": float(source_cloth_preclean_analysis.get("cloth_overlap_ratio", 0.0)),
                 "bangs_requested": bool(bangs_requested),
+                "explicit_no_bangs_requested": bool(explicit_no_bangs_requested),
                 "short_no_bangs_target": bool(short_no_bangs_target),
             }
         source_garment_prepass_mask: Optional[np.ndarray] = None
@@ -927,7 +961,7 @@ class MirrAISDPipeline:
         )
         no_bangs_forehead_lama_preclean_seed_mask = np.zeros((H, W), dtype=np.float32)
         if (
-            short_no_bangs_target
+            (short_no_bangs_target or explicit_no_bangs_requested)
             and bool(getattr(self.config, "short_no_bangs_disable_bangs_recovery", True))
         ):
             no_bangs_forehead_lama_preclean_seed_mask = np.maximum(
@@ -957,6 +991,9 @@ class MirrAISDPipeline:
             debug_data_common.setdefault("source_cloth_preclean", {})
             debug_data_common["source_cloth_preclean"]["requested_front_coverage_px"] = int(
                 self._count_active_mask_px(requested_front_coverage_mask)
+            )
+            debug_data_common["source_cloth_preclean"]["explicit_no_bangs_requested"] = bool(
+                explicit_no_bangs_requested
             )
         logger.info(
             f"[SDPipeline] 얼굴 픽셀 제거 완료, gen_px={hair_mask.sum():.0f}, removal_px={hair_mask_for_removal.sum():.0f}"
@@ -3321,6 +3358,10 @@ class MirrAISDPipeline:
                 _store_rgb("cv2_background_conditioning_cleaned_rgb", img_rgb_cleaned)
 
             _store_rgb("cv2_background_cleaned_rgb", img_rgb_cleaned)
+            _store_mask(
+                "pipeline_no_bangs_forehead_lama_preclean_mask",
+                no_bangs_forehead_lama_preclean_mask,
+            )
             _store_mask("pipeline_short_generation_mask", gen_mask)
 
             composite_hair_mask = gen_mask.astype(np.float32)
@@ -3352,6 +3393,36 @@ class MirrAISDPipeline:
             hair_mask_for_sd_before_core = hair_mask_for_sd.copy()
             img_rgb_for_sd   = img_rgb
             img_rgb_cleaned  = img_rgb
+            if (
+                explicit_no_bangs_requested
+                and bool(getattr(self.config, "short_no_bangs_forehead_lama_preclean", True))
+                and no_bangs_forehead_lama_preclean_seed_mask.shape == (H, W)
+            ):
+                dilate_kernel = (9, 13) if hair_length == "medium" else (11, 15)
+                no_bangs_forehead_lama_preclean_u8 = cv2.dilate(
+                    self._mask_to_u8(
+                        no_bangs_forehead_lama_preclean_seed_mask,
+                        threshold=0.08,
+                    ),
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, dilate_kernel),
+                    iterations=1,
+                )
+                no_bangs_forehead_lama_preclean_mask = (
+                    no_bangs_forehead_lama_preclean_u8.astype(np.float32) / 255.0
+                )
+                no_bangs_forehead_lama_preclean_px = int((no_bangs_forehead_lama_preclean_u8 > 0).sum())
+                if no_bangs_forehead_lama_preclean_px >= 24:
+                    img_rgb_cleaned = self._lama_inpaint(
+                        img_rgb_cleaned,
+                        no_bangs_forehead_lama_preclean_u8,
+                    )
+                    img_rgb_for_sd = img_rgb_cleaned
+                    no_bangs_forehead_lama_preclean_applied = True
+                    logger.info(
+                        "[SDPipeline] %s no-bangs forehead LaMa preclean applied: pixels=%d",
+                        hair_length,
+                        no_bangs_forehead_lama_preclean_px,
+                    )
             if float(bangs_restore_for_sd.sum()) > 0.0:
                 long_soft_bangs_mask = self._build_soft_bangs_generation_mask(
                     bangs_restore_for_sd,
@@ -3385,6 +3456,14 @@ class MirrAISDPipeline:
         _store_mask("pipeline_sd_inpaint_mask_before_core", hair_mask_for_sd_before_core)
         _store_mask("sd_inpaint_mask", hair_mask_for_sd)
         _store_rgb("sd_input_rgb", img_rgb_for_sd)
+        if debug_data_common is not None:
+            debug_data_common.setdefault("source_cloth_preclean", {})
+            debug_data_common["source_cloth_preclean"]["no_bangs_forehead_lama_preclean_px"] = int(
+                no_bangs_forehead_lama_preclean_px
+            )
+            debug_data_common["source_cloth_preclean"]["no_bangs_forehead_lama_preclean_applied"] = bool(
+                no_bangs_forehead_lama_preclean_applied
+            )
         if debug_images_common is not None:
             _store_rgb(
                 "pipeline_source_with_overwrite_core_overlay",
@@ -4028,12 +4107,18 @@ class MirrAISDPipeline:
                     logger.warning(f"[SDPipeline] short tail penalty 계산 실패(무시): {e}")
 
             accessory_penalty: Optional[float] = None
+            accessory_details: Optional[Dict[str, Any]] = None
+            accessory_excluded = False
             try:
                 post_rgb = cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB)
-                accessory_penalty = self._estimate_accessory_penalty(
+                accessory_details = self._estimate_accessory_penalty_details(
                     img_rgb=post_rgb,
                     face_bbox=face_bbox,
+                    source_accessory_profile=source_accessory_profile,
                 )
+                if isinstance(accessory_details, dict):
+                    accessory_penalty = float(accessory_details.get("total_penalty", 0.0))
+                    accessory_excluded = bool(accessory_details.get("exclude"))
             except Exception as e:
                 logger.warning(f"[SDPipeline] accessory penalty 계산 실패(무시): {e}")
 
@@ -4075,17 +4160,20 @@ class MirrAISDPipeline:
                 "short_silhouette_penalty": short_silhouette_penalty,
                 "tail_penalty": tail_penalty,
                 "accessory_penalty": accessory_penalty,
+                "accessory_details": accessory_details,
+                "accessory_excluded": accessory_excluded,
                 "male_medium_fit_penalty": male_medium_fit_penalty,
                 "gen_idx": gen_idx,
             })
             logger.info(
-                "[SDPipeline] candidate postprocess done: idx=%d/%d seed=%d short_silhouette_penalty=%s tail_penalty=%s accessory_penalty=%s",
+                "[SDPipeline] candidate postprocess done: idx=%d/%d seed=%d short_silhouette_penalty=%s tail_penalty=%s accessory_penalty=%s accessory_excluded=%s",
                 gen_idx + 1,
                 len(gen_images),
                 int(seed),
                 "none" if short_silhouette_penalty is None else f"{float(short_silhouette_penalty):.4f}",
                 "none" if tail_penalty is None else f"{float(tail_penalty):.4f}",
                 "none" if accessory_penalty is None else f"{float(accessory_penalty):.4f}",
+                accessory_excluded,
             )
 
         if has_color_request and target_hair_lab is not None and len(candidates) > 1:
@@ -4093,6 +4181,7 @@ class MirrAISDPipeline:
             if sortable_count >= 2:
                 if subject_profile.key == "male":
                     sort_key = lambda c: (
+                        bool(c.get("accessory_excluded", False)),
                         c["male_medium_fit_penalty"] is None,
                         c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
                         c["accessory_penalty"] is None,
@@ -4103,6 +4192,7 @@ class MirrAISDPipeline:
                     )
                 else:
                     sort_key = lambda c: (
+                        bool(c.get("accessory_excluded", False)),
                         c["accessory_penalty"] is None,
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
                         c["male_medium_fit_penalty"] is None,
@@ -4123,6 +4213,7 @@ class MirrAISDPipeline:
             if accessory_sortable >= 2 or fit_sortable >= 2:
                 if subject_profile.key == "male":
                     sort_key = lambda c: (
+                        bool(c.get("accessory_excluded", False)),
                         c["male_medium_fit_penalty"] is None,
                         c["male_medium_fit_penalty"] if c["male_medium_fit_penalty"] is not None else 1e9,
                         c["accessory_penalty"] is None,
@@ -4131,6 +4222,7 @@ class MirrAISDPipeline:
                     )
                 else:
                     sort_key = lambda c: (
+                        bool(c.get("accessory_excluded", False)),
                         c["accessory_penalty"] is None,
                         c["accessory_penalty"] if c["accessory_penalty"] is not None else 1e9,
                         c["male_medium_fit_penalty"] is None,
@@ -4152,6 +4244,7 @@ class MirrAISDPipeline:
             if silhouette_sortable >= 2 or tail_sortable >= 2 or accessory_sortable >= 2:
                 candidates.sort(
                     key=lambda c: (
+                        bool(c.get("accessory_excluded", False)),
                         c["short_silhouette_penalty"] is None,
                         c["short_silhouette_penalty"] if c["short_silhouette_penalty"] is not None else 1e9,
                         c["tail_penalty"] is None,
@@ -4177,6 +4270,7 @@ class MirrAISDPipeline:
                     "final_order": int(idx),
                     "seed": int(c["seed"]),
                     "gen_idx": int(c["gen_idx"]),
+                    "accessory_excluded": bool(c.get("accessory_excluded", False)),
                     "short_silhouette_penalty": (
                         None
                         if c["short_silhouette_penalty"] is None
@@ -4186,13 +4280,54 @@ class MirrAISDPipeline:
                     "accessory_penalty": (
                         None if c["accessory_penalty"] is None else float(c["accessory_penalty"])
                     ),
+                    "accessory_details": (
+                        None
+                        if not isinstance(c.get("accessory_details"), dict)
+                        else {
+                            "exclude": bool(c["accessory_details"].get("exclude", False)),
+                            "total_penalty": float(c["accessory_details"].get("total_penalty", 0.0)),
+                            "headwear_penalty": float(c["accessory_details"].get("headwear_penalty", 0.0)),
+                            "headwear_surface_penalty": float(c["accessory_details"].get("headwear_surface_penalty", 0.0)),
+                            "headwear_brim_penalty": float(c["accessory_details"].get("headwear_brim_penalty", 0.0)),
+                            "glasses_penalty": float(c["accessory_details"].get("glasses_penalty", 0.0)),
+                            "jewelry_penalty": float(c["accessory_details"].get("jewelry_penalty", 0.0)),
+                            "candidate_profile": {
+                                key: float(value)
+                                for key, value in (
+                                    c["accessory_details"].get("candidate_profile", {}) or {}
+                                ).items()
+                            },
+                        }
+                    ),
                     "color_distance": None if c["color_distance"] is None else float(c["color_distance"]),
                 }
                 for idx, c in enumerate(candidates)
             ]
+            eligible_candidates = [c for c in candidates if not bool(c.get("accessory_excluded", False))]
+            diag["candidate_selection"] = {
+                "requested_top_k": int(requested_top_k),
+                "total_candidates": int(len(candidates)),
+                "eligible_candidates": int(len(eligible_candidates)),
+                "excluded_candidates": int(len(candidates) - len(eligible_candidates)),
+            }
+
+        selected_candidates = [c for c in candidates if not bool(c.get("accessory_excluded", False))]
+        if selected_candidates:
+            selected_candidates = selected_candidates[:requested_top_k]
+        elif candidates:
+            selected_candidates = candidates[:1]
+            logger.warning(
+                "[SDPipeline] all candidates were accessory-filtered; falling back to the least-penalized candidate"
+            )
+            if debug_data_common is not None:
+                diag = debug_data_common.setdefault("diagnostics", {})
+                diag.setdefault("candidate_selection", {})
+                diag["candidate_selection"]["fallback_reason"] = "all_candidates_excluded"
+        else:
+            selected_candidates = []
 
         results: List[SDInpaintResult] = []
-        for rank, cand in enumerate(candidates[:requested_top_k]):
+        for rank, cand in enumerate(selected_candidates):
             if debug_images_common is not None and rank == 0:
                 debug_images_common["sd_generated_rank0_512"] = cand["preview_bgr"]
                 if isinstance(cand.get("generated_resized_rgb"), np.ndarray):

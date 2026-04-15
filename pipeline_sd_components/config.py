@@ -65,7 +65,10 @@ _NEGATIVE_BASE = (
 )
 
 _COMMON_STYLE_BLOCK_NEGATIVE = (
+    "hat, hats, cap, caps, baseball cap, beanie, beret, fedora, bonnet, headwear, headpiece, head covering, "
+    "helmet, hood up, hoodie hood, hooded, headband, bandana, scarf on head, tiara, crown, "
     "earring, earrings, drop earrings, dangling earrings, jewelry, ear accessories, necklace, accessories, piercings, "
+    "earbuds, earbud, airpods, airpod, earphones, headphones, headset, wired earphones, wired earbuds, "
     "dangling side locks, loose dangling side locks, long dangling side locks, dangling face-framing strands, "
     "dangling lower side tails, loose side tendrils touching clothing, side locks touching shoulders or clothing"
 )
@@ -319,6 +322,10 @@ class SDInpaintConfig:
     bg_fill_mode: str = "cv2"
 
     enable_post_cloth_refine: bool = True
+    accessory_exclusion_penalty_threshold: float = 0.58
+    accessory_exclusion_headwear_threshold: float = 0.34
+    accessory_exclusion_glasses_threshold: float = 0.26
+    accessory_exclusion_jewelry_threshold: float = 0.28
 
     # salon-photo style portrait standardization
     enable_input_standardization: bool = True
