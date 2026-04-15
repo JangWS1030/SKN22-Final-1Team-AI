@@ -142,11 +142,21 @@ class MirrAISDPipeline:
         if self._loaded:
             return
         logger.info("[SDPipeline] 모델 로딩 시작...")
+        stage_started = time.time()
         self._load_segface()
+        logger.info("[SDPipeline] load stage complete: segface (%.2fs)", time.time() - stage_started)
+        stage_started = time.time()
         self._load_sam2()
+        logger.info("[SDPipeline] load stage complete: sam2 (%.2fs)", time.time() - stage_started)
+        stage_started = time.time()
         self._load_mediapipe()
+        logger.info("[SDPipeline] load stage complete: mediapipe (%.2fs)", time.time() - stage_started)
+        stage_started = time.time()
         self._load_sd_pipeline()
+        logger.info("[SDPipeline] load stage complete: sd_pipeline (%.2fs)", time.time() - stage_started)
+        stage_started = time.time()
         self._load_lama()
+        logger.info("[SDPipeline] load stage complete: lama (%.2fs)", time.time() - stage_started)
         self._loaded = True
         logger.info("[SDPipeline] 모든 모델 로드 완료")
 
