@@ -499,6 +499,97 @@ def _resolve_requested_no_bangs_state(
     return False
 
 
+# ── 사용자 부정 태그 처리 ─────────────────────────────────────────────────────
+
+# 태그 → SD negative prompt 확장 매핑
+_USER_NEGATIVE_TAG_EXPANSIONS: Dict[str, str] = {
+    "perm":   "perm, permed hair, tight perm waves, spiral perm, chemical perm, wave perm",
+    "curl":   "curly hair, tight curls, spiral curls, ringlet curls, coiled hair",
+    "wave":   "wavy hair, beach waves, loose waves, natural waves, wavy texture",
+    "bangs":  "full bangs, blunt bangs, heavy fringe, thick curtain bangs, forehead-covering front hair",
+    "bang":   "full bangs, blunt bangs, heavy fringe, thick curtain bangs",
+    "fringe": "full bangs, heavy fringe, thick fringe, forehead-covering front hair",
+    "color":  "hair color change, hair dye, unnatural hair color",
+}
+
+# "no X" 패턴 → 정규 태그 추출
+_NO_TAG_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    ("no perm",    "perm"),
+    ("no curl",    "curl"),
+    ("no curls",   "curl"),
+    ("no wave",    "wave"),
+    ("no waves",   "wave"),
+    ("no bang",    "bangs"),
+    ("no bangs",   "bangs"),
+    ("no fringe",  "fringe"),
+    ("without perm",   "perm"),
+    ("without curl",   "curl"),
+    ("without wave",   "wave"),
+    ("without bang",   "bangs"),
+    ("without fringe", "fringe"),
+    ("펌 없이",    "perm"),
+    ("펌 없는",    "perm"),
+    ("컬 없이",    "curl"),
+    ("웨이브 없이", "wave"),
+    ("앞머리 없이", "bangs"),
+    ("앞머리 없는", "bangs"),
+)
+
+
+def _extract_no_tags_from_text(text: str) -> List[str]:
+    """텍스트에서 'no X' 패턴을 감지해 정규 태그 목록을 반환 (중복 제거)."""
+    lowered = _normalize_text(text)
+    found: List[str] = []
+    seen: set = set()
+    for pattern, tag in _NO_TAG_PATTERNS:
+        if pattern in lowered and tag not in seen:
+            seen.add(tag)
+            found.append(tag)
+    return found
+
+
+def _resolve_requested_no_perm_curl_state(
+    hairstyle_text: str,
+    prompt_context: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """'펌 없이' / 'no perm' / 'no curl' / 'no wave' 요청 감지."""
+    no_perm_curl_tokens = (
+        "no perm", "no curl", "no curls", "no wave", "no waves",
+        "without perm", "without curl", "without wave",
+        "straight only", "펌 없이", "펌 없는", "컬 없이", "웨이브 없이",
+    )
+    lowered = _normalize_text(hairstyle_text)
+    if any(token in lowered for token in no_perm_curl_tokens):
+        return True
+
+    context = _normalize_prompt_context(prompt_context)
+    structured_text = _stringify_structured_request(context, include_legacy_fields=True).lower()
+    if any(token in structured_text for token in no_perm_curl_tokens):
+        return True
+
+    user_negative_tags = context.get("user_negative_tags") or []
+    if isinstance(user_negative_tags, (list, tuple)):
+        return any(t in ("perm", "curl", "wave") for t in user_negative_tags)
+    return False
+
+
+def _expand_user_negative_tags(tags: List[str]) -> str:
+    """정규 태그 목록을 SD negative prompt 문자열로 확장."""
+    parts: List[str] = []
+    seen: set = set()
+    for tag in tags:
+        key = str(tag).strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        expanded = _USER_NEGATIVE_TAG_EXPANSIONS.get(key)
+        if expanded:
+            parts.append(expanded)
+        else:
+            parts.append(key)
+    return ", ".join(parts)
+
+
 def _male_explicit_female_coded_request(
     legacy_text: str,
     prompt_context: Dict[str, Any],
@@ -876,12 +967,19 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
             "controlled top texture",
         ])
 
-    if "bang" in lowered or "fringe" in lowered:
+    _has_bang_token = "bang" in lowered or "fringe" in lowered
+    _bang_negated = "no bang" in lowered or "no fringe" in lowered or "without bang" in lowered or "without fringe" in lowered
+    if _has_bang_token and not _bang_negated:
         hints.append("soft masculine fringe with natural forehead coverage")
     else:
         hints.append("natural masculine hairline with balanced forehead coverage")
 
-    if any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
+    _has_texture_token = any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm"))
+    _texture_negated = (
+        "no perm" in lowered or "no curl" in lowered or "no wave" in lowered
+        or "without perm" in lowered or "without curl" in lowered or "without wave" in lowered
+    )
+    if _has_texture_token and not _texture_negated:
         hints.append("light natural texture")
     elif any(token in lowered for token in ("straight", "sleek")):
         hints.append("soft natural finish")
@@ -926,12 +1024,19 @@ def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
             "controlled side silhouette",
         ])
 
-    if any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm")):
+    _has_texture_token_med = any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm"))
+    _texture_negated_med = (
+        "no perm" in lowered or "no curl" in lowered or "no wave" in lowered
+        or "without perm" in lowered or "without curl" in lowered or "without wave" in lowered
+    )
+    if _has_texture_token_med and not _texture_negated_med:
         hints.append("light natural texture")
     elif any(token in lowered for token in ("straight", "sleek")):
         hints.append("soft natural finish")
 
-    if "bang" in lowered or "fringe" in lowered:
+    _has_bang_token_med = "bang" in lowered or "fringe" in lowered
+    _bang_negated_med = "no bang" in lowered or "no fringe" in lowered or "without bang" in lowered or "without fringe" in lowered
+    if _has_bang_token_med and not _bang_negated_med:
         hints.append("soft masculine fringe with natural forehead coverage")
     else:
         hints.append("natural masculine hairline with balanced forehead coverage")
@@ -1002,9 +1107,16 @@ def _normalize_hairstyle_prompt_text(
         hints.append("rounded jaw-length bob silhouette")
     if "blunt" in lowered:
         hints.append("clean blunt bob outline")
-    if "bang" in lowered or "fringe" in lowered:
+    _has_bang = "bang" in lowered or "fringe" in lowered
+    _bang_neg = "no bang" in lowered or "no fringe" in lowered or "without bang" in lowered or "without fringe" in lowered
+    if _has_bang and not _bang_neg:
         hints.append("soft see-through bangs")
-    if any(token in lowered for token in ("wave", "wavy", "curl", "curly")):
+    _has_texture = any(token in lowered for token in ("wave", "wavy", "curl", "curly"))
+    _texture_neg = (
+        "no curl" in lowered or "no wave" in lowered
+        or "without curl" in lowered or "without wave" in lowered
+    )
+    if _has_texture and not _texture_neg:
         hints.append("light natural texture")
     if any(token in lowered for token in ("straight", "sleek")):
         hints.append("sleek straight finish")
@@ -2233,6 +2345,16 @@ def _build_prompt(
         normalized_prompt_context,
         subject_gender=gender_mode,
     )
+    explicit_no_perm_curl_requested = _resolve_requested_no_perm_curl_state(
+        hairstyle_text,
+        normalized_prompt_context,
+    )
+    # 페이로드 negative_prompt / preference.exclude 에서 파싱된 태그
+    user_negative_tags: List[str] = list(normalized_prompt_context.get("user_negative_tags") or [])
+    # haystyle_text 내 "no X" 패턴도 자동 반영 (backward compat)
+    for _tag in _extract_no_tags_from_text(hairstyle_text):
+        if _tag not in user_negative_tags:
+            user_negative_tags.append(_tag)
     subject_profile = _resolve_subject_pipeline_profile(gender_mode)
     male_fringe_positive_hint = ""
     male_fringe_negative_hint = ""
@@ -2248,6 +2370,22 @@ def _build_prompt(
             "full bangs, blunt bangs, heavy fringe, thick curtain bangs, forehead-covering front hair, "
             "thick face-covering front panels, dense cheek-covering side fringe, "
         )
+    no_perm_curl_negative_hint = ""
+    if explicit_no_perm_curl_requested:
+        no_perm_curl_negative_hint = (
+            "perm, permed hair, tight perm waves, spiral perm, chemical perm, "
+            "curly hair, tight curls, spiral curls, coiled hair, "
+            "wavy hair, beach waves, loose waves, wavy texture, "
+        )
+    # 사용자 전용 negative 태그 확장 (bangs/perm/curl/wave 중복은 위 hint에 흡수)
+    _filtered_user_tags = [
+        t for t in user_negative_tags
+        if t not in ("bangs", "bang", "fringe") or not explicit_no_bangs_requested
+        if t not in ("perm", "curl", "wave") or not explicit_no_perm_curl_requested
+    ]
+    user_negative_hint = _expand_user_negative_tags(_filtered_user_tags)
+    if user_negative_hint:
+        user_negative_hint += ", "
     structured_payload_used = bool(normalized_prompt_context.get("structured_payload_present"))
     neutral_safe_structured_short = (
         structured_payload_used
@@ -2481,9 +2619,11 @@ def _build_prompt(
         negative = (
             sd_neg
             + (", " if sd_neg else "")
+            + user_negative_hint
             + male_fringe_negative_hint
             + color_neg_hint
             + no_bangs_negative_hint
+            + no_perm_curl_negative_hint
             + garment_negative_hint
             + negative_base
         )
@@ -2626,10 +2766,12 @@ def _build_prompt(
         male_block_negative = ", ".join(_MALE_BRANCH_NEGATIVE_TERMS) + ", "
     negative = (
         neg_prefix
+        + user_negative_hint
         + male_block_negative
         + male_fringe_negative_hint
         + color_neg_hint
         + no_bangs_negative_hint
+        + no_perm_curl_negative_hint
         + garment_negative_hint
         + negative_base
     )
