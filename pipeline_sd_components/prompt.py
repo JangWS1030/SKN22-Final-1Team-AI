@@ -937,6 +937,11 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
     lowered = raw.lower()
     hints: List[str] = []
 
+    _lifted_front = any(
+        token in lowered
+        for token in ("lifted front", "open forehead", "lifted", "swept back", "slick back", "slicked back", "앞머리 올", "올리는")
+    )
+
     if any(token in lowered for token in ("mullet", "wolf cut", "soft mullet")):
         base_style = "modern masculine layered wolf cut with controlled soft mullet balance"
         hints.extend([
@@ -949,11 +954,18 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
         for token in ("swept-back", "swept back", "side part", "side-part", "dandy", "two block", "two-block", "comma", "regent")
     ):
         base_style = "clean masculine layered haircut with shorter back and sides"
-        hints.extend([
-            "controlled top volume",
-            "soft front movement",
-            "balanced side silhouette",
-        ])
+        if _lifted_front:
+            hints.extend([
+                "controlled top volume swept back",
+                "forehead fully exposed",
+                "balanced side silhouette",
+            ])
+        else:
+            hints.extend([
+                "controlled top volume",
+                "soft front movement",
+                "balanced side silhouette",
+            ])
     elif any(token in lowered for token in ("buzz", "crew", "fade", "taper", "undercut", "crop", "cropped", "short")):
         base_style = "clean masculine short crop haircut"
         hints.extend([
@@ -971,6 +983,8 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
     _bang_negated = "no bang" in lowered or "no fringe" in lowered or "without bang" in lowered or "without fringe" in lowered
     if _has_bang_token and not _bang_negated:
         hints.append("soft masculine fringe with natural forehead coverage")
+    elif _lifted_front:
+        hints.append("forehead fully exposed, top hair swept upward and back, no hair touching forehead")
     else:
         hints.append("natural masculine hairline with balanced forehead coverage")
 
@@ -2375,10 +2389,12 @@ def _build_prompt(
     no_bangs_positive_hint = ""
     no_bangs_negative_hint = ""
     if explicit_no_bangs_requested:
-        no_bangs_positive_hint = "open forehead, no bangs"
+        no_bangs_positive_hint = "open forehead, no bangs, forehead fully exposed"
         no_bangs_negative_hint = (
             "full bangs, blunt bangs, heavy fringe, thick curtain bangs, forehead-covering front hair, "
             "thick face-covering front panels, dense cheek-covering side fringe, "
+            "hair falling onto forehead, forward falling top hair, hair sweeping over forehead, "
+            "hair touching forehead, front hair down, hair over eyes, "
         )
     no_perm_curl_negative_hint = ""
     if explicit_no_perm_curl_requested:
