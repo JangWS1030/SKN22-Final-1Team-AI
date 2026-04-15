@@ -8629,9 +8629,11 @@ def _build_bangs_recovery_mask(
     forehead_y = int(forehead_top[1]) if isinstance(forehead_top, list) and len(forehead_top) >= 2 else int(y1)
 
     band_top = max(0, int(min(y1, forehead_y) - face_h * 0.16))
+    # band_bottom: 앞머리 복원 허용 하한. 이마 영역(눈썹 위)에만 머물도록 제한.
+    # 기존 0.48/0.42/0.44는 눈·코 부근까지 침범해 얼굴 찌그러짐을 유발.
     band_bottom = min(
         H,
-        int(forehead_y + face_h * (0.48 if hair_length == "short" else 0.42 if hair_length == "medium" else 0.44)),
+        int(forehead_y + face_h * (0.22 if hair_length == "short" else 0.18 if hair_length == "medium" else 0.20)),
     )
     center_half = max(
         18,
@@ -8649,7 +8651,7 @@ def _build_bangs_recovery_mask(
         return np.zeros((H, W), dtype=np.float32)
 
     support_top = max(0, int(band_top - face_h * 0.22))
-    support_bottom = min(H, int(forehead_y + face_h * (0.22 if hair_length == "short" else 0.16)))
+    support_bottom = min(H, int(forehead_y + face_h * (0.14 if hair_length == "short" else 0.11)))
     support_x1 = max(0, cx - max(24, int(face_w * (0.52 if hair_length == "short" else 0.48))))
     support_x2 = min(W, cx + max(24, int(face_w * (0.52 if hair_length == "short" else 0.48))))
     support_u8 = np.zeros((H, W), dtype=np.uint8)
@@ -8668,7 +8670,7 @@ def _build_bangs_recovery_mask(
 
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(recover_u8, 8)
     keep_u8 = np.zeros((H, W), dtype=np.uint8)
-    max_component_area = max(160, int(face_w * face_h * (0.36 if hair_length == "short" else 0.30)))
+    max_component_area = max(160, int(face_w * face_h * (0.20 if hair_length == "short" else 0.16)))
     max_component_width = max(34, int(face_w * (1.02 if hair_length == "short" else 0.92)))
     min_component_height = max(8, int(face_h * 0.08))
     for idx in range(1, num_labels):
@@ -8694,7 +8696,7 @@ def _build_bangs_recovery_mask(
         keep_u8,
         cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE,
-            (7, 11) if hair_length == "short" else (7, 11),
+            (7, 7),  # 세로 팽창 축소: band가 좁아진 만큼 하단 침범 방지
         ),
         iterations=1,
     )
