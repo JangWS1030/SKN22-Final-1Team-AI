@@ -2389,13 +2389,30 @@ def _build_prompt(
     no_bangs_positive_hint = ""
     no_bangs_negative_hint = ""
     if explicit_no_bangs_requested:
-        no_bangs_positive_hint = "open forehead, no bangs, forehead fully exposed"
-        no_bangs_negative_hint = (
-            "full bangs, blunt bangs, heavy fringe, thick curtain bangs, forehead-covering front hair, "
-            "thick face-covering front panels, dense cheek-covering side fringe, "
-            "hair falling onto forehead, forward falling top hair, hair sweeping over forehead, "
-            "hair touching forehead, front hair down, hair over eyes, "
-        )
+        # 남성: 앞머리 없음 = 짧게 치고 올리는 스타일 → upswept/lifted 키워드 강화
+        # 여성: 앞머리 없음 = 기르거나 가르마로 넘기는 스타일 → parted/swept 키워드 사용
+        if gender_mode == "male":
+            no_bangs_positive_hint = (
+                "open forehead, no bangs, forehead fully exposed, "
+                "hair lifted upward and back, clean exposed hairline"
+            )
+            no_bangs_negative_hint = (
+                "full bangs, blunt bangs, heavy fringe, thick curtain bangs, forehead-covering front hair, "
+                "thick face-covering front panels, dense cheek-covering side fringe, "
+                "hair falling onto forehead, forward falling top hair, hair sweeping over forehead, "
+                "hair touching forehead, front hair down, hair over eyes, "
+            )
+        else:
+            no_bangs_positive_hint = (
+                "open forehead, no bangs, forehead fully exposed, "
+                "hair parted away from forehead, side-swept style"
+            )
+            no_bangs_negative_hint = (
+                "full bangs, blunt bangs, heavy fringe, thick curtain bangs, forehead-covering front hair, "
+                "thick face-covering front panels, dense cheek-covering side fringe, "
+                "hair falling onto forehead, forward falling top hair, hair sweeping over forehead, "
+                "hair touching forehead, front hair down, hair over eyes, "
+            )
     no_perm_curl_negative_hint = ""
     if explicit_no_perm_curl_requested:
         no_perm_curl_negative_hint = (

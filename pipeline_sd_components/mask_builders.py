@@ -8604,11 +8604,16 @@ def _build_bangs_recovery_mask(
     *,
     landmark_debug_data: Optional[Dict[str, Any]] = None,
     hair_length: str = "short",
+    subject_gender: str = "unknown",
 ) -> np.ndarray:
     """
     얼굴 보호 마스크에 의해 같이 깎인 앞머리만 제한적으로 복원한다.
     중앙 이마 밴드에서 원래 hair mask가 잡고 있던 성분만 되살린다.
+
+    남성: 앞머리=내리는 스타일 요청 시 이마 밴드를 더 좁게 유지 (올리는 방향 억제)
+    여성: 앞머리가 자연스럽게 내려오는 경우가 많아 약간 넓은 밴드 허용
     """
+    _is_male = str(subject_gender or "").strip().lower() == "male"
     H, W = hair_mask.shape[:2]
     if protect_mask.shape != (H, W):
         return np.zeros((H, W), dtype=np.float32)
@@ -8631,10 +8636,13 @@ def _build_bangs_recovery_mask(
     band_top = max(0, int(min(y1, forehead_y) - face_h * 0.16))
     # band_bottom: 앞머리 복원 허용 하한. 이마 영역(눈썹 위)에만 머물도록 제한.
     # 기존 0.48/0.42/0.44는 눈·코 부근까지 침범해 얼굴 찌그러짐을 유발.
-    band_bottom = min(
-        H,
-        int(forehead_y + face_h * (0.22 if hair_length == "short" else 0.18 if hair_length == "medium" else 0.20)),
-    )
+    # 남성: 앞머리가 이마에 밀착되는 경우가 많아 좁게 유지 (0.22/0.18/0.20)
+    # 여성: 앞머리가 자연스럽게 아래로 내려오는 경우가 많아 약간 더 허용 (0.28/0.24/0.26)
+    if _is_male:
+        _band_ratio = 0.22 if hair_length == "short" else 0.18 if hair_length == "medium" else 0.20
+    else:
+        _band_ratio = 0.28 if hair_length == "short" else 0.24 if hair_length == "medium" else 0.26
+    band_bottom = min(H, int(forehead_y + face_h * _band_ratio))
     center_half = max(
         18,
         int(face_w * (0.50 if hair_length == "short" else 0.50 if hair_length == "medium" else 0.54)),

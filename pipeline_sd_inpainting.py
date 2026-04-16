@@ -937,6 +937,7 @@ class MirrAISDPipeline:
             face_bbox,
             landmark_debug_data=landmark_debug_data,
             hair_length=hair_length,
+            subject_gender=subject_gender_mode,
         )
         bangs_restore_for_sd = self._build_bangs_recovery_mask(
             hair_mask_before_face_protect,
@@ -944,6 +945,7 @@ class MirrAISDPipeline:
             face_bbox,
             landmark_debug_data=landmark_debug_data,
             hair_length=hair_length,
+            subject_gender=subject_gender_mode,
         )
         requested_front_coverage_mask = self._build_requested_front_coverage_mask(
             (H, W),
@@ -976,7 +978,10 @@ class MirrAISDPipeline:
                 _x1, _y1, _x2, _y2 = face_bbox
                 _face_h = max(int(_y2 - _y1), 1)
                 _forehead_top = max(0, int(_y1 - _face_h * 0.16))
-                _forehead_bottom = min(H, int(_y1 + _face_h * 0.50))
+                # 남성 no-bangs: 짧게 치고 올리는 스타일 → 이마 아래까지 적극 제거 (0.50)
+                # 여성 no-bangs: 가르마/자연스럽게 넘기는 스타일 → 이마 상단만 보수적 제거 (0.32)
+                _forehead_ratio = 0.50 if subject_gender_mode == "male" else 0.32
+                _forehead_bottom = min(H, int(_y1 + _face_h * _forehead_ratio))
                 _forehead_band = np.zeros((H, W), dtype=np.float32)
                 _forehead_band[_forehead_top:_forehead_bottom, :] = 1.0
                 _forehead_hair = np.clip(
@@ -987,8 +992,9 @@ class MirrAISDPipeline:
                 if float(_forehead_hair.sum()) >= 12.0:
                     no_bangs_forehead_lama_preclean_seed_mask = _forehead_hair
                     logger.info(
-                        "[SDPipeline] no-bangs forehead preclean seed fallback: "
+                        "[SDPipeline] no-bangs forehead preclean seed fallback (%s): "
                         "recovery mask empty, using forehead hair pixels px=%.0f",
+                        subject_gender_mode,
                         float(_forehead_hair.sum()),
                     )
             bangs_restore_for_removal = np.zeros((H, W), dtype=np.float32)
