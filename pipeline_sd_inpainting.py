@@ -1045,6 +1045,9 @@ class MirrAISDPipeline:
             subject_gender=subject_gender_mode,
             bangs_requested=bangs_requested,
         )
+        # front=down 합성 시 원본 앞머리 보존 여부 판단용:
+        # protect_mask가 잘라낸 앞머리 픽셀이 많으면 원본에 앞머리가 있는 것 → SD 재생성 대신 보존
+        _original_bang_px_in_protect = float(bangs_restore_for_sd.sum())
         requested_front_coverage_mask = self._build_requested_front_coverage_mask(
             (H, W),
             face_bbox,
@@ -1067,11 +1070,11 @@ class MirrAISDPipeline:
                 np.clip(bangs_restore_for_removal.astype(np.float32), 0.0, 1.0),
                 np.clip(bangs_restore_for_sd.astype(np.float32), 0.0, 1.0),
             ).astype(np.float32)
-            # Fallback: _build_bangs_recovery_mask 범위 축소(ffed5de) 이후,
-            # 앞머리가 protect_mask 경계 밖에만 있으면 overlap이 작아 seed가 0이 됨.
-            # seed가 비어있으면 hair_mask_before_face_protect 에서 이마 영역 픽셀을 직접 사용해
-            # LaMA 앞머리 제거가 건너뛰어지는 문제를 방지한다.
-            if float(no_bangs_forehead_lama_preclean_seed_mask.sum()) < 20.0:
+            # explicit_no_bangs(front=lifted): 좁은 band seed만으로는 무거운 앞머리 하단이
+            # 포함되지 않아 LaMA가 부분적으로만 제거함 → SD가 조건 이미지에서 앞머리를 보고
+            # 다시 생성하는 문제. explicit_no_bangs 시에는 항상 넓은 이마 band와 합집합.
+            # Fallback: seed가 비어있으면 동일 logic으로 LaMA 건너뜀 방지.
+            if explicit_no_bangs_requested or float(no_bangs_forehead_lama_preclean_seed_mask.sum()) < 20.0:
                 _x1, _y1, _x2, _y2 = face_bbox
                 _face_h = max(int(_y2 - _y1), 1)
                 _forehead_top = max(0, int(_y1 - _face_h * 0.16))
@@ -1087,12 +1090,17 @@ class MirrAISDPipeline:
                     1.0,
                 )
                 if float(_forehead_hair.sum()) >= 12.0:
-                    no_bangs_forehead_lama_preclean_seed_mask = _forehead_hair
+                    no_bangs_forehead_lama_preclean_seed_mask = np.maximum(
+                        no_bangs_forehead_lama_preclean_seed_mask,
+                        _forehead_hair,
+                    )
                     logger.info(
-                        "[SDPipeline] no-bangs forehead preclean seed fallback (%s): "
-                        "recovery mask empty, using forehead hair pixels px=%.0f",
+                        "[SDPipeline] no-bangs forehead preclean seed expanded (%s): "
+                        "explicit_no_bangs=%s forehead_ratio=%.2f px=%.0f",
                         subject_gender_mode,
-                        float(_forehead_hair.sum()),
+                        explicit_no_bangs_requested,
+                        _forehead_ratio,
+                        float(no_bangs_forehead_lama_preclean_seed_mask.sum()),
                     )
             bangs_restore_for_removal = np.zeros((H, W), dtype=np.float32)
             bangs_restore_for_sd = np.zeros((H, W), dtype=np.float32)
@@ -5171,6 +5179,20 @@ class MirrAISDPipeline:
                     float(composite_mask.sum()),
                     float(composite_mask_for_blend.sum()),
                 )
+            # front=down 요청이지만 원본에 앞머리가 이미 있는 경우:
+            # composite_bangs_release_mask로 SD 결과를 90% 반영하면 SD가 올린 앞머리를 생성해
+            # 원본 앞머리가 지워지는 문제 발생. 원본에 충분한 앞머리가 있으면 release mask를 쓰지 않고
+            # protect_mask가 이마를 보호하도록 하여 원본 앞머리를 그대로 유지한다.
+            _preserve_original_bangs = (
+                bangs_requested
+                and _original_bang_px_in_protect > 100.0
+            )
+            if _preserve_original_bangs:
+                logger.info(
+                    "[SDPipeline] front=down + original bangs detected (px=%.0f): "
+                    "skipping composite_bangs_release_mask to preserve original bangs",
+                    _original_bang_px_in_protect,
+                )
             composited_bgr = self._composite(
                 composite_base_bgr,
                 composite_base_rgb,
@@ -5182,15 +5204,19 @@ class MirrAISDPipeline:
                 garment_mask=garment_composite_mask,
                 protect_mask=protect_mask_for_sd,  # 얼굴 영역 alpha 침범 방지
                 protect_release_mask=(
-                    composite_bangs_release_mask
-                    if float(composite_bangs_release_mask.sum()) > 0.0
-                    else None
+                    None
+                    if _preserve_original_bangs
+                    else (
+                        composite_bangs_release_mask
+                        if float(composite_bangs_release_mask.sum()) > 0.0
+                        else None
+                    )
                 ),
                 hair_length=hair_length,
                 subject_gender=subject_gender_mode,
                 fringe_requested=bangs_requested,
             )
-            if float(composite_bangs_release_mask.sum()) > 60.0:
+            if not _preserve_original_bangs and float(composite_bangs_release_mask.sum()) > 60.0:
                 try:
                     composited_bgr = cv2.cvtColor(
                         self._cv2_refine_cloth_region(
