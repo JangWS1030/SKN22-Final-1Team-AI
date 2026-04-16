@@ -1048,6 +1048,10 @@ class MirrAISDPipeline:
         # front=down 합성 시 원본 앞머리 보존 여부 판단용:
         # protect_mask가 잘라낸 앞머리 픽셀이 많으면 원본에 앞머리가 있는 것 → SD 재생성 대신 보존
         _original_bang_px_in_protect = float(bangs_restore_for_sd.sum())
+        # [v183 fix] 원본 앞머리 마스크를 미리 저장: 나중에 removal_mask_for_post에서 제외하는 데 사용
+        _saved_original_bangs_mask: np.ndarray = np.clip(
+            bangs_restore_for_sd.astype(np.float32), 0.0, 1.0
+        ).copy()
         requested_front_coverage_mask = self._build_requested_front_coverage_mask(
             (H, W),
             face_bbox,
@@ -5281,11 +5285,32 @@ class MirrAISDPipeline:
                 and removal_mask_for_post is not None
             ):
                 try:
+                    # [v183 fix] 원본 앞머리 보존 모드: LaMA Cleanup이 앞머리를 잔머리로
+                    # 오인하여 회색 박스 스머지를 만드는 것을 방지하기 위해,
+                    # removal_mask_for_post 에서 _saved_original_bangs_mask 구역을 뺀다.
+                    _cleanup_removal_mask = removal_mask_for_post
+                    if _preserve_original_bangs and float(_saved_original_bangs_mask.sum()) > 0.0:
+                        _bangs_exclusion = cv2.dilate(
+                            (_saved_original_bangs_mask > 0.08).astype(np.uint8) * 255,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+                            iterations=1,
+                        ).astype(np.float32) / 255.0
+                        _cleanup_removal_mask = np.clip(
+                            removal_mask_for_post.astype(np.float32) - _bangs_exclusion,
+                            0.0,
+                            1.0,
+                        ).astype(np.float32)
+                        logger.info(
+                            "[SDPipeline] preserve_original_bangs: bangs excluded from "
+                            "removal_mask_for_post (px_before=%.0f px_after=%.0f)",
+                            float(removal_mask_for_post.sum()),
+                            float(_cleanup_removal_mask.sum()),
+                        )
                     post_rgb = cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB)
                     post_rgb = self._final_cutoff_cleanup(
                         post_rgb,
                         face_bbox=face_bbox,
-                        removal_mask=removal_mask_for_post,
+                        removal_mask=_cleanup_removal_mask,
                         cutoff_y=cutoff_y_for_post,
                         shoulder_protect=shoulder_protect_for_post,
                         neckline_preserve=neckline_preserve_for_post,
@@ -5308,7 +5333,7 @@ class MirrAISDPipeline:
                         post_rgb,
                         face_bbox=face_bbox,
                         cutoff_y=cutoff_y_for_post,
-                        removal_mask=removal_mask_for_post,
+                        removal_mask=_cleanup_removal_mask,
                         shoulder_protect=shoulder_protect_for_post,
                         neckline_preserve=neckline_preserve_for_post,
                         lateral_preserve=lateral_neck_preserve_for_post,
