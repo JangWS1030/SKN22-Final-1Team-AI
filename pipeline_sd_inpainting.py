@@ -2281,6 +2281,30 @@ class MirrAISDPipeline:
                     0.0,
                     1.0,
                 )
+                # ── composite release mask 이마 이내로 cap ───────────────────
+                # requested_front_coverage_mask 가 y1+0.56*face_h 까지 내려가고
+                # 이게 soft_bangs_generation_mask → composite_bangs_release_mask로
+                # 이어지면 보호 마스크가 눈/코 레벨까지 해제되어, 생성된 앞머리가
+                # 얼굴 중간까지 찍히는 dark artifact 유발.
+                # gen_mask(SD inpaint 범위)는 깊게 유지하고 release만 이마로 제한.
+                if face_bbox is not None and float(composite_bangs_release_mask.sum()) > 0.0:
+                    _rx1, _ry1, _rx2, _ry2 = face_bbox
+                    _rface_h = max(int(_ry2 - _ry1), 1)
+                    # 눈썹 위까지만 해제 (short: 0.25, medium: 0.22, long: 0.20)
+                    # 여성은 이마 자체가 더 낮은 경향 → 약간 더 관대하게
+                    if subject_gender_mode == "male":
+                        _rel_ratio = 0.25 if hair_length == "short" else 0.22 if hair_length == "medium" else 0.20
+                    else:
+                        _rel_ratio = 0.30 if hair_length == "short" else 0.26 if hair_length == "medium" else 0.22
+                    _rel_y_limit = int(_ry1 + _rface_h * _rel_ratio)
+                    _rel_cap = np.zeros_like(composite_bangs_release_mask)
+                    _rel_cap[:_rel_y_limit, :] = 1.0
+                    composite_bangs_release_mask = composite_bangs_release_mask * _rel_cap
+                    logger.debug(
+                        "[SDPipeline] composite_bangs_release_mask capped at y=%d "
+                        "(face_top=%d face_h=%d ratio=%.2f gender=%s)",
+                        _rel_y_limit, _ry1, _rface_h, _rel_ratio, subject_gender_mode,
+                    )
                 gen_mask = np.maximum(
                     gen_mask,
                     np.clip(soft_bangs_generation_mask.astype(np.float32), 0.0, 1.0),
