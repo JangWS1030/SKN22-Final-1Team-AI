@@ -5161,9 +5161,24 @@ class MirrAISDPipeline:
             # alpha가 새어나와 SD 생성물(dark artifact)이 눈/코에 찍히는 문제 발생.
             # → protect 영역을 미리 composite_mask에서 빼면 hair_alpha≈0 확보.
             #   이마 앞머리(이마 release mask)는 _composite() 내부에서 alpha를 복원함.
+            # front=down 요청이지만 원본에 앞머리가 이미 있는 경우:
+            # composite_bangs_release_mask로 SD 결과를 90% 반영하면 SD가 올린 앞머리를 생성해
+            # 원본 앞머리가 지워지는 문제 발생. 원본에 충분한 앞머리가 있으면 release mask를 쓰지 않고
+            # protect_mask가 이마를 보호하도록 하여 원본 앞머리를 그대로 유지한다.
+            _preserve_original_bangs = (
+                bangs_requested
+                and _original_bang_px_in_protect > 100.0
+            )
+            if _preserve_original_bangs:
+                logger.info(
+                    "[SDPipeline] front=down + original bangs detected (px=%.0f): "
+                    "skipping composite_bangs_release_mask to preserve original bangs",
+                    _original_bang_px_in_protect,
+                )
             composite_mask_for_blend = composite_mask.astype(np.float32).copy()
             if (
                 bangs_requested
+                and not _preserve_original_bangs  # 보존 모드에선 subtract 생략 (경계 공백 방지)
                 and protect_mask_for_sd.shape == (H, W)
                 and float(composite_bangs_release_mask.sum()) > 0.0
             ):
@@ -5178,20 +5193,6 @@ class MirrAISDPipeline:
                     "px_before=%.0f px_after=%.0f",
                     float(composite_mask.sum()),
                     float(composite_mask_for_blend.sum()),
-                )
-            # front=down 요청이지만 원본에 앞머리가 이미 있는 경우:
-            # composite_bangs_release_mask로 SD 결과를 90% 반영하면 SD가 올린 앞머리를 생성해
-            # 원본 앞머리가 지워지는 문제 발생. 원본에 충분한 앞머리가 있으면 release mask를 쓰지 않고
-            # protect_mask가 이마를 보호하도록 하여 원본 앞머리를 그대로 유지한다.
-            _preserve_original_bangs = (
-                bangs_requested
-                and _original_bang_px_in_protect > 100.0
-            )
-            if _preserve_original_bangs:
-                logger.info(
-                    "[SDPipeline] front=down + original bangs detected (px=%.0f): "
-                    "skipping composite_bangs_release_mask to preserve original bangs",
-                    _original_bang_px_in_protect,
                 )
             composited_bgr = self._composite(
                 composite_base_bgr,
