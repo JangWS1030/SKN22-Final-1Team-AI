@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-테스트: front=down, down fringe 파라미터 처리 확인
+테스트: 앞머리 제거 파라미터 처리 확인 (no fringe)
 """
 
 from pipeline_sd_components import prompt as prompt_module
 
 # 사용자 입력 파라미터
-hairstyle_text = "male haircut, masculine salon style, short crop, soft two-block, down fringe, non-parted crop, soft volume, natural mood"
+hairstyle_text = "male haircut, masculine salon style, short crop, soft two-block, open forehead, non-parted crop, soft volume, natural mood"
 color_text = "brown"
-preference_text = "gender=male, length=short, mood=natural, texture=waved, color=brown, budget=low, two_block=soft, front=down, parting=non_parted, short crop, down fringe, non-parted crop, male salon vocabulary only"
+preference_text = "gender=male, length=short, mood=natural, texture=waved, color=brown, budget=low, two_block=soft, front=lifted, parting=non_parted, short crop, non-parted crop, male salon vocabulary only"
 
 # prompt_context 구성 (실제 파이프라인에서 어떻게 구성되는지 확인 필요)
 prompt_context = {
