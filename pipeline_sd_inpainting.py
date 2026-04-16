@@ -3506,6 +3506,55 @@ class MirrAISDPipeline:
                     _store_mask("pipeline_bangs_generation_soft_mask", long_soft_bangs_mask)
                     _store_mask("pipeline_bangs_composite_release_mask", composite_bangs_release_mask)
 
+        # ── no-bangs composite release mask ────────────────────────────────────
+        # face protect가 이마를 100% 차단하면, LaMA preclean이 성공해도 SD가 생성한
+        # 깨끗한 이마(앞머리 없음)가 composite에 반영되지 않고 composite_base
+        # (img_rgb_cleaned)만 표시된다. LaMA preclean 실패 시 원본 앞머리가 그대로 남음.
+        # → 앞머리 없애기 요청 시 이마 영역의 face protect를 부분적으로 해제해서
+        #   SD가 생성한 앞머리 없는 이마가 최종 composite에 반영되게 한다.
+        #   (앞머리 내리기 release mask 와 동일한 원리, 방향만 반대)
+        if (
+            (short_no_bangs_target or explicit_no_bangs_requested)
+            and face_bbox is not None
+            and float(no_bangs_forehead_lama_preclean_seed_mask.sum()) > 0.0
+        ):
+            _nb_rx1, _nb_ry1, _nb_rx2, _nb_ry2 = face_bbox
+            _nb_face_h = max(int(_nb_ry2 - _nb_ry1), 1)
+            # 이마 release 깊이: 앞머리 내리기 cap과 동일 비율 사용 (눈썹 위까지)
+            if subject_gender_mode == "male":
+                _nb_ratio = 0.25 if hair_length == "short" else 0.22 if hair_length == "medium" else 0.20
+            else:
+                _nb_ratio = 0.30 if hair_length == "short" else 0.26 if hair_length == "medium" else 0.22
+            _nb_y_limit = int(_nb_ry1 + _nb_face_h * _nb_ratio)
+            _nb_seed_u8 = cv2.dilate(
+                self._mask_to_u8(no_bangs_forehead_lama_preclean_seed_mask, threshold=0.08),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 9)),
+                iterations=1,
+            )
+            _nb_soft = cv2.GaussianBlur(
+                _nb_seed_u8.astype(np.float32) / 255.0,
+                (0, 0),
+                sigmaX=2.0,
+                sigmaY=2.4,
+            ).astype(np.float32)
+            # 눈썹 위 이마 영역으로 제한 (eyes/nose에 SD artifact 유입 방지)
+            _nb_cap = np.zeros((H, W), dtype=np.float32)
+            _nb_cap[:_nb_y_limit, :] = 1.0
+            _nb_soft = np.clip(_nb_soft * _nb_cap * 1.10, 0.0, 1.0)
+            if float(_nb_soft.sum()) > 10.0:
+                composite_bangs_release_mask = np.maximum(
+                    composite_bangs_release_mask,
+                    _nb_soft,
+                ).astype(np.float32)
+                _store_mask("pipeline_no_bangs_composite_release_mask", _nb_soft)
+                logger.debug(
+                    "[SDPipeline] no-bangs composite release mask built: px=%.0f y_limit=%d (%s/%s)",
+                    float(_nb_soft.sum()),
+                    _nb_y_limit,
+                    subject_gender_mode,
+                    hair_length,
+                )
+
         _store_mask("pipeline_sd_inpaint_mask_before_core", hair_mask_for_sd_before_core)
         _store_mask("sd_inpaint_mask", hair_mask_for_sd)
         _store_rgb("sd_input_rgb", img_rgb_for_sd)
