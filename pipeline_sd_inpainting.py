@@ -968,6 +968,29 @@ class MirrAISDPipeline:
                 np.clip(bangs_restore_for_removal.astype(np.float32), 0.0, 1.0),
                 np.clip(bangs_restore_for_sd.astype(np.float32), 0.0, 1.0),
             ).astype(np.float32)
+            # Fallback: _build_bangs_recovery_mask 범위 축소(ffed5de) 이후,
+            # 앞머리가 protect_mask 경계 밖에만 있으면 overlap이 작아 seed가 0이 됨.
+            # seed가 비어있으면 hair_mask_before_face_protect 에서 이마 영역 픽셀을 직접 사용해
+            # LaMA 앞머리 제거가 건너뛰어지는 문제를 방지한다.
+            if float(no_bangs_forehead_lama_preclean_seed_mask.sum()) < 20.0:
+                _x1, _y1, _x2, _y2 = face_bbox
+                _face_h = max(int(_y2 - _y1), 1)
+                _forehead_top = max(0, int(_y1 - _face_h * 0.16))
+                _forehead_bottom = min(H, int(_y1 + _face_h * 0.50))
+                _forehead_band = np.zeros((H, W), dtype=np.float32)
+                _forehead_band[_forehead_top:_forehead_bottom, :] = 1.0
+                _forehead_hair = np.clip(
+                    hair_mask_before_face_protect.astype(np.float32) * _forehead_band,
+                    0.0,
+                    1.0,
+                )
+                if float(_forehead_hair.sum()) >= 12.0:
+                    no_bangs_forehead_lama_preclean_seed_mask = _forehead_hair
+                    logger.info(
+                        "[SDPipeline] no-bangs forehead preclean seed fallback: "
+                        "recovery mask empty, using forehead hair pixels px=%.0f",
+                        float(_forehead_hair.sum()),
+                    )
             bangs_restore_for_removal = np.zeros((H, W), dtype=np.float32)
             bangs_restore_for_sd = np.zeros((H, W), dtype=np.float32)
             requested_front_coverage_mask = np.zeros((H, W), dtype=np.float32)
