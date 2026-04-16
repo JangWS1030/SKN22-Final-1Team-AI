@@ -3733,11 +3733,18 @@ class MirrAISDPipeline:
                 )
 
         # ── Step 5: 얼굴 crop (IP-Adapter) ───────────────────────────────────
-        face_crop_pil = self._crop_face(img_pil, face_bbox)
+        # bangs_requested=True 인 경우, img_pil(LaMA 처리 후 앞머리 없음)을 레퍼런스로
+        # 쓰면 IP-Adapter가 "앞머리 없는 얼굴"을 참조해 SD가 앞머리를 올리는 방향으로
+        # 생성하는 역전 현상이 발생한다. 앞머리 유지/생성 요청 시에는 원본 이미지로 crop.
+        _face_crop_src = Image.fromarray(img_rgb) if bangs_requested else img_pil
+        face_crop_pil = self._crop_face(_face_crop_src, face_bbox)
         if debug_images_common is not None:
             debug_images_common["ip_adapter_face_crop"] = cv2.cvtColor(
                 np.array(face_crop_pil),
                 cv2.COLOR_RGB2BGR,
+            )
+            debug_images_common["ip_adapter_face_crop_source"] = (
+                "original_rgb" if bangs_requested else "cleaned_rgb"
             )
 
         source_garment_prompt_hints: Dict[str, Any] = {}
