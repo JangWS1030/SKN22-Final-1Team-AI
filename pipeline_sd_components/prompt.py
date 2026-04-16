@@ -673,8 +673,9 @@ def _build_male_structured_style_text(
         parts.append("male layered hairstyle")
 
     if front_styling == "down":
-        parts.append("soft masculine fringe")
-        parts.append("natural front texture")
+        parts.append("soft masculine fringe, hair falling forward naturally over forehead")
+        parts.append("natural front texture, forehead covered by front hair")
+        parts.append("front hair down, no lifted top, no swept-back crown")
     elif front_styling in {"lifted", "up", "up_style"}:
         parts.append("soft lifted front")
         parts.append("open forehead")
@@ -2384,22 +2385,30 @@ def _build_prompt(
     subject_profile = _resolve_subject_pipeline_profile(gender_mode)
     male_fringe_positive_hint = ""
     male_fringe_negative_hint = ""
+    # [v183+] front=down 시 SD가 올린 머리를 생성하지 못하도록 전용 negative hint
+    male_down_front_negative_hint = ""
     if gender_mode == "male":
         male_fringe_positive_hint, male_fringe_negative_hint = _resolve_male_fringe_prompt_hints(
             hairstyle_text
         )
         # style_axes.front_styling="down"인데 hairstyle_text에 fringe 키워드가 없으면
         # (structured male 경로) male_fringe_positive_hint가 비어있음 → 보완
-        if not male_fringe_positive_hint:
-            _style_axes = normalized_prompt_context.get("style_axes") or {}
-            _front_styling = _resolve_axis_value(
-                _style_axes, "front_styling", "front_style", "front"
-            )
-            if _front_styling in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}:
-                male_fringe_positive_hint = "soft masculine fringe with natural forehead coverage"
+        _style_axes_for_front = normalized_prompt_context.get("style_axes") or {}
+        _front_styling_resolved = _resolve_axis_value(
+            _style_axes_for_front, "front_styling", "front_style", "front"
+        )
+        if _front_styling_resolved in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}:
+            if not male_fringe_positive_hint:
+                male_fringe_positive_hint = "soft masculine fringe with natural forehead coverage, hair falling forward"
                 male_fringe_negative_hint = (
                     "exposed forehead, lifted quiff, pushed-up front hair, slicked-back front, "
                 )
+            # front=down 전용 강력 negative: SD가 lifted/swept top을 생성하는 것을 막음
+            male_down_front_negative_hint = (
+                "lifted top hair, swept-back crown, quiff, pompadour, pushed-up top, "
+                "hair swept upward, upswept front, voluminous lifted crown, "
+                "open forehead, exposed hairline, slicked-back style, "
+            )
     no_bangs_positive_hint = ""
     no_bangs_negative_hint = ""
     if explicit_no_bangs_requested:
@@ -2713,7 +2722,8 @@ def _build_prompt(
             pos_suffix += ", masculine fringe covering the forehead"
         neg_prefix = (
             "bixie, pixie bob, "
-            "oversized exposed forehead, exaggerated high hairline, receding hairline, severe slicked-back hair, "
+            "oversized exposed forehead, exaggerated high hairline, receding hairline, "
+            "slicked-back hair, swept-back hair, lifted crown, quiff, pompadour, upswept top, "
             "earring, earrings, hoop earrings, stud earrings, ear cuff, jewelry, necklace, makeup, "
         )
         guidance = 10.9
@@ -2825,6 +2835,7 @@ def _build_prompt(
         neg_prefix
         + user_negative_hint
         + male_block_negative
+        + male_down_front_negative_hint
         + male_fringe_negative_hint
         + color_neg_hint
         + no_bangs_negative_hint
