@@ -4060,9 +4060,35 @@ class MirrAISDPipeline:
                     composite_mask.astype(np.float32),
                     garment_composite_mask.astype(np.float32),
                 ).astype(np.float32)
+            # ── composite_mask에서 face protect 영역 선제 제거 ─────────────────
+            # gen_mask(SD inpaint mask)에 requested_front_coverage_mask
+            # (y1+0.56·face_h = 코끝 레벨)가 포함되어 composite_mask로 이어지면
+            # hair_alpha가 눈/코 레벨까지 높게 계산됨.
+            # _composite() 내부 face protect(alpha=0 강제)만으로는 soft-edge 경계에서
+            # alpha가 새어나와 SD 생성물(dark artifact)이 눈/코에 찍히는 문제 발생.
+            # → protect 영역을 미리 composite_mask에서 빼면 hair_alpha≈0 확보.
+            #   이마 앞머리(이마 release mask)는 _composite() 내부에서 alpha를 복원함.
+            composite_mask_for_blend = composite_mask.astype(np.float32).copy()
+            if (
+                bangs_requested
+                and protect_mask_for_sd.shape == (H, W)
+                and float(composite_bangs_release_mask.sum()) > 0.0
+            ):
+                _protect_subtract_weight = np.clip(
+                    protect_mask_for_sd.astype(np.float32) * 1.4, 0.0, 1.0
+                )
+                composite_mask_for_blend = np.clip(
+                    composite_mask_for_blend - _protect_subtract_weight, 0.0, 1.0
+                )
+                logger.debug(
+                    "[SDPipeline] bangs composite_mask protect-subtracted: "
+                    "px_before=%.0f px_after=%.0f",
+                    float(composite_mask.sum()),
+                    float(composite_mask_for_blend.sum()),
+                )
             composited_bgr = self._composite(
                 composite_base_bgr, composite_base_rgb,
-                gen_pil, composite_mask, scale, pad, (W, H),
+                gen_pil, composite_mask_for_blend, scale, pad, (W, H),
                 garment_mask=garment_composite_mask,
                 protect_mask=protect_mask_for_sd,   # 얼굴 영역 alpha 침범 방지
                 protect_release_mask=composite_bangs_release_mask if float(composite_bangs_release_mask.sum()) > 0.0 else None,
