@@ -360,7 +360,7 @@ def _build_male_front_down_bridge_hint(
     if scalp_type == "curly":
         texture_hint = "soft curl texture kept on the top and crown"
     elif scalp_type == "waved":
-        texture_hint = "soft wave texture kept on the top and crown"
+        texture_hint = "soft wave fringe draping down over the forehead, wave texture on top and crown"
     elif scalp_type == "straight":
         texture_hint = "clean straight fringe texture across the forehead with light top texture"
     else:
@@ -794,13 +794,15 @@ def _build_male_structured_style_text(
     if scalp_type == "curly":
         if front_styling == "down":
             parts.append("curly texture with a soft down perm finish")
-            parts.append("soft curl texture kept on top and crown")
+            parts.append("soft curl fringe hanging down over the forehead")
+            parts.append("curly fringe covering the forehead, not lifted or swept back")
         else:
             parts.append("curly texture")
     elif scalp_type == "waved":
-        parts.append("soft volume")
+        parts.append("soft wave texture")
         if front_styling == "down":
-            parts.append("soft wave texture kept on top and crown")
+            parts.append("soft wave fringe hanging down over the forehead")
+            parts.append("wavy fringe covering the forehead, not lifted or swept back")
     elif scalp_type == "straight":
         parts.append("clean straight texture")
         if front_styling == "down":
@@ -2577,7 +2579,7 @@ def _build_prompt(
             if _scalp_type_resolved == "curly":
                 male_down_front_texture_hint = "soft curl texture on top and crown"
             elif _scalp_type_resolved == "waved":
-                male_down_front_texture_hint = "soft wave texture on top and crown"
+                male_down_front_texture_hint = "soft wave fringe draping over the forehead, wave texture on top and crown"
             elif _scalp_type_resolved == "straight":
                 male_down_front_texture_hint = (
                     "straight fringe softly covering the forehead, light textured top and crown"
