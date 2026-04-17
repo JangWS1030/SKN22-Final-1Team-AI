@@ -2764,7 +2764,7 @@ class MirrAISDPipeline:
                     if subject_gender_mode == "male":
                         if _bangs_release_extended:
                             _rel_ratio = (
-                                0.34 if hair_length == "short" else 0.30
+                                0.30 if hair_length == "short" else 0.27
                             )
                         else:
                             _rel_ratio = (
@@ -2775,7 +2775,7 @@ class MirrAISDPipeline:
                     else:
                         if _bangs_release_extended:
                             _rel_ratio = (
-                                0.36 if hair_length == "short" else 0.32
+                                0.33 if hair_length == "short" else 0.29
                             )
                         else:
                             _rel_ratio = (
@@ -2856,18 +2856,30 @@ class MirrAISDPipeline:
                 # alpha 0.22까지 약해져 SD가 원본 이마 스킨을 거의 덮지 못한다.
                 # front=down/bangs가 명시적으로 요청된 경우 requested_front_coverage_mask를
                 # full strength로 병합해 이마 전체 영역을 강하게 inpaint한다.
+                # 단, 눈썹/눈 아래로 내려가면 SD가 머리를 눈 위에 생성해 ghost eyebrow
+                # artifact가 생기므로 눈썹 위(≈y1+0.30*face_h)로 수직 cap한다.
                 if (
                     bangs_requested
+                    and face_bbox is not None
                     and float(requested_front_coverage_mask.sum()) > 0.0
                 ):
-                    gen_mask = np.maximum(
-                        gen_mask,
+                    _gm_rx1, _gm_ry1, _gm_rx2, _gm_ry2 = face_bbox
+                    _gm_face_h = max(int(_gm_ry2 - _gm_ry1), 1)
+                    _gm_ratio = (
+                        0.30 if hair_length == "short" else 0.27
+                    )
+                    _gm_y_limit = int(_gm_ry1 + _gm_face_h * _gm_ratio)
+                    _gm_cap = np.zeros_like(requested_front_coverage_mask)
+                    _gm_cap[:_gm_y_limit, :] = 1.0
+                    _gm_merge = (
                         np.clip(
                             requested_front_coverage_mask.astype(np.float32),
                             0.0,
                             1.0,
-                        ),
+                        )
+                        * _gm_cap
                     )
+                    gen_mask = np.maximum(gen_mask, _gm_merge)
                 _store_mask(
                     "pipeline_bangs_generation_soft_mask", soft_bangs_generation_mask
                 )
@@ -4776,16 +4788,28 @@ class MirrAISDPipeline:
                 )
                 # front=down/bangs 요청 시: requested_front_coverage_mask를 직접
                 # canny_suppress에 병합해 이마 머리선(hairline)의 원본 edge를
-                # ControlNet이 따라가지 못하게 한다.
+                # ControlNet이 따라가지 못하게 한다. 눈썹 아래로는 suppress하지 않아
+                # 눈/코 edge가 보존되도록 y-cap을 적용한다.
                 if (
                     bangs_requested
+                    and face_bbox is not None
                     and requested_front_coverage_mask.shape == canny_suppress.shape
                     and float(requested_front_coverage_mask.sum()) > 0.0
                 ):
+                    _cs_rx1, _cs_ry1, _cs_rx2, _cs_ry2 = face_bbox
+                    _cs_face_h = max(int(_cs_ry2 - _cs_ry1), 1)
+                    _cs_ratio = 0.30 if hair_length == "short" else 0.27
+                    _cs_y_limit = int(_cs_ry1 + _cs_face_h * _cs_ratio)
+                    _cs_cap = np.zeros_like(requested_front_coverage_mask)
+                    _cs_cap[:_cs_y_limit, :] = 1.0
                     canny_suppress = np.maximum(
                         canny_suppress,
                         self._dilate_mask_with_px(
-                            requested_front_coverage_mask.astype(np.float32), 21
+                            (
+                                requested_front_coverage_mask.astype(np.float32)
+                                * _cs_cap
+                            ),
+                            21,
                         ),
                     )
                 if (
