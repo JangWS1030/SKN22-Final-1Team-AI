@@ -323,6 +323,158 @@ def _stringify_legacy_preference(preference: Dict[str, Any]) -> str:
     return _merge_legacy_style_text(*parts)
 
 
+_LEGACY_TARGET_LENGTH_ALIASES = {
+    "short": "short",
+    "short_hair": "short",
+    "shorter": "short",
+    "medium": "medium",
+    "mid": "medium",
+    "mid_length": "medium",
+    "long": "long",
+    "bob": "bob",
+}
+_LEGACY_TARGET_VIBE_ALIASES = {
+    "natural": "natural",
+    "chic": "chic",
+    "cute": "cute",
+    "elegant": "elegant",
+}
+_LEGACY_SCALP_TYPE_ALIASES = {
+    "straight": "straight",
+    "waved": "waved",
+    "wavy": "waved",
+    "wave": "waved",
+    "curly": "curly",
+    "curl": "curly",
+    "damaged": "damaged",
+}
+_LEGACY_HAIR_COLOUR_ALIASES = {
+    "black": "black",
+    "brown": "brown",
+    "ash": "ash",
+    "ash_brown": "ash",
+    "bleach": "bleach",
+    "bleach_blonde": "bleach",
+    "blonde": "bleach",
+}
+_LEGACY_BUDGET_ALIASES = {
+    "low": "low",
+    "mid": "mid",
+    "medium": "mid",
+    "high": "high",
+}
+
+
+def _normalize_legacy_alias_key(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _parse_legacy_structured_aliases(*values: Any) -> Dict[str, str]:
+    parsed: Dict[str, str] = {}
+    for value in values:
+        text = _clean_text(value)
+        if not text:
+            continue
+        for fragment in text.split(","):
+            part = " ".join(fragment.strip().split())
+            if not part:
+                continue
+            delimiter = "=" if "=" in part else ":" if ":" in part else ""
+            if not delimiter:
+                continue
+            key, raw_value = part.split(delimiter, 1)
+            norm_key = _normalize_legacy_alias_key(key)
+            norm_value = _clean_text(raw_value)
+            if norm_key and norm_value:
+                parsed[norm_key] = norm_value
+    return parsed
+
+
+def _resolve_legacy_alias_choice(
+    aliases: Dict[str, str],
+    keys: Tuple[str, ...],
+    mapping: Dict[str, str],
+) -> str:
+    for key in keys:
+        raw_value = aliases.get(key)
+        if not raw_value:
+            continue
+        normalized = _normalize_legacy_alias_key(raw_value)
+        if normalized in mapping:
+            return mapping[normalized]
+    return ""
+
+
+def _extract_legacy_structured_fields(*values: Any) -> Dict[str, Any]:
+    aliases = _parse_legacy_structured_aliases(*values)
+    if not aliases:
+        return {
+            "gender_branch": "",
+            "canonical_preferences": {},
+            "style_axes": {},
+            "parsed_aliases": {},
+        }
+
+    gender_branch = ""
+    for key in ("gender_branch", "gender", "subject_gender", "sex"):
+        candidate = _normalize_gender_branch(aliases.get(key))
+        if candidate:
+            gender_branch = candidate
+            break
+
+    canonical_preferences = {
+        "target_length": _resolve_legacy_alias_choice(
+            aliases,
+            ("target_length", "length", "hair_length"),
+            _LEGACY_TARGET_LENGTH_ALIASES,
+        ),
+        "target_vibe": _resolve_legacy_alias_choice(
+            aliases,
+            ("target_vibe", "vibe", "mood"),
+            _LEGACY_TARGET_VIBE_ALIASES,
+        ),
+        "scalp_type": _resolve_legacy_alias_choice(
+            aliases,
+            ("scalp_type", "texture", "hair_type"),
+            _LEGACY_SCALP_TYPE_ALIASES,
+        ),
+        "hair_colour": _resolve_legacy_alias_choice(
+            aliases,
+            ("hair_colour", "hair_color", "colour", "color"),
+            _LEGACY_HAIR_COLOUR_ALIASES,
+        ),
+        "budget_range": _resolve_legacy_alias_choice(
+            aliases,
+            ("budget_range", "budget", "price"),
+            _LEGACY_BUDGET_ALIASES,
+        ),
+    }
+
+    style_axes: Dict[str, str] = {}
+    two_block = aliases.get("two_block") or aliases.get("twoblock")
+    if two_block:
+        style_axes["two_block"] = _normalize_legacy_alias_key(two_block)
+
+    front_styling = (
+        aliases.get("front_styling")
+        or aliases.get("front_style")
+        or aliases.get("front")
+    )
+    if front_styling:
+        style_axes["front_styling"] = _normalize_legacy_alias_key(front_styling)
+
+    parting = aliases.get("parting") or aliases.get("part")
+    if parting:
+        style_axes["parting"] = _normalize_legacy_alias_key(parting)
+
+    return {
+        "gender_branch": gender_branch,
+        "canonical_preferences": canonical_preferences,
+        "style_axes": style_axes,
+        "parsed_aliases": aliases,
+    }
+
+
 def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
     survey_data = _coerce_dict(inp.get("survey_data"))
     survey_profile = _coerce_dict(survey_data.get("survey_profile"))
@@ -346,6 +498,12 @@ def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
     if not legacy_preference:
         legacy_preference = _clean_text(inp.get("preference"))
     legacy_color_text = _clean_text(inp.get("color_text"))
+    legacy_structured_fields = _extract_legacy_structured_fields(
+        legacy_hairstyle_text,
+        legacy_preference_text,
+        legacy_preference,
+    )
+    legacy_alias_canonical = legacy_structured_fields["canonical_preferences"]
     legacy_style_text = _merge_legacy_style_text(
         legacy_hairstyle_text,
         legacy_preference_text,
@@ -356,6 +514,21 @@ def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
         hairstyle_text=legacy_hairstyle_text,
         preference_text=legacy_preference_text,
     )
+    canonical_preferences = {
+        "target_length": canonical_preferences["target_length"] or legacy_alias_canonical.get("target_length", ""),
+        "target_vibe": canonical_preferences["target_vibe"] or legacy_alias_canonical.get("target_vibe", ""),
+        "scalp_type": canonical_preferences["scalp_type"] or legacy_alias_canonical.get("scalp_type", ""),
+        "hair_colour": canonical_preferences["hair_colour"] or legacy_alias_canonical.get("hair_colour", ""),
+        "budget_range": canonical_preferences["budget_range"] or legacy_alias_canonical.get("budget_range", ""),
+    }
+    survey_style_axes = (
+        survey_profile.get("style_axes")
+        if isinstance(survey_profile.get("style_axes"), dict)
+        else {}
+    )
+    merged_style_axes = dict(legacy_structured_fields.get("style_axes") or {})
+    merged_style_axes.update(survey_style_axes)
+    gender_branch = gender_branch or legacy_structured_fields.get("gender_branch", "")
 
     resolved_color_text = legacy_color_text
     if canonical_preferences["hair_colour"]:
@@ -381,7 +554,7 @@ def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
         survey_data
         or gender_branch
         or any(canonical_preferences.values())
-        or survey_profile.get("style_axes")
+        or merged_style_axes
         or survey_profile.get("derived_preferences")
         or survey_data.get("question_answers")
     )
@@ -390,7 +563,7 @@ def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
         "fallback_mode": fallback_mode,
         "gender_branch": gender_branch,
         "canonical_preferences": canonical_preferences,
-        "style_axes": survey_profile.get("style_axes") if isinstance(survey_profile.get("style_axes"), dict) else {},
+        "style_axes": merged_style_axes,
         "derived_preferences": survey_profile.get("derived_preferences"),
         "question_answers": survey_data.get("question_answers"),
         "user_negative_tags": user_negative_tags,
@@ -399,6 +572,7 @@ def _extract_generation_request_context(inp: Dict[str, Any]) -> Dict[str, Any]:
             "preference_text": legacy_preference_text,
             "preference": legacy_preference,
             "color_text": legacy_color_text,
+            "parsed_aliases": legacy_structured_fields.get("parsed_aliases", {}),
         },
     }
     return {

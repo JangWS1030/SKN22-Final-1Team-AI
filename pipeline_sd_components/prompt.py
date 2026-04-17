@@ -407,6 +407,7 @@ def _normalize_prompt_context(prompt_context: Optional[Dict[str, Any]]) -> Dict[
         "style_axes": _normalize_style_axes(raw.get("style_axes")),
         "derived_preferences": raw.get("derived_preferences"),
         "question_answers": raw.get("question_answers"),
+        "user_negative_tags": list(raw.get("user_negative_tags") or []),
         "legacy_fields": raw.get("legacy_fields") if isinstance(raw.get("legacy_fields"), dict) else {},
     }
     normalized["structured_payload_present"] = bool(
@@ -730,7 +731,7 @@ def _build_male_structured_style_text(
         include_legacy_fields=False,
     )
     combined_text = " ".join(
-        text for text in [structured_text or legacy_text] if text
+        text for text in [structured_text, legacy_text] if text
     ).lower()
     target_length = canonical.get("target_length") or ("short" if hair_length == "short" else hair_length)
     target_vibe = canonical.get("target_vibe")
@@ -739,8 +740,8 @@ def _build_male_structured_style_text(
     front_styling = _resolve_axis_value(style_axes, "front_styling", "front_style", "front")
     parting = _resolve_axis_value(style_axes, "parting", "part")
 
-    if not two_block and "투블럭" in combined_text:
-        two_block = "soft" if "soft" in combined_text or "부드" in combined_text else "natural"
+    if not two_block and any(token in combined_text for token in ("투블럭", "two block", "two-block")):
+        two_block = "soft" if any(token in combined_text for token in ("soft", "부드")) else "natural"
     if not front_styling:
         front_styling = _infer_front_styling_from_text(combined_text)
     if not parting:
@@ -1043,9 +1044,18 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
     lowered = raw.lower()
     hints: List[str] = []
 
-    _lifted_front = any(
+    front_styling = _infer_front_styling_from_text(lowered)
+    parting = _infer_parting_from_text(lowered)
+    _lifted_front = front_styling == "lifted" or any(
         token in lowered
-        for token in ("lifted front", "open forehead", "lifted", "swept back", "slick back", "slicked back", "앞머리 올", "올리는")
+        for token in ("lifted front", "open forehead", "swept back", "slick back", "slicked back", "앞머리 올", "올리는")
+    )
+    _down_front = front_styling == "down"
+    _two_block_requested = any(
+        token in lowered for token in ("two block", "two-block", "투블럭")
+    )
+    _soft_two_block = _two_block_requested and any(
+        token in lowered for token in ("soft", "부드")
     )
 
     if any(token in lowered for token in ("mullet", "wolf cut", "soft mullet")):
@@ -1055,9 +1065,33 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
             "controlled nape length",
             "soft temple coverage",
         ])
+    elif _two_block_requested:
+        base_style = (
+            "clean masculine soft two-block haircut"
+            if _soft_two_block
+            else "clean masculine natural two-block haircut"
+        )
+        if _lifted_front:
+            hints.extend([
+                "controlled crown volume swept back",
+                "forehead fully exposed",
+                "balanced side silhouette",
+            ])
+        elif _down_front:
+            hints.extend([
+                "clean side line",
+                "controlled crown volume behind the fringe line",
+                "balanced side silhouette",
+            ])
+        else:
+            hints.extend([
+                "clean side line",
+                "controlled top and crown texture",
+                "balanced side silhouette",
+            ])
     elif any(
         token in lowered
-        for token in ("swept-back", "swept back", "side part", "side-part", "dandy", "two block", "two-block", "comma", "regent")
+        for token in ("swept-back", "swept back", "side part", "side-part", "dandy", "comma", "regent")
     ):
         base_style = "clean masculine layered haircut with shorter back and sides"
         if _lifted_front:
@@ -1087,12 +1121,18 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
 
     _has_bang_token = "bang" in lowered or "fringe" in lowered
     _bang_negated = "no bang" in lowered or "no fringe" in lowered or "without bang" in lowered or "without fringe" in lowered
-    if _has_bang_token and not _bang_negated:
-        hints.append("soft masculine fringe with natural forehead coverage")
+    if (_down_front or _has_bang_token) and not _bang_negated and not _lifted_front:
+        hints.append("lowered masculine fringe connected to the top")
+        hints.append("front hair resting forward over forehead without exposing hairline")
     elif _lifted_front:
         hints.append("forehead fully exposed, top hair swept upward and back, no hair touching forehead")
     else:
         hints.append("natural masculine hairline with balanced forehead coverage")
+
+    if parting in _NON_PARTED_STYLE_VALUES:
+        hints.append("non-parted front")
+    elif parting in {"side_part", "middle_part", "center_part"}:
+        hints.append("parted front")
 
     _has_texture_token = any(token in lowered for token in ("wave", "wavy", "curl", "curly", "perm"))
     _texture_negated = (
@@ -1100,19 +1140,26 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
         or "without perm" in lowered or "without curl" in lowered or "without wave" in lowered
     )
     if _has_texture_token and not _texture_negated:
-        hints.append("light natural texture")
+        if any(token in lowered for token in ("curl", "curly")):
+            hints.append(
+                "soft curl texture kept on top and crown"
+                if _down_front
+                else "light natural curl texture"
+            )
+        else:
+            hints.append(
+                "soft wave texture kept on top and crown"
+                if _down_front
+                else "light natural texture"
+            )
     elif any(token in lowered for token in ("straight", "sleek")):
-        hints.append("soft natural finish")
+        hints.append("clean straight texture" if _down_front else "soft natural finish")
 
     hints.append("clean ear contour")
     hints.append("no feminine bob silhouette")
     hints.append("no dangling side locks")
 
-    parts = [base_style]
-    for hint in hints:
-        if hint not in parts:
-            parts.append(hint)
-    return ", ".join(parts)
+    return ", ".join(_dedupe_prompt_parts([base_style, *hints]))
 
 def _normalize_male_medium_hairstyle_prompt_text(hairstyle_text: str) -> str:
     raw = " ".join(str(hairstyle_text or "").strip().split())

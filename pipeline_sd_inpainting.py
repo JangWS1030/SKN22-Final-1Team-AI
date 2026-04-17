@@ -5215,18 +5215,19 @@ class MirrAISDPipeline:
             # alpha가 새어나와 SD 생성물(dark artifact)이 눈/코에 찍히는 문제 발생.
             # → protect 영역을 미리 composite_mask에서 빼면 hair_alpha≈0 확보.
             #   이마 앞머리(이마 release mask)는 _composite() 내부에서 alpha를 복원함.
-            # front=down 요청이지만 원본에 앞머리가 이미 있는 경우:
-            # [v185 전략 변경] 원본 앞머리를 보존하는 대신,
-            # 생성된 머리로 원본 앞머리 구역을 덮는(cover) 방식으로 전환
-            # → composite_mask를 앞머리 영역까지 확장하고, protect_release_mask로 알파 자연스럽게 흇비로
-            _preserve_original_bangs = (
+            # front=down 요청 + 원본 앞머리 존재 케이스에서 원본 bangs release를 그대로 쓰면
+            # 이마 중앙에 얇은 원본 앞머리 띠가 남으면서 "두상이 두 개"처럼 보이는
+            # band artifact가 생긴다. 생성된 fringe가 원본 앞머리를 완전히 덮도록
+            # composite_bangs_release_mask만 사용하고, 원본 앞머리 preserve 분기는 끈다.
+            _original_bangs_detected = (
                 bangs_requested
                 and _original_bang_px_in_protect > 100.0
             )
-            if _preserve_original_bangs:
+            _preserve_original_bangs = False
+            if _original_bangs_detected:
                 logger.info(
                     "[SDPipeline] front=down + original bangs detected (px=%.0f): "
-                    "covering original bangs with generated hair (v185)",
+                    "preferring generated fringe coverage over original-bangs preserve mask",
                     _original_bang_px_in_protect,
                 )
             composite_mask_for_blend = composite_mask.astype(np.float32).copy()

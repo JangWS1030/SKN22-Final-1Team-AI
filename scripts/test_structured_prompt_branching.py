@@ -264,6 +264,46 @@ def main() -> int:
     _assert_contains(legacy_alias_style, "parted front")
     _assert_contains(legacy_alias_positive, "open forehead")
     _assert_contains(legacy_alias_positive, "no bangs")
+    exact_front_down_payload = {
+        "hairstyle_text": (
+            "male haircut, masculine salon style, short crop, soft two-block, "
+            "down fringe, non-parted crop, soft volume, natural mood"
+        ),
+        "color_text": "brown",
+        "preference_text": (
+            "gender=male, length=short, mood=natural, texture=waved, color=brown, "
+            "budget=low, two_block=soft, front=down, parting=non_parted, "
+            "short crop, down fringe, non-parted crop, male salon vocabulary only"
+        ),
+    }
+    exact_front_down_result = _build_from_payload(exact_front_down_payload)
+    exact_front_down_style = str(
+        exact_front_down_result["meta"]["normalized_style"]
+    ).lower()
+    exact_front_down_positive = exact_front_down_result["positive"].lower()
+    assert exact_front_down_result["request"]["structured_payload_used"] is True, exact_front_down_result
+    assert exact_front_down_result["meta"]["style_source"] == "structured_male", exact_front_down_result
+    assert exact_front_down_result["meta"]["resolved_gender_branch"] == "male", exact_front_down_result
+    _assert_contains(exact_front_down_style, "soft two-block")
+    _assert_contains(exact_front_down_style, "lowered masculine fringe")
+    _assert_contains(exact_front_down_style, "non-parted front")
+    _assert_contains(exact_front_down_style, "soft wave texture")
+    _assert_contains(exact_front_down_positive, "controlled crown volume behind the lowered fringe")
+    legacy_plain_text_payload = {
+        "hairstyle_text": (
+            "male haircut, short crop, soft two-block, down fringe, "
+            "non-parted crop, wavy texture"
+        ),
+        "color_text": "brown",
+    }
+    legacy_plain_text_result = _build_from_payload(legacy_plain_text_payload)
+    legacy_plain_text_style = str(
+        legacy_plain_text_result["meta"]["normalized_style"]
+    ).lower()
+    assert legacy_plain_text_result["meta"]["style_source"] == "legacy_text", legacy_plain_text_result
+    _assert_contains(legacy_plain_text_style, "soft two-block")
+    _assert_contains(legacy_plain_text_style, "lowered masculine fringe")
+    _assert_contains(legacy_plain_text_style, "non-parted front")
     requested_front_mask = mask_builders_module._build_requested_front_coverage_mask(
         (512, 512),
         (156, 132, 356, 348),
@@ -321,6 +361,14 @@ def main() -> int:
                 "legacy_alias_prompt": {
                     "positive": legacy_alias_result["positive"],
                     "normalized_style": legacy_alias_result["meta"]["normalized_style"],
+                },
+                "exact_front_down_prompt": {
+                    "positive": exact_front_down_result["positive"],
+                    "normalized_style": exact_front_down_result["meta"]["normalized_style"],
+                },
+                "legacy_plain_text_prompt": {
+                    "positive": legacy_plain_text_result["positive"],
+                    "normalized_style": legacy_plain_text_result["meta"]["normalized_style"],
                 },
             },
             ensure_ascii=False,
