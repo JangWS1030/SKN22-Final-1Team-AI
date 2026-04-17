@@ -2754,20 +2754,35 @@ class MirrAISDPipeline:
                 ):
                     _rx1, _ry1, _rx2, _ry2 = face_bbox
                     _rface_h = max(int(_ry2 - _ry1), 1)
-                    # 눈썹 위까지만 해제 (short: 0.25, medium: 0.22, long: 0.20)
-                    # 여성은 이마 자체가 더 낮은 경향 → 약간 더 관대하게
+                    # 눈썹 위까지 해제. bangs_requested(앞머리 내림) 요청 시 이마 전체를
+                    # 덮어야 하므로 눈썹 직전(≈0.34*face_h)까지 release를 확장한다.
+                    # 기본값(0.25)은 중앙 center_lobe만 이마 깊이까지 가고 측면 이마는
+                    # 원본 스킨이 그대로 노출되던 문제가 있었다.
+                    _bangs_release_extended = bool(
+                        bangs_requested and hair_length in ("short", "medium")
+                    )
                     if subject_gender_mode == "male":
-                        _rel_ratio = (
-                            0.25
-                            if hair_length == "short"
-                            else 0.22 if hair_length == "medium" else 0.20
-                        )
+                        if _bangs_release_extended:
+                            _rel_ratio = (
+                                0.34 if hair_length == "short" else 0.30
+                            )
+                        else:
+                            _rel_ratio = (
+                                0.25
+                                if hair_length == "short"
+                                else 0.22 if hair_length == "medium" else 0.20
+                            )
                     else:
-                        _rel_ratio = (
-                            0.30
-                            if hair_length == "short"
-                            else 0.26 if hair_length == "medium" else 0.22
-                        )
+                        if _bangs_release_extended:
+                            _rel_ratio = (
+                                0.36 if hair_length == "short" else 0.32
+                            )
+                        else:
+                            _rel_ratio = (
+                                0.30
+                                if hair_length == "short"
+                                else 0.26 if hair_length == "medium" else 0.22
+                            )
                     _rel_y_limit = int(_ry1 + _rface_h * _rel_ratio)
                     _rel_cap = np.zeros_like(composite_bangs_release_mask)
                     _rel_cap[:_rel_y_limit, :] = 1.0
