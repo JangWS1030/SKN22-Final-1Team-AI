@@ -5264,7 +5264,12 @@ class MirrAISDPipeline:
                     sigmaY=5.0,
                 ).astype(np.float32)
             elif float(composite_bangs_release_mask.sum()) > 0.0:
-                _bangs_release_for_composite = composite_bangs_release_mask
+                _bangs_release_for_composite = cv2.GaussianBlur(
+                    np.clip(composite_bangs_release_mask, 0.0, 1.0),
+                    (0, 0),
+                    sigmaX=7.0,
+                    sigmaY=7.0,
+                ).astype(np.float32)
 
             composited_bgr = self._composite(
                 composite_base_bgr,
@@ -5281,26 +5286,29 @@ class MirrAISDPipeline:
                 subject_gender=subject_gender_mode,
                 fringe_requested=bangs_requested,
             )
-            _skip_rectangular_bangs_release_refine = bool(
-                subject_gender_mode == "male"
-                and bangs_requested
-                and hair_length in ("short", "medium")
-            )
             if (
                 not _preserve_original_bangs
-                and not _skip_rectangular_bangs_release_refine
                 and float(composite_bangs_release_mask.sum()) > 60.0
             ):
                 try:
-                    composited_bgr = cv2.cvtColor(
-                        self._cv2_refine_cloth_region(
-                            cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB),
-                            composite_bangs_release_mask,
-                            reference_rgb=img_rgb,
-                            reference_mask=composite_bangs_release_mask,
-                        ),
-                        cv2.COLOR_RGB2BGR,
-                    )
+                    # hair mask 영역을 제외한 hairline 전환 구간만 색보정
+                    # → 두상 변형 없이 경계 색상 아티팩트만 제거
+                    _hairline_only_mask = np.clip(
+                        composite_bangs_release_mask
+                        - np.clip(composite_mask.astype(np.float32) * 1.5, 0.0, 1.0),
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
+                    if float(_hairline_only_mask.sum()) > 40.0:
+                        composited_bgr = cv2.cvtColor(
+                            self._cv2_refine_cloth_region(
+                                cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB),
+                                _hairline_only_mask,
+                                reference_rgb=img_rgb,
+                                reference_mask=_hairline_only_mask,
+                            ),
+                            cv2.COLOR_RGB2BGR,
+                        )
                 except Exception:
                     pass
             composite_pre_cleanup_bgr = composited_bgr.copy()

@@ -9846,33 +9846,6 @@ def _build_requested_front_coverage_mask(
                 max(0, cx - center_tail_half) : min(W, cx + center_tail_half),
             ] = 255
         if straight_down_requested:
-            taper_top = max(band_top, int(y1 + face_h * 0.18))
-            taper_bottom = min(
-                H,
-                int(y1 + face_h * (0.46 if hair_length == "short" else 0.40)),
-            )
-            taper_inner_half = max(18, int(face_w * 0.42))
-            if taper_top < taper_bottom:
-                left_cut = np.array(
-                    [
-                        [band_x1, taper_top],
-                        [band_x1, taper_bottom],
-                        [max(0, cx - taper_inner_half), taper_bottom],
-                        [max(0, cx - center_tail_half), taper_top],
-                    ],
-                    dtype=np.int32,
-                )
-                right_cut = np.array(
-                    [
-                        [band_x2, taper_top],
-                        [band_x2, taper_bottom],
-                        [min(W - 1, cx + taper_inner_half), taper_bottom],
-                        [min(W - 1, cx + center_tail_half), taper_top],
-                    ],
-                    dtype=np.int32,
-                )
-                cv2.fillConvexPoly(coverage_u8, left_cut, 0)
-                cv2.fillConvexPoly(coverage_u8, right_cut, 0)
             lower_arc_center = (
                 cx,
                 min(H - 1, int(y1 + face_h * (0.34 if hair_length == "short" else 0.30))),
