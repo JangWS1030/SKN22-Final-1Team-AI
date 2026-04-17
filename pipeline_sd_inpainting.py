@@ -2786,6 +2786,21 @@ class MirrAISDPipeline:
                     _rel_y_limit = int(_ry1 + _rface_h * _rel_ratio)
                     _rel_cap = np.zeros_like(composite_bangs_release_mask)
                     _rel_cap[:_rel_y_limit, :] = 1.0
+                    if _bangs_release_extended:
+                        # soft vertical fade near y_limit so the composite doesn't
+                        # show a hard horizontal line at the eyebrow cap.
+                        _rel_fade_h = max(8, int(_rface_h * 0.05))
+                        _rel_fade_bot = min(
+                            composite_bangs_release_mask.shape[0],
+                            _rel_y_limit + _rel_fade_h,
+                        )
+                        if _rel_fade_bot > _rel_y_limit:
+                            _rel_cap[_rel_y_limit:_rel_fade_bot, :] = np.linspace(
+                                1.0,
+                                0.0,
+                                _rel_fade_bot - _rel_y_limit,
+                                dtype=np.float32,
+                            )[:, np.newaxis]
                     if (
                         subject_gender_mode == "male"
                         and bangs_requested
@@ -2865,12 +2880,21 @@ class MirrAISDPipeline:
                 ):
                     _gm_rx1, _gm_ry1, _gm_rx2, _gm_ry2 = face_bbox
                     _gm_face_h = max(int(_gm_ry2 - _gm_ry1), 1)
-                    _gm_ratio = (
-                        0.30 if hair_length == "short" else 0.27
+                    _gm_top_ratio = (
+                        0.28 if hair_length == "short" else 0.25
                     )
-                    _gm_y_limit = int(_gm_ry1 + _gm_face_h * _gm_ratio)
-                    _gm_cap = np.zeros_like(requested_front_coverage_mask)
-                    _gm_cap[:_gm_y_limit, :] = 1.0
+                    _gm_bot_ratio = (
+                        0.36 if hair_length == "short" else 0.33
+                    )
+                    _gm_y_top = int(_gm_ry1 + _gm_face_h * _gm_top_ratio)
+                    _gm_y_bot = int(_gm_ry1 + _gm_face_h * _gm_bot_ratio)
+                    _gm_cap = np.ones_like(requested_front_coverage_mask)
+                    if _gm_y_bot > _gm_y_top:
+                        _fade_h = _gm_y_bot - _gm_y_top
+                        _gm_cap[_gm_y_top:_gm_y_bot, :] = np.linspace(
+                            1.0, 0.0, _fade_h, dtype=np.float32
+                        )[:, np.newaxis]
+                    _gm_cap[_gm_y_bot:, :] = 0.0
                     _gm_merge = (
                         np.clip(
                             requested_front_coverage_mask.astype(np.float32),
@@ -4798,10 +4822,17 @@ class MirrAISDPipeline:
                 ):
                     _cs_rx1, _cs_ry1, _cs_rx2, _cs_ry2 = face_bbox
                     _cs_face_h = max(int(_cs_ry2 - _cs_ry1), 1)
-                    _cs_ratio = 0.30 if hair_length == "short" else 0.27
-                    _cs_y_limit = int(_cs_ry1 + _cs_face_h * _cs_ratio)
-                    _cs_cap = np.zeros_like(requested_front_coverage_mask)
-                    _cs_cap[:_cs_y_limit, :] = 1.0
+                    _cs_top_ratio = 0.28 if hair_length == "short" else 0.25
+                    _cs_bot_ratio = 0.36 if hair_length == "short" else 0.33
+                    _cs_y_top = int(_cs_ry1 + _cs_face_h * _cs_top_ratio)
+                    _cs_y_bot = int(_cs_ry1 + _cs_face_h * _cs_bot_ratio)
+                    _cs_cap = np.ones_like(requested_front_coverage_mask)
+                    if _cs_y_bot > _cs_y_top:
+                        _cs_fade_h = _cs_y_bot - _cs_y_top
+                        _cs_cap[_cs_y_top:_cs_y_bot, :] = np.linspace(
+                            1.0, 0.0, _cs_fade_h, dtype=np.float32
+                        )[:, np.newaxis]
+                    _cs_cap[_cs_y_bot:, :] = 0.0
                     canny_suppress = np.maximum(
                         canny_suppress,
                         self._dilate_mask_with_px(
