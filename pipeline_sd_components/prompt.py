@@ -362,7 +362,7 @@ def _build_male_front_down_bridge_hint(
     elif scalp_type == "waved":
         texture_hint = "soft wave texture kept on the top and crown"
     elif scalp_type == "straight":
-        texture_hint = "light textured top and crown"
+        texture_hint = "clean straight fringe texture across the forehead with light top texture"
     else:
         texture_hint = "natural top and crown texture"
 
@@ -383,6 +383,7 @@ def _build_male_front_down_bridge_hint(
     negative = (
         "split-open front hairline, front roots lifted upward from the hairline, "
         "front hair flipped away from forehead, brushed-back front hair, broken fringe line, "
+        "exposed forehead corners, separated skinny center strands, "
     )
     return positive, negative
 
@@ -802,6 +803,9 @@ def _build_male_structured_style_text(
             parts.append("soft wave texture kept on top and crown")
     elif scalp_type == "straight":
         parts.append("clean straight texture")
+        if front_styling == "down":
+            parts.append("straight fringe softly covering the forehead")
+            parts.append("soft curved fringe line without split forehead corners")
     elif scalp_type == "damaged":
         parts.append("soft controlled texture")
 
@@ -2575,7 +2579,9 @@ def _build_prompt(
             elif _scalp_type_resolved == "waved":
                 male_down_front_texture_hint = "soft wave texture on top and crown"
             elif _scalp_type_resolved == "straight":
-                male_down_front_texture_hint = "light textured top and crown"
+                male_down_front_texture_hint = (
+                    "straight fringe softly covering the forehead, light textured top and crown"
+                )
             if not male_fringe_positive_hint:
                 male_fringe_positive_hint = (
                     "lowered masculine fringe with natural forehead coverage, "

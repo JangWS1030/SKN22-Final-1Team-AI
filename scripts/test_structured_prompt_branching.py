@@ -304,6 +304,27 @@ def main() -> int:
     _assert_contains(legacy_plain_text_style, "soft two-block")
     _assert_contains(legacy_plain_text_style, "lowered masculine fringe")
     _assert_contains(legacy_plain_text_style, "non-parted front")
+    straight_front_down_payload = {
+        "hairstyle_text": (
+            "male haircut, masculine salon style, short crop, soft two-block, "
+            "down fringe, non-parted crop, clean straight texture, no perm, no curl, natural mood"
+        ),
+        "color_text": "brown",
+        "preference_text": (
+            "gender=male, length=short, mood=natural, texture=straight, color=brown, "
+            "budget=low, two_block=soft, front=down, parting=non_parted, "
+            "short crop, down fringe, non-parted crop, no perm, no curl, male salon vocabulary only"
+        ),
+    }
+    straight_front_down_result = _build_from_payload(straight_front_down_payload)
+    straight_front_down_style = str(
+        straight_front_down_result["meta"]["normalized_style"]
+    ).lower()
+    straight_front_down_positive = straight_front_down_result["positive"].lower()
+    assert straight_front_down_result["meta"]["style_source"] == "structured_male", straight_front_down_result
+    _assert_contains(straight_front_down_style, "clean straight texture")
+    _assert_contains(straight_front_down_style, "straight fringe softly covering the forehead")
+    _assert_contains(straight_front_down_positive, "straight fringe softly covering the forehead")
     requested_front_mask = mask_builders_module._build_requested_front_coverage_mask(
         (512, 512),
         (156, 132, 356, 348),
@@ -318,6 +339,22 @@ def main() -> int:
     lower_side_band = requested_front_mask[210:270, 150:202]
     if float(lower_center_band.sum()) <= float(lower_side_band.sum()):
         raise AssertionError("Expected front coverage mask to emphasize lower center fringe corridor")
+    straight_front_mask = mask_builders_module._build_requested_front_coverage_mask(
+        (512, 512),
+        (156, 132, 356, 348),
+        straight_front_down_result["request"]["prompt_context"],
+        hair_length="short",
+        subject_gender=straight_front_down_result["request"]["subject_gender"] or "male",
+        fringe_requested=True,
+    )
+    straight_lower_center = straight_front_mask[218:276, 226:286]
+    straight_lower_left = straight_front_mask[218:276, 136:188]
+    straight_lower_right = straight_front_mask[218:276, 324:376]
+    if float(straight_lower_center.sum()) <= max(
+        float(straight_lower_left.sum()),
+        float(straight_lower_right.sum()),
+    ):
+        raise AssertionError("Expected straight front-down mask to taper lower corners and keep center coverage")
 
     conflicting_sd_payload = {
         "survey_data": male_payload["survey_data"],
@@ -369,6 +406,10 @@ def main() -> int:
                 "legacy_plain_text_prompt": {
                     "positive": legacy_plain_text_result["positive"],
                     "normalized_style": legacy_plain_text_result["meta"]["normalized_style"],
+                },
+                "straight_front_down_prompt": {
+                    "positive": straight_front_down_result["positive"],
+                    "normalized_style": straight_front_down_result["meta"]["normalized_style"],
                 },
             },
             ensure_ascii=False,

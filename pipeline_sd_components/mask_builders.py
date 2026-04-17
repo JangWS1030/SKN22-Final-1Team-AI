@@ -9684,7 +9684,24 @@ def _build_requested_front_coverage_mask(
         token in combined_text
         for token in ("curly", "wavy", "wave", "컬", "웨이브", "텍스처", "texture")
     )
+    straight_requested = any(
+        token in combined_text
+        for token in (
+            "straight",
+            "직모",
+            "clean straight",
+            "no perm",
+            "no curl",
+            "without perm",
+            "without curl",
+            "펌 없이",
+            "컬 없이",
+        )
+    )
     full_front = bool(down_requested or non_parted)
+    straight_down_requested = bool(
+        normalized_gender == "male" and full_front and straight_requested
+    )
 
     x1, y1, x2, y2 = face_bbox
     face_w = max(int(x2 - x1), 1)
@@ -9767,22 +9784,104 @@ def _build_requested_front_coverage_mask(
     if normalized_gender == "male" and full_front:
         block_top = max(0, int(y1 + face_h * 0.02))
         block_bottom = min(
-            H, int(y1 + face_h * (0.34 if hair_length == "short" else 0.30))
+            H,
+            int(
+                y1
+                + face_h
+                * (
+                    0.30
+                    if straight_down_requested and hair_length == "short"
+                    else 0.27
+                    if straight_down_requested
+                    else 0.34
+                    if hair_length == "short"
+                    else 0.30
+                )
+            ),
         )
         if block_top < block_bottom:
             coverage_u8[block_top:block_bottom, band_x1:band_x2] = 255
         center_tail_half = max(
-            14, int(face_w * (0.22 if hair_length == "short" else 0.19))
+            14,
+            int(
+                face_w
+                * (
+                    0.18
+                    if straight_down_requested and hair_length == "short"
+                    else 0.16
+                    if straight_down_requested
+                    else 0.22
+                    if hair_length == "short"
+                    else 0.19
+                )
+            ),
         )
-        center_tail_top = max(band_top, int(y1 + face_h * 0.12))
+        center_tail_top = max(
+            band_top,
+            int(
+                y1
+                + face_h
+                * (0.10 if straight_down_requested else 0.12)
+            ),
+        )
         center_tail_bottom = min(
-            H, int(y1 + face_h * (0.58 if hair_length == "short" else 0.50))
+            H,
+            int(
+                y1
+                + face_h
+                * (
+                    0.52
+                    if straight_down_requested and hair_length == "short"
+                    else 0.46
+                    if straight_down_requested
+                    else 0.58
+                    if hair_length == "short"
+                    else 0.50
+                )
+            ),
         )
         if center_tail_top < center_tail_bottom:
             coverage_u8[
                 center_tail_top:center_tail_bottom,
                 max(0, cx - center_tail_half) : min(W, cx + center_tail_half),
             ] = 255
+        if straight_down_requested:
+            taper_top = max(band_top, int(y1 + face_h * 0.18))
+            taper_bottom = min(
+                H,
+                int(y1 + face_h * (0.46 if hair_length == "short" else 0.40)),
+            )
+            taper_inner_half = max(18, int(face_w * 0.28))
+            if taper_top < taper_bottom:
+                left_cut = np.array(
+                    [
+                        [band_x1, taper_top],
+                        [band_x1, taper_bottom],
+                        [max(0, cx - taper_inner_half), taper_bottom],
+                        [max(0, cx - center_tail_half), taper_top],
+                    ],
+                    dtype=np.int32,
+                )
+                right_cut = np.array(
+                    [
+                        [band_x2, taper_top],
+                        [band_x2, taper_bottom],
+                        [min(W - 1, cx + taper_inner_half), taper_bottom],
+                        [min(W - 1, cx + center_tail_half), taper_top],
+                    ],
+                    dtype=np.int32,
+                )
+                cv2.fillConvexPoly(coverage_u8, left_cut, 0)
+                cv2.fillConvexPoly(coverage_u8, right_cut, 0)
+            lower_arc_center = (
+                cx,
+                min(H - 1, int(y1 + face_h * (0.34 if hair_length == "short" else 0.30))),
+            )
+            lower_arc_axes = (
+                max(16, int(face_w * (0.30 if hair_length == "short" else 0.26))),
+                max(10, int(face_h * (0.12 if hair_length == "short" else 0.10))),
+            )
+            cv2.ellipse(coverage_u8, lower_arc_center, lower_arc_axes, 0, 0, 360, 255, -1)
 
     if parted and not non_parted:
         keepout_half = max(
