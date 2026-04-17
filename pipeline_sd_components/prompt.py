@@ -675,7 +675,6 @@ def _build_male_structured_style_text(
     if front_styling == "down":
         parts.append("soft masculine fringe, hair falling forward naturally over forehead")
         parts.append("natural front texture, forehead covered by front hair")
-        parts.append("front hair down, no lifted top, no swept-back crown")
     elif front_styling in {"lifted", "up", "up_style"}:
         parts.append("soft lifted front")
         parts.append("open forehead")
@@ -2403,11 +2402,12 @@ def _build_prompt(
                 male_fringe_negative_hint = (
                     "exposed forehead, lifted quiff, pushed-up front hair, slicked-back front, "
                 )
-            # front=down 전용 강력 negative: SD가 lifted/swept top을 생성하는 것을 막음
+            # front=down 전용 negative: 이마 노출만 쬨단, 크라운 볼륨/스타일링은 허용
+            # (투블럭/폼/컴 등의 자연스러운 크라운 볼륨은 차단하면 안 됨)
             male_down_front_negative_hint = (
-                "lifted top hair, swept-back crown, quiff, pompadour, pushed-up top, "
-                "hair swept upward, upswept front, voluminous lifted crown, "
-                "open forehead, exposed hairline, slicked-back style, "
+                "forehead fully exposed, bare forehead, hair slicked completely away from forehead, "
+                "hair swept straight back from forehead, high upswept front revealing hairline, "
+                "forehead hairline fully visible, open bare forehead, "
             )
     no_bangs_positive_hint = ""
     no_bangs_negative_hint = ""
@@ -2723,7 +2723,7 @@ def _build_prompt(
         neg_prefix = (
             "bixie, pixie bob, "
             "oversized exposed forehead, exaggerated high hairline, receding hairline, "
-            "slicked-back hair, swept-back hair, lifted crown, quiff, pompadour, upswept top, "
+            "severely slicked-back hair, hair completely swept away from forehead, "
             "earring, earrings, hoop earrings, stud earrings, ear cuff, jewelry, necklace, makeup, "
         )
         guidance = 10.9
