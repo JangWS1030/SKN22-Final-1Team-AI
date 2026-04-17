@@ -9851,7 +9851,7 @@ def _build_requested_front_coverage_mask(
                 H,
                 int(y1 + face_h * (0.46 if hair_length == "short" else 0.40)),
             )
-            taper_inner_half = max(18, int(face_w * 0.28))
+            taper_inner_half = max(18, int(face_w * 0.42))
             if taper_top < taper_bottom:
                 left_cut = np.array(
                     [

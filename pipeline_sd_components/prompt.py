@@ -2942,15 +2942,14 @@ def _build_prompt(
             if male_front_down_requested
             else ", masculine short cut, balanced forehead, clean temple line, defined sideburn connection, tidy temple transition, no side tails, no jewelry"
         )
-        if male_fringe_positive_hint and not structured_payload_used:
-            # front=down: 이마를 덮는 앞머리를 강하게 명시 (structured 경로는 normalized_style에 이미 포함됨)
+        if male_fringe_positive_hint:
             pos_suffix += (
                 ", masculine fringe hanging down over forehead"
                 ", front hair draping naturally down, hair covering forehead"
             )
-        if male_front_down_requested and not structured_payload_used:
+        if male_front_down_requested:
             pos_suffix += ", controlled crown volume behind the lowered fringe"
-            if male_down_front_texture_hint:
+            if male_down_front_texture_hint and not structured_payload_used:
                 pos_suffix += f", {male_down_front_texture_hint}"
         neg_prefix = (
             "bixie, pixie bob, "
@@ -2995,7 +2994,7 @@ def _build_prompt(
             if male_front_down_requested
             else ", masculine medium cut, balanced forehead, centered volume, natural sideburn connection, tidy temple transition, no side sweep, no jewelry"
         )
-        if male_fringe_positive_hint and not structured_payload_used:
+        if male_fringe_positive_hint:
             pos_suffix += ", masculine fringe covering the forehead"
         if male_front_down_requested and male_down_front_texture_hint and not structured_payload_used:
             pos_suffix += f", {male_down_front_texture_hint}"
@@ -3046,9 +3045,9 @@ def _build_prompt(
             positive_parts.append("clean short silhouette, hair mass ending above the neckline")
         else:
             positive_parts.append("strict short bob silhouette, hair mass ending above the neckline")
-    if male_down_front_positive_hint and not structured_payload_used:
+    if male_down_front_positive_hint:
         positive_parts.append(male_down_front_positive_hint)
-    if male_fringe_positive_hint and not structured_payload_used:
+    if male_fringe_positive_hint:
         positive_parts.append(male_fringe_positive_hint)
     if no_bangs_positive_hint:
         positive_parts.append(no_bangs_positive_hint)
