@@ -5180,28 +5180,10 @@ class MirrAISDPipeline:
                     _original_bang_px_in_protect,
                 )
             composite_mask_for_blend = composite_mask.astype(np.float32).copy()
-            # [v185] 앞머리 보존 모드: composite_mask를 앞머리 영역까지 확장
+            # [v185+] composite_mask 확장은 두상 왜곡을 유발하므로 제거.
+            # protect_release_mask 만 사용: 앞머리 영역의 protect 해제 → 상단 생성 hair의
+            # Gaussian blur alpha가 자연스럽게 이마까지 흘러내려 원본 앞머리를 부드럽게 덮음.
             if (
-                _preserve_original_bangs
-                and float(_saved_original_bangs_mask.sum()) > 0.0
-            ):
-                _bangs_cover_mask = cv2.GaussianBlur(
-                    np.clip(_saved_original_bangs_mask, 0.0, 1.0),
-                    (0, 0),
-                    sigmaX=4.0,
-                    sigmaY=4.0,
-                ).astype(np.float32)
-                composite_mask_for_blend = np.maximum(
-                    composite_mask_for_blend,
-                    np.clip(_bangs_cover_mask * 0.88, 0.0, 1.0),
-                ).astype(np.float32)
-                logger.info(
-                    "[SDPipeline] composite_mask expanded to cover original bangs: "
-                    "px_before=%.0f px_after=%.0f",
-                    float(composite_mask.sum()),
-                    float(composite_mask_for_blend.sum()),
-                )
-            elif (
                 bangs_requested
                 and not _preserve_original_bangs
                 and protect_mask_for_sd.shape == (H, W)
@@ -5219,15 +5201,20 @@ class MirrAISDPipeline:
                     float(composite_mask.sum()),
                     float(composite_mask_for_blend.sum()),
                 )
-            # [v185] protect_release_mask: 앞머리 보존 모드에서도
-            # 저장된 앞머리 마스크를 release 로 써서 protect 영역의 알파가 부드럽게 흉모이 생성된 머리가 덮이도록
+            # protect_release_mask:
+            # _preserve_original_bangs: 앞머리 마스크를 release로 써서
+            # protect 경계가 부드럽게 해제되어 상단 생성 hair alpha가 이마쪽으로 서서히 번짐
             _bangs_release_for_composite = None
             if _preserve_original_bangs and float(_saved_original_bangs_mask.sum()) > 0.0:
-                _bangs_release_for_composite = np.clip(
-                    _saved_original_bangs_mask * 1.15, 0.0, 1.0
+                _bangs_release_for_composite = cv2.GaussianBlur(
+                    np.clip(_saved_original_bangs_mask, 0.0, 1.0),
+                    (0, 0),
+                    sigmaX=5.0,
+                    sigmaY=5.0,
                 ).astype(np.float32)
             elif float(composite_bangs_release_mask.sum()) > 0.0:
                 _bangs_release_for_composite = composite_bangs_release_mask
+
             composited_bgr = self._composite(
                 composite_base_bgr,
                 composite_base_rgb,
