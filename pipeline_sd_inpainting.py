@@ -5166,9 +5166,9 @@ class MirrAISDPipeline:
             # → protect 영역을 미리 composite_mask에서 빼면 hair_alpha≈0 확보.
             #   이마 앞머리(이마 release mask)는 _composite() 내부에서 alpha를 복원함.
             # front=down 요청이지만 원본에 앞머리가 이미 있는 경우:
-            # composite_bangs_release_mask로 SD 결과를 90% 반영하면 SD가 올린 앞머리를 생성해
-            # 원본 앞머리가 지워지는 문제 발생. 원본에 충분한 앞머리가 있으면 release mask를 쓰지 않고
-            # protect_mask가 이마를 보호하도록 하여 원본 앞머리를 그대로 유지한다.
+            # [v185 전략 변경] 원본 앞머리를 보존하는 대신,
+            # 생성된 머리로 원본 앞머리 구역을 덮는(cover) 방식으로 전환
+            # → composite_mask를 앞머리 영역까지 확장하고, protect_release_mask로 알파 자연스럽게 흇비로
             _preserve_original_bangs = (
                 bangs_requested
                 and _original_bang_px_in_protect > 100.0
@@ -5176,13 +5176,34 @@ class MirrAISDPipeline:
             if _preserve_original_bangs:
                 logger.info(
                     "[SDPipeline] front=down + original bangs detected (px=%.0f): "
-                    "skipping composite_bangs_release_mask to preserve original bangs",
+                    "covering original bangs with generated hair (v185)",
                     _original_bang_px_in_protect,
                 )
             composite_mask_for_blend = composite_mask.astype(np.float32).copy()
+            # [v185] 앞머리 보존 모드: composite_mask를 앞머리 영역까지 확장
             if (
+                _preserve_original_bangs
+                and float(_saved_original_bangs_mask.sum()) > 0.0
+            ):
+                _bangs_cover_mask = cv2.GaussianBlur(
+                    np.clip(_saved_original_bangs_mask, 0.0, 1.0),
+                    (0, 0),
+                    sigmaX=4.0,
+                    sigmaY=4.0,
+                ).astype(np.float32)
+                composite_mask_for_blend = np.maximum(
+                    composite_mask_for_blend,
+                    np.clip(_bangs_cover_mask * 0.88, 0.0, 1.0),
+                ).astype(np.float32)
+                logger.info(
+                    "[SDPipeline] composite_mask expanded to cover original bangs: "
+                    "px_before=%.0f px_after=%.0f",
+                    float(composite_mask.sum()),
+                    float(composite_mask_for_blend.sum()),
+                )
+            elif (
                 bangs_requested
-                and not _preserve_original_bangs  # 보존 모드에선 subtract 생략 (경계 공백 방지)
+                and not _preserve_original_bangs
                 and protect_mask_for_sd.shape == (H, W)
                 and float(composite_bangs_release_mask.sum()) > 0.0
             ):
@@ -5198,6 +5219,15 @@ class MirrAISDPipeline:
                     float(composite_mask.sum()),
                     float(composite_mask_for_blend.sum()),
                 )
+            # [v185] protect_release_mask: 앞머리 보존 모드에서도
+            # 저장된 앞머리 마스크를 release 로 써서 protect 영역의 알파가 부드럽게 흉모이 생성된 머리가 덮이도록
+            _bangs_release_for_composite = None
+            if _preserve_original_bangs and float(_saved_original_bangs_mask.sum()) > 0.0:
+                _bangs_release_for_composite = np.clip(
+                    _saved_original_bangs_mask * 1.15, 0.0, 1.0
+                ).astype(np.float32)
+            elif float(composite_bangs_release_mask.sum()) > 0.0:
+                _bangs_release_for_composite = composite_bangs_release_mask
             composited_bgr = self._composite(
                 composite_base_bgr,
                 composite_base_rgb,
@@ -5208,15 +5238,7 @@ class MirrAISDPipeline:
                 (W, H),
                 garment_mask=garment_composite_mask,
                 protect_mask=protect_mask_for_sd,  # 얼굴 영역 alpha 침범 방지
-                protect_release_mask=(
-                    None
-                    if _preserve_original_bangs
-                    else (
-                        composite_bangs_release_mask
-                        if float(composite_bangs_release_mask.sum()) > 0.0
-                        else None
-                    )
-                ),
+                protect_release_mask=_bangs_release_for_composite,
                 hair_length=hair_length,
                 subject_gender=subject_gender_mode,
                 fringe_requested=bangs_requested,
