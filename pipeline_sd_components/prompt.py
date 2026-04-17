@@ -2502,6 +2502,21 @@ def _build_prompt(
             hair_length,
             subject_gender=gender_mode,
         )
+    # [v188] structured 경로에서도 sd_prompt_data 스타일 서술어를 보완
+    # → 'Soft Down Perm', 'Natural Curl Two-Block' 등 스타일의 고유 특징을 normalized_style에 추가
+    # (structured payload이 있어도 DB 프롬프트 스타일 서술어는 항상 스킵되면, 모든 후보 결과가 동일해짐)
+    if (
+        structured_payload_used
+        and sd_prompt_data
+        and sd_prompt_data.get("sd_positive")
+    ):
+        _db_style_supplement = _truncate_words(str(sd_prompt_data["sd_positive"]).strip(), 10)
+        if _db_style_supplement and _db_style_supplement.lower() not in normalized_style.lower():
+            normalized_style = f"{normalized_style}, {_db_style_supplement}"
+            logger.debug(
+                "[prompt] structured+sd_prompt supplement applied: supplement=%r",
+                _db_style_supplement,
+            )
     normalized_style_lower = normalized_style.lower()
     if (
         no_bangs_positive_hint
@@ -2719,7 +2734,11 @@ def _build_prompt(
             ", masculine short cut, balanced forehead, clean temple line, defined sideburn connection, tidy temple transition, no side tails, no jewelry"
         )
         if male_fringe_positive_hint:
-            pos_suffix += ", masculine fringe covering the forehead"
+            # front=down: 이마를 덮는 앉머리를 강하게 명시
+            pos_suffix += (
+                ", masculine fringe hanging down over forehead"
+                ", front hair draping naturally down, hair covering forehead"
+            )
         neg_prefix = (
             "bixie, pixie bob, "
             "oversized exposed forehead, exaggerated high hairline, receding hairline, "
