@@ -2837,6 +2837,22 @@ class MirrAISDPipeline:
                     gen_mask,
                     np.clip(soft_bangs_generation_mask.astype(np.float32), 0.0, 1.0),
                 )
+                # soft_bangs_generation_mask는 상단(이마 머리선)이 vertical fade로
+                # alpha 0.22까지 약해져 SD가 원본 이마 스킨을 거의 덮지 못한다.
+                # front=down/bangs가 명시적으로 요청된 경우 requested_front_coverage_mask를
+                # full strength로 병합해 이마 전체 영역을 강하게 inpaint한다.
+                if (
+                    bangs_requested
+                    and float(requested_front_coverage_mask.sum()) > 0.0
+                ):
+                    gen_mask = np.maximum(
+                        gen_mask,
+                        np.clip(
+                            requested_front_coverage_mask.astype(np.float32),
+                            0.0,
+                            1.0,
+                        ),
+                    )
                 _store_mask(
                     "pipeline_bangs_generation_soft_mask", soft_bangs_generation_mask
                 )
@@ -4743,6 +4759,20 @@ class MirrAISDPipeline:
                     canny_suppress,
                     self._dilate_mask_with_px(hair_mask_for_sd.astype(np.float32), 25),
                 )
+                # front=down/bangs 요청 시: requested_front_coverage_mask를 직접
+                # canny_suppress에 병합해 이마 머리선(hairline)의 원본 edge를
+                # ControlNet이 따라가지 못하게 한다.
+                if (
+                    bangs_requested
+                    and requested_front_coverage_mask.shape == canny_suppress.shape
+                    and float(requested_front_coverage_mask.sum()) > 0.0
+                ):
+                    canny_suppress = np.maximum(
+                        canny_suppress,
+                        self._dilate_mask_with_px(
+                            requested_front_coverage_mask.astype(np.float32), 21
+                        ),
+                    )
                 if (
                     isinstance(source_garment_prepass_mask, np.ndarray)
                     and source_garment_prepass_mask.shape == canny_suppress.shape
