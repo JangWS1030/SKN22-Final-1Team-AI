@@ -5281,7 +5281,16 @@ class MirrAISDPipeline:
                 subject_gender=subject_gender_mode,
                 fringe_requested=bangs_requested,
             )
-            if not _preserve_original_bangs and float(composite_bangs_release_mask.sum()) > 60.0:
+            _skip_rectangular_bangs_release_refine = bool(
+                subject_gender_mode == "male"
+                and bangs_requested
+                and hair_length in ("short", "medium")
+            )
+            if (
+                not _preserve_original_bangs
+                and not _skip_rectangular_bangs_release_refine
+                and float(composite_bangs_release_mask.sum()) > 60.0
+            ):
                 try:
                     composited_bgr = cv2.cvtColor(
                         self._cv2_refine_cloth_region(
