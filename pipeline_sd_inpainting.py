@@ -2771,6 +2771,56 @@ class MirrAISDPipeline:
                     _rel_y_limit = int(_ry1 + _rface_h * _rel_ratio)
                     _rel_cap = np.zeros_like(composite_bangs_release_mask)
                     _rel_cap[:_rel_y_limit, :] = 1.0
+                    if (
+                        subject_gender_mode == "male"
+                        and bangs_requested
+                        and hair_length in ("short", "medium")
+                    ):
+                        _center_lobe_u8 = np.zeros_like(
+                            composite_bangs_release_mask, dtype=np.uint8
+                        )
+                        _rcx = int(0.5 * (_rx1 + _rx2))
+                        _center = (
+                            _rcx,
+                            int(
+                                _ry1
+                                + _rface_h
+                                * (0.24 if hair_length == "short" else 0.22)
+                            ),
+                        )
+                        _axes = (
+                            max(
+                                14,
+                                int(
+                                    (_rx2 - _rx1)
+                                    * (0.18 if hair_length == "short" else 0.16)
+                                ),
+                            ),
+                            max(
+                                10,
+                                int(_rface_h * (0.11 if hair_length == "short" else 0.09)),
+                            ),
+                        )
+                        cv2.ellipse(
+                            _center_lobe_u8,
+                            _center,
+                            _axes,
+                            0,
+                            0,
+                            360,
+                            255,
+                            -1,
+                        )
+                        _center_lobe = cv2.GaussianBlur(
+                            _center_lobe_u8.astype(np.float32) / 255.0,
+                            (0, 0),
+                            sigmaX=4.0,
+                            sigmaY=4.6,
+                        ).astype(np.float32)
+                        _rel_cap = np.maximum(
+                            _rel_cap,
+                            np.clip(_center_lobe * 1.15, 0.0, 1.0),
+                        )
                     composite_bangs_release_mask = (
                         composite_bangs_release_mask * _rel_cap
                     )

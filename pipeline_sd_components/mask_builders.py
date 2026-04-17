@@ -9701,10 +9701,10 @@ def _build_requested_front_coverage_mask(
             y1
             + face_h
             * (
-                0.56
+                0.48
                 if normalized_gender == "male" and hair_length == "short" and full_front
                 else (
-                    0.50
+                    0.44
                     if normalized_gender == "male" and full_front
                     else 0.46 if full_front else 0.38
                 )
@@ -9771,6 +9771,18 @@ def _build_requested_front_coverage_mask(
         )
         if block_top < block_bottom:
             coverage_u8[block_top:block_bottom, band_x1:band_x2] = 255
+        center_tail_half = max(
+            14, int(face_w * (0.22 if hair_length == "short" else 0.19))
+        )
+        center_tail_top = max(band_top, int(y1 + face_h * 0.12))
+        center_tail_bottom = min(
+            H, int(y1 + face_h * (0.58 if hair_length == "short" else 0.50))
+        )
+        if center_tail_top < center_tail_bottom:
+            coverage_u8[
+                center_tail_top:center_tail_bottom,
+                max(0, cx - center_tail_half) : min(W, cx + center_tail_half),
+            ] = 255
 
     if parted and not non_parted:
         keepout_half = max(

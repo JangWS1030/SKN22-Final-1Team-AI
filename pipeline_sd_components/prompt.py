@@ -132,6 +132,11 @@ _LIFTED_FRONT_TEXT_TOKENS = (
     "swept-back",
     "regent",
 )
+_FRONT_DOWN_STYLE_VALUES = frozenset(
+    {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}
+)
+_FRONT_LIFTED_STYLE_VALUES = frozenset({"lifted", "up", "up_style"})
+_NON_PARTED_STYLE_VALUES = frozenset({"non_parted", "nonparted", "no_part"})
 _NON_PARTED_TEXT_TOKENS = (
     "비가르마",
     "non_parted",
@@ -284,6 +289,102 @@ def _dedupe_prompt_parts(parts: List[str]) -> List[str]:
         seen.add(key)
         deduped.append(text)
     return deduped
+
+
+def _sanitize_style_supplement_for_front(
+    text: str,
+    *,
+    front_down: bool = False,
+    no_bangs: bool = False,
+) -> str:
+    raw_parts = _dedupe_prompt_parts(str(text or "").split(","))
+    if not raw_parts:
+        return ""
+
+    sanitized: List[str] = []
+    for part in raw_parts:
+        lowered = part.lower()
+        if front_down:
+            if any(
+                token in lowered
+                for token in (
+                    "open forehead",
+                    "exposed forehead",
+                    "bare forehead",
+                    "no bangs",
+                    "quiff",
+                    "pompadour",
+                    "regent",
+                    "slicked back",
+                    "slick back",
+                    "swept back",
+                    "swept-back",
+                    "brushed back",
+                    "lifted front",
+                    "front up",
+                    "up style",
+                )
+            ):
+                continue
+            lowered = (
+                lowered.replace("airy lifted top", "airy crown volume")
+                .replace("lifted crown", "crown volume")
+                .replace("lifted top", "crown volume")
+                .replace("upswept top", "textured crown volume")
+            )
+            part = lowered
+        if no_bangs and any(
+            token in lowered
+            for token in (
+                "full bangs",
+                "heavy bangs",
+                "heavy fringe",
+                "curtain fringe",
+                "curtain bangs",
+                "forehead covering",
+                "hair falling forward",
+            )
+        ):
+            continue
+        sanitized.append(part)
+
+    return ", ".join(_dedupe_prompt_parts(sanitized))
+
+
+def _build_male_front_down_bridge_hint(
+    *,
+    hair_length: str,
+    scalp_type: str,
+    parting: str,
+) -> Tuple[str, str]:
+    if scalp_type == "curly":
+        texture_hint = "soft curl texture kept on the top and crown"
+    elif scalp_type == "waved":
+        texture_hint = "soft wave texture kept on the top and crown"
+    elif scalp_type == "straight":
+        texture_hint = "light textured top and crown"
+    else:
+        texture_hint = "natural top and crown texture"
+
+    if hair_length == "medium":
+        volume_hint = "controlled top and crown volume behind the fringe line"
+    else:
+        volume_hint = "controlled crown volume behind the fringe line"
+
+    front_hint = (
+        "non-parted lowered fringe connected to the top"
+        if parting in _NON_PARTED_STYLE_VALUES
+        else "lowered fringe connected to the top"
+    )
+    positive = (
+        f"{front_hint}, front hair resting forward over the forehead, "
+        f"{volume_hint}, {texture_hint}"
+    )
+    negative = (
+        "split-open front hairline, front roots lifted upward from the hairline, "
+        "front hair flipped away from forehead, brushed-back front hair, broken fringe line, "
+    )
+    return positive, negative
 
 
 def _normalize_prompt_context(prompt_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -673,9 +774,10 @@ def _build_male_structured_style_text(
         parts.append("male layered hairstyle")
 
     if front_styling == "down":
-        parts.append("soft masculine fringe, hair falling forward naturally over forehead")
-        parts.append("natural front texture, forehead covered by front hair")
-    elif front_styling in {"lifted", "up", "up_style"}:
+        parts.append("lowered masculine fringe connected to the top")
+        parts.append("front hair resting forward over forehead without exposing hairline")
+        parts.append("controlled crown volume behind the fringe line")
+    elif front_styling in _FRONT_LIFTED_STYLE_VALUES:
         parts.append("soft lifted front")
         parts.append("open forehead")
         parts.append("no bangs")
@@ -690,10 +792,13 @@ def _build_male_structured_style_text(
     if scalp_type == "curly":
         if front_styling == "down":
             parts.append("curly texture with a soft down perm finish")
+            parts.append("soft curl texture kept on top and crown")
         else:
             parts.append("curly texture")
     elif scalp_type == "waved":
         parts.append("soft volume")
+        if front_styling == "down":
+            parts.append("soft wave texture kept on top and crown")
     elif scalp_type == "straight":
         parts.append("clean straight texture")
     elif scalp_type == "damaged":
@@ -1100,13 +1205,23 @@ def _resolve_male_fringe_prompt_hints(hairstyle_text: str) -> Tuple[str, str]:
         )
     )
     if full_fringe_requested:
-        positive = "full masculine fringe covering most of the forehead"
+        positive = (
+            "lowered masculine fringe covering most of the forehead, "
+            "connected to the top without a bowl-shaped edge"
+        )
         negative = (
-            "exposed forehead, lifted quiff, pushed-up front hair, slicked-back front, parted curtain fringe, "
+            "exposed forehead, lifted quiff, pushed-up front hair, slicked-back front, "
+            "parted curtain fringe, split-open front hairline, front hair flipped away from forehead, "
         )
     else:
-        positive = "soft masculine fringe with visible forehead coverage"
-        negative = "exposed forehead, lifted quiff, pushed-up front hair, slicked-back front, "
+        positive = (
+            "lowered masculine fringe with visible forehead coverage, "
+            "connected to textured top hair"
+        )
+        negative = (
+            "exposed forehead, lifted quiff, pushed-up front hair, slicked-back front, "
+            "front roots lifted off the forehead, broken fringe line, "
+        )
     return positive, negative
 
 def _normalize_hairstyle_prompt_text(
@@ -2384,8 +2499,11 @@ def _build_prompt(
     subject_profile = _resolve_subject_pipeline_profile(gender_mode)
     male_fringe_positive_hint = ""
     male_fringe_negative_hint = ""
+    male_down_front_positive_hint = ""
+    male_down_front_texture_hint = ""
     # [v183+] front=down 시 SD가 올린 머리를 생성하지 못하도록 전용 negative hint
     male_down_front_negative_hint = ""
+    male_front_down_requested = False
     if gender_mode == "male":
         male_fringe_positive_hint, male_fringe_negative_hint = _resolve_male_fringe_prompt_hints(
             hairstyle_text
@@ -2396,19 +2514,46 @@ def _build_prompt(
         _front_styling_resolved = _resolve_axis_value(
             _style_axes_for_front, "front_styling", "front_style", "front"
         )
-        if _front_styling_resolved in {"down", "down_style", "down_perm", "fringe", "bang", "bangs"}:
+        _parting_resolved = _resolve_axis_value(
+            _style_axes_for_front, "parting", "part"
+        )
+        _scalp_type_resolved = str(
+            (normalized_prompt_context.get("canonical_preferences") or {}).get("scalp_type")
+            or ""
+        ).strip().lower()
+        if _front_styling_resolved in _FRONT_DOWN_STYLE_VALUES:
+            male_front_down_requested = True
+            if _scalp_type_resolved == "curly":
+                male_down_front_texture_hint = "soft curl texture on top and crown"
+            elif _scalp_type_resolved == "waved":
+                male_down_front_texture_hint = "soft wave texture on top and crown"
+            elif _scalp_type_resolved == "straight":
+                male_down_front_texture_hint = "light textured top and crown"
             if not male_fringe_positive_hint:
-                male_fringe_positive_hint = "soft masculine fringe with natural forehead coverage, hair falling forward"
+                male_fringe_positive_hint = (
+                    "lowered masculine fringe with natural forehead coverage, "
+                    "hair falling forward"
+                )
                 male_fringe_negative_hint = (
                     "exposed forehead, lifted quiff, pushed-up front hair, slicked-back front, "
                 )
+            male_down_front_positive_hint, _male_down_front_extra_negative = (
+                _build_male_front_down_bridge_hint(
+                    hair_length=hair_length,
+                    scalp_type=_scalp_type_resolved,
+                    parting=_parting_resolved,
+                )
+            )
             # front=down 전용 negative: 이마 노출만 쬨단, 크라운 볼륨/스타일링은 허용
             # (투블럭/폼/컴 등의 자연스러운 크라운 볼륨은 차단하면 안 됨)
             male_down_front_negative_hint = (
                 "forehead fully exposed, bare forehead, hair slicked completely away from forehead, "
                 "hair swept straight back from forehead, high upswept front revealing hairline, "
                 "forehead hairline fully visible, open bare forehead, "
+                + _male_down_front_extra_negative
             )
+        elif male_fringe_positive_hint and not explicit_no_bangs_requested:
+            male_front_down_requested = True
     no_bangs_positive_hint = ""
     no_bangs_negative_hint = ""
     if explicit_no_bangs_requested:
@@ -2510,7 +2655,11 @@ def _build_prompt(
         and sd_prompt_data
         and sd_prompt_data.get("sd_positive")
     ):
-        _db_style_supplement = _truncate_words(str(sd_prompt_data["sd_positive"]).strip(), 10)
+        _db_style_supplement = _sanitize_style_supplement_for_front(
+            _truncate_words(str(sd_prompt_data["sd_positive"]).strip(), 10),
+            front_down=male_front_down_requested,
+            no_bangs=explicit_no_bangs_requested,
+        )
         if _db_style_supplement and _db_style_supplement.lower() not in normalized_style.lower():
             normalized_style = f"{normalized_style}, {_db_style_supplement}"
             logger.debug(
@@ -2725,13 +2874,20 @@ def _build_prompt(
         parts.append(normalized_style)
     if normalized_color:
         parts.append(f"{normalized_color.strip()} hair color")
-    style_word_limit = 26 if structured_payload_used else 18
+    style_word_limit = (
+        32
+        if structured_payload_used and gender_mode == "male" and male_front_down_requested
+        else 26 if structured_payload_used else 18
+    )
     style = _truncate_words(", ".join(parts) if parts else "natural hairstyle", style_word_limit)
 
     # 길이별 기본 보강 (직접 입력/DB 프롬프트 폴백 시 사용)
     if hair_length == "short" and gender_mode == "male":
         pos_suffix = (
-            ", masculine short cut, balanced forehead, clean temple line, defined sideburn connection, tidy temple transition, no side tails, no jewelry"
+            ", masculine short cut, clean temple line, tidy sideburn connection, "
+            "controlled side silhouette, no side tails, no jewelry"
+            if male_front_down_requested
+            else ", masculine short cut, balanced forehead, clean temple line, defined sideburn connection, tidy temple transition, no side tails, no jewelry"
         )
         if male_fringe_positive_hint:
             # front=down: 이마를 덮는 앉머리를 강하게 명시
@@ -2739,6 +2895,10 @@ def _build_prompt(
                 ", masculine fringe hanging down over forehead"
                 ", front hair draping naturally down, hair covering forehead"
             )
+        if male_front_down_requested:
+            pos_suffix += ", controlled crown volume behind the lowered fringe"
+            if male_down_front_texture_hint:
+                pos_suffix += f", {male_down_front_texture_hint}"
         neg_prefix = (
             "bixie, pixie bob, "
             "oversized exposed forehead, exaggerated high hairline, receding hairline, "
@@ -2778,10 +2938,14 @@ def _build_prompt(
         guidance = 12.2
     elif hair_length == "medium" and gender_mode == "male":
         pos_suffix = (
-            ", masculine medium cut, balanced forehead, centered volume, natural sideburn connection, tidy temple transition, no side sweep, no jewelry"
+            ", masculine medium cut, centered crown volume, tidy sideburn connection, clean temple transition, no side sweep, no jewelry"
+            if male_front_down_requested
+            else ", masculine medium cut, balanced forehead, centered volume, natural sideburn connection, tidy temple transition, no side sweep, no jewelry"
         )
         if male_fringe_positive_hint:
             pos_suffix += ", masculine fringe covering the forehead"
+        if male_front_down_requested and male_down_front_texture_hint:
+            pos_suffix += f", {male_down_front_texture_hint}"
         neg_prefix = (
             "dangling earrings, hoop earrings, necklace, jewelry, "
             "oversized exposed forehead, exaggerated high hairline, receding hairline, severe slicked-back hair, "
@@ -2829,6 +2993,8 @@ def _build_prompt(
             positive_parts.append("clean short silhouette, hair mass ending above the neckline")
         else:
             positive_parts.append("strict short bob silhouette, hair mass ending above the neckline")
+    if male_down_front_positive_hint:
+        positive_parts.append(male_down_front_positive_hint)
     if male_fringe_positive_hint:
         positive_parts.append(male_fringe_positive_hint)
     if no_bangs_positive_hint:
@@ -2840,7 +3006,10 @@ def _build_prompt(
         "balanced framing",
         "photorealistic portrait",
     ])
-    positive = _compact_prompt_parts(positive_parts)
+    positive = _compact_prompt_parts(
+        positive_parts,
+        max_words=56 if male_front_down_requested else 48,
+    )
     negative_base = (
         _NEGATIVE_BASE
         + ", cropped head, cropped hair, cut off hair, top of head out of frame, tight close-up portrait, clipped hairstyle"

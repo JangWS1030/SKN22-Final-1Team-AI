@@ -26,6 +26,7 @@ def _build_from_payload(payload: dict) -> dict:
         hair_length,
         subject_gender=request["subject_gender"],
         prompt_context=request["prompt_context"],
+        sd_prompt_data=payload.get("sd_prompt_data"),
     )
     return {
         "request": request,
@@ -95,9 +96,10 @@ def main() -> int:
         _assert_not_contains(normalized_male_style, blocked)
         _assert_not_contains(positive_male, blocked)
     _assert_contains(normalized_male_style, "soft two-block")
-    _assert_contains(normalized_male_style, "down style")
+    _assert_contains(normalized_male_style, "lowered masculine fringe")
     _assert_contains(normalized_male_style, "non-parted front")
     _assert_contains(normalized_male_style, "curly texture")
+    _assert_contains(normalized_male_style, "controlled crown volume")
     _assert_contains(negative_male, "mini bob")
     _assert_contains(negative_male, "baseball cap")
     _assert_contains(negative_male, "earbuds")
@@ -272,6 +274,23 @@ def main() -> int:
     )
     if int((requested_front_mask > 0.05).sum()) <= 0:
         raise AssertionError("Expected synthetic front coverage mask for structured male down/non-parted request")
+    lower_center_band = requested_front_mask[210:270, 220:292]
+    lower_side_band = requested_front_mask[210:270, 150:202]
+    if float(lower_center_band.sum()) <= float(lower_side_band.sum()):
+        raise AssertionError("Expected front coverage mask to emphasize lower center fringe corridor")
+
+    conflicting_sd_payload = {
+        "survey_data": male_payload["survey_data"],
+        "sd_prompt_data": {
+            "sd_positive": "quiff, airy lifted top, open forehead, natural curl two-block",
+        },
+    }
+    conflicting_result = _build_from_payload(conflicting_sd_payload)
+    conflicting_style = str(conflicting_result["meta"]["normalized_style"]).lower()
+    _assert_not_contains(conflicting_style, "quiff")
+    _assert_not_contains(conflicting_style, "open forehead")
+    _assert_contains(conflicting_style, "airy crown volume")
+    _assert_contains(conflicting_result["positive"].lower(), "controlled crown volume")
 
     print(
         json.dumps(
@@ -281,6 +300,10 @@ def main() -> int:
                     "negative_has_block": "mini bob" in negative_male,
                     "normalized_style": male_result["meta"]["normalized_style"],
                     "front_coverage_mask_px": int((requested_front_mask > 0.05).sum()),
+                },
+                "conflicting_sd_prompt": {
+                    "normalized_style": conflicting_result["meta"]["normalized_style"],
+                    "positive": conflicting_result["positive"],
                 },
                 "female_prompt": {
                     "positive": female_result["positive"],
