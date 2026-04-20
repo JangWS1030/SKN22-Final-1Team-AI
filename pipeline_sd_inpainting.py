@@ -2846,9 +2846,14 @@ class MirrAISDPipeline:
                         _center_lobe = cv2.GaussianBlur(
                             _center_lobe_u8.astype(np.float32) / 255.0,
                             (0, 0),
-                            sigmaX=4.0,
-                            sigmaY=4.6,
+                            sigmaX=8.0,
+                            sigmaY=9.0,
                         ).astype(np.float32)
+                        # center_lobe가 rel_cap fade 바깥으로 삐져나와 이마
+                        # 중앙에 W자 모양(검은 얼룩) artifact를 만드는 문제 방지:
+                        # rel_cap의 vertical envelope와 multiply하여 fade 영역
+                        # 안쪽에서만 lobe가 효과를 발휘하도록 제한.
+                        _center_lobe = _center_lobe * _rel_cap
                         _rel_cap = np.maximum(
                             _rel_cap,
                             np.clip(_center_lobe * 1.15, 0.0, 1.0),

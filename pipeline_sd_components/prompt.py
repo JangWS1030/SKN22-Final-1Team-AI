@@ -2981,6 +2981,8 @@ def _build_prompt(
             "oversized exposed forehead, exaggerated high hairline, receding hairline, "
             "severely slicked-back hair, hair completely swept away from forehead, "
             "earring, earrings, hoop earrings, stud earrings, ear cuff, jewelry, necklace, makeup, "
+            "hat, cap, baseball cap, snapback, beanie, bucket hat, headwear, "
+            "wearing hat, wearing cap, hat on head, cap on head, brim, visor, "
         )
         guidance = 10.9
     elif hair_length == "short" and neutral_safe_structured_short:
@@ -3029,6 +3031,8 @@ def _build_prompt(
             "oversized fluffy crown, exaggerated pompadour, towering top volume, bulky side volume, oversized hair mass, "
             "hair pushed entirely to the right, hair pushed entirely to the left, heavy right sweep, heavy left sweep, "
             "off-center hair bulk, lopsided side volume, "
+            "hat, cap, baseball cap, snapback, beanie, bucket hat, headwear, "
+            "wearing hat, wearing cap, hat on head, cap on head, brim, visor, "
         )
         guidance = 8.9
     elif hair_length == "medium":
