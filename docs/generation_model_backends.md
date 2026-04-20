@@ -7,8 +7,7 @@ prompt, face-protection, and compositing logic.
 
 | key | model | default canvas | note |
 | --- | --- | ---: | --- |
-| `sd15_controlnet` | `runwayml/stable-diffusion-inpainting` + `lllyasviel/control_v11p_sd15_canny` | 512 | Existing baseline with IP-Adapter and runtime LoRA |
-| `sdxl_inpaint` | `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` | 1024 | SDXL inpainting candidate |
+| `sd15_controlnet` | `runwayml/stable-diffusion-inpainting` + `lllyasviel/control_v11p_sd15_canny` | 512 | Baseline with IP-Adapter and runtime LoRA |
 
 ## RunPod Request
 
@@ -18,7 +17,7 @@ prompt, face-protection, and compositing logic.
     "image": "<base64>",
     "hairstyle_text": "short bob cut, natural salon hair",
     "color_text": "brown",
-    "generation_backend": "sdxl_inpaint",
+    "generation_backend": "sd15_controlnet",
     "top_k": 1,
     "return_base64": true
   }
@@ -29,7 +28,7 @@ prompt, face-protection, and compositing logic.
 
 ```bash
 python scripts/run_runpod_inpaint_backend_matrix.py \
-  --backends sdxl_inpaint \
+  --backends sd15_controlnet \
   --images-dir images \
   --top-k 1
 ```

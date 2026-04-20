@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--generation-backend",
         default="",
-        help="Generation backend: sd15_controlnet, sdxl_inpaint",
+        help="Generation backend: sd15_controlnet",
     )
     parser.add_argument("--top-k", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)

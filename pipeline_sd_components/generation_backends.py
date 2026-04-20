@@ -19,7 +19,6 @@ from .config import (
     CONTROLNET_MODEL_ID,
     IP_ADAPTER_REPO_ID,
     IP_ADAPTER_WEIGHT,
-    SDXL_INPAINT_MODEL_ID,
     SD_INPAINT_MODEL_ID,
 )
 
@@ -43,7 +42,6 @@ class GenerationBackendSpec:
     generator_device: str = "pipeline"
     default_guidance_scale: Optional[float] = None
     default_strength: float = 1.0
-    variant: Optional[str] = None
 
 
 _BACKEND_ALIASES = {
@@ -55,9 +53,6 @@ _BACKEND_ALIASES = {
     "sd": "sd15_controlnet",
     "sd_inpaint": "sd15_controlnet",
     "sd15_controlnet": "sd15_controlnet",
-    "sdxl": "sdxl_inpaint",
-    "sdxl_inpainting": "sdxl_inpaint",
-    "sdxl_inpaint": "sdxl_inpaint",
 }
 
 _BASE_SPECS: Dict[str, GenerationBackendSpec] = {
@@ -76,20 +71,6 @@ _BASE_SPECS: Dict[str, GenerationBackendSpec] = {
         batchable=True,
         generator_device="pipeline",
         default_strength=1.0,
-    ),
-    "sdxl_inpaint": GenerationBackendSpec(
-        key="sdxl_inpaint",
-        label="SDXL Inpainting",
-        model_id=SDXL_INPAINT_MODEL_ID,
-        default_size=1024,
-        default_steps=24,
-        pipeline_kind="sdxl_inpaint",
-        supports_negative_prompt=True,
-        supports_strength=True,
-        batchable=True,
-        generator_device="pipeline",
-        default_strength=0.99,
-        variant="fp16",
     ),
 }
 
@@ -117,12 +98,6 @@ def get_generation_backend_spec(config: Any) -> GenerationBackendSpec:
     model_id = spec.model_id
     if key == "sd15_controlnet":
         model_id = os.environ.get("MIRRAI_SD15_INPAINT_MODEL_ID", model_id).strip() or model_id
-    elif key == "sdxl_inpaint":
-        model_id = (
-            os.environ.get("MIRRAI_SDXL_INPAINT_MODEL_ID", "").strip()
-            or str(getattr(config, "sdxl_inpaint_model_id", "") or "").strip()
-            or model_id
-        )
 
     return dataclasses.replace(spec, model_id=model_id)
 
@@ -166,21 +141,6 @@ def resolve_generation_guidance_scale(config: Any, prompt_guidance_scale: float)
     return float(prompt_guidance_scale)
 
 
-def _from_pretrained_with_optional_variant(factory: Any, model_id: str, kwargs: Dict[str, Any], variant: Optional[str]) -> Any:
-    if not variant:
-        return factory.from_pretrained(model_id, **kwargs)
-    try:
-        return factory.from_pretrained(model_id, variant=variant, **kwargs)
-    except Exception as exc:
-        logger.warning(
-            "[GenerationBackend] retrying %s without variant=%s after load error: %s",
-            model_id,
-            variant,
-            exc,
-        )
-        return factory.from_pretrained(model_id, **kwargs)
-
-
 def load_generation_backend(config: Any, device: torch.device, dtype: torch.dtype) -> tuple[Any, GenerationBackendSpec]:
     spec = get_generation_backend_spec(config)
     logger.info("[GenerationBackend] loading backend=%s model=%s", spec.key, spec.model_id)
@@ -216,31 +176,6 @@ def load_generation_backend(config: Any, device: torch.device, dtype: torch.dtyp
             weight_name=IP_ADAPTER_WEIGHT,
         )
         pipe.set_ip_adapter_scale(float(getattr(config, "ip_adapter_scale", 0.35)))
-        pipe.to(device)
-        return pipe, spec
-
-    if spec.pipeline_kind == "sdxl_inpaint":
-        from diffusers import StableDiffusionXLInpaintPipeline
-        from diffusers.schedulers import DPMSolverMultistepScheduler
-
-        load_kwargs = {
-            "torch_dtype": dtype,
-            "use_safetensors": True,
-        }
-        pipe = _from_pretrained_with_optional_variant(
-            StableDiffusionXLInpaintPipeline,
-            spec.model_id,
-            load_kwargs,
-            spec.variant,
-        )
-        pipe.scheduler = DPMSolverMultistepScheduler.from_config(
-            pipe.scheduler.config,
-            use_karras_sigmas=True,
-        )
-        if hasattr(pipe, "enable_vae_slicing"):
-            pipe.enable_vae_slicing()
-        if hasattr(pipe, "enable_vae_tiling"):
-            pipe.enable_vae_tiling()
         pipe.to(device)
         return pipe, spec
 

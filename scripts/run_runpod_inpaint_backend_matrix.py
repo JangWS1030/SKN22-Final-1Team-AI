@@ -22,7 +22,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 RUNPOD_BASE_URL = "https://api.runpod.ai/v2"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
-DEFAULT_BACKENDS = ["sdxl_inpaint"]
+DEFAULT_BACKENDS = ["sd15_controlnet"]
 DEFAULT_STYLES: List[Dict[str, Any]] = [
     {
         "name": "short_two_block_open_forehead",

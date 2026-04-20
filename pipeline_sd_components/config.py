@@ -29,7 +29,6 @@ def _clean_optional_env_text(value: Optional[str]) -> Optional[str]:
 # ── HuggingFace 모델 ID ────────────────────────────────────────────────────────
 SD_INPAINT_MODEL_ID   = "runwayml/stable-diffusion-inpainting"
 CONTROLNET_MODEL_ID   = "lllyasviel/control_v11p_sd15_canny"
-SDXL_INPAINT_MODEL_ID = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
 IP_ADAPTER_REPO_ID    = "h94/IP-Adapter"
 IP_ADAPTER_WEIGHT     = "ip-adapter-plus-face_sd15.bin"
 DEFAULT_RUNTIME_LORA_HF_REPO_ID = "siik/mirrai-hair-swap-stage4-garment-reveal-lora-20260330"
@@ -223,14 +222,12 @@ MALE_SUBJECT_PIPELINE_PROFILE = SubjectPipelineProfile(
 class SDInpaintConfig:
     """SD Inpainting 파이프라인 설정"""
     # 생성 백엔드
-    #   "sd15_controlnet": 기존 SD 1.5 Inpainting + ControlNet + IP-Adapter
-    #   "sdxl_inpaint":    SDXL Inpainting
-    generation_backend: str = "sdxl_inpaint"
+    #   "sd15_controlnet": SD 1.5 Inpainting + ControlNet + IP-Adapter (단일 백엔드)
+    generation_backend: str = "sd15_controlnet"
     generation_size: Optional[int] = None
     generation_backend_steps: Optional[int] = None
     generation_backend_guidance_scale: Optional[float] = None
     generation_backend_cpu_offload: bool = False
-    sdxl_inpaint_model_id: str = SDXL_INPAINT_MODEL_ID
 
     # SD 생성 파라미터
     num_inference_steps: int = 30

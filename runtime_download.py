@@ -26,7 +26,6 @@ def ensure_models_cached(generation_backends: Optional[Iterable[str]] = None) ->
         CONTROLNET_MODEL_ID,
         IP_ADAPTER_REPO_ID,
         IP_ADAPTER_WEIGHT,
-        SDXL_INPAINT_MODEL_ID,
         SD_INPAINT_MODEL_ID,
     )
     from pipeline_sd_components.generation_backends import normalize_generation_backend
@@ -37,7 +36,7 @@ def ensure_models_cached(generation_backends: Optional[Iterable[str]] = None) ->
     if preload_env.strip():
         requested_backends.extend(part.strip() for part in preload_env.split(","))
     if not requested_backends:
-        requested_backends = [os.environ.get("MIRRAI_GENERATION_BACKEND", "sdxl_inpaint")]
+        requested_backends = [os.environ.get("MIRRAI_GENERATION_BACKEND", "sd15_controlnet")]
     backend_keys = sorted({normalize_generation_backend(key) for key in requested_backends})
 
     models = []
@@ -56,14 +55,6 @@ def ensure_models_cached(generation_backends: Optional[Iterable[str]] = None) ->
                         ["*.msgpack", "*.h5", "*.onnx"],
                     ),
                 ]
-            )
-        elif backend_key == "sdxl_inpaint":
-            models.append(
-                (
-                    "SDXL Inpainting",
-                    os.environ.get("MIRRAI_SDXL_INPAINT_MODEL_ID") or SDXL_INPAINT_MODEL_ID,
-                    ["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*", "*.onnx", "*.pb"],
-                )
             )
     for name, repo_id, ignore_patterns in models:
         logger.info("[models] %s cache check...", name)
