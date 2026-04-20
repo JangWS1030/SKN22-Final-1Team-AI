@@ -229,7 +229,7 @@ class SDInpaintConfig:
     #   "sdxl_inpaint":    SDXL Inpainting
     #   "flux_fill":       FLUX.1 Fill [dev]
     #   "powerpaint":      diffusers 호환 PowerPaint inpainting checkpoint
-    generation_backend: str = "sd15_controlnet"
+    generation_backend: str = "sdxl_inpaint"
     generation_size: Optional[int] = None
     generation_backend_steps: Optional[int] = None
     generation_backend_guidance_scale: Optional[float] = None

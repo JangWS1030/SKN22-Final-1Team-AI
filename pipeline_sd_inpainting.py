@@ -4552,15 +4552,15 @@ class MirrAISDPipeline:
             # 이마 release 깊이: 앞머리 내리기 cap과 동일 비율 사용 (눈썹 위까지)
             if subject_gender_mode == "male":
                 _nb_ratio = (
-                    0.25
+                    0.22
                     if hair_length == "short"
-                    else 0.22 if hair_length == "medium" else 0.20
+                    else 0.20 if hair_length == "medium" else 0.18
                 )
             else:
                 _nb_ratio = (
-                    0.30
+                    0.27
                     if hair_length == "short"
-                    else 0.26 if hair_length == "medium" else 0.22
+                    else 0.23 if hair_length == "medium" else 0.20
                 )
             _nb_y_limit = int(_nb_ry1 + _nb_face_h * _nb_ratio)
             _nb_seed_u8 = cv2.dilate(
@@ -4578,8 +4578,18 @@ class MirrAISDPipeline:
             ).astype(np.float32)
             # 눈썹 위 이마 영역으로 제한 (eyes/nose에 SD artifact 유입 방지)
             _nb_cap = np.zeros((H, W), dtype=np.float32)
-            _nb_cap[:_nb_y_limit, :] = 1.0
-            _nb_soft = np.clip(_nb_soft * _nb_cap * 1.10, 0.0, 1.0)
+            _nb_fade_h = max(18, int(_nb_face_h * 0.14))
+            _nb_fade_top = max(0, _nb_y_limit - _nb_fade_h)
+            _nb_fade_bot = min(H, _nb_y_limit + _nb_fade_h)
+            _nb_cap[:_nb_fade_top, :] = 1.0
+            if _nb_fade_bot > _nb_fade_top:
+                _nb_cap[_nb_fade_top:_nb_fade_bot, :] = np.linspace(
+                    1.0,
+                    0.0,
+                    _nb_fade_bot - _nb_fade_top,
+                    dtype=np.float32,
+                )[:, np.newaxis]
+            _nb_soft = np.clip(_nb_soft * _nb_cap * 0.95, 0.0, 1.0)
             if float(_nb_soft.sum()) > 10.0:
                 composite_bangs_release_mask = np.maximum(
                     composite_bangs_release_mask,
@@ -5415,11 +5425,12 @@ class MirrAISDPipeline:
                     sigmaY=5.0,
                 ).astype(np.float32)
             elif float(composite_bangs_release_mask.sum()) > 0.0:
+                _release_sigma = 7.0 if bangs_requested else 9.0
                 _bangs_release_for_composite = cv2.GaussianBlur(
                     np.clip(composite_bangs_release_mask, 0.0, 1.0),
                     (0, 0),
-                    sigmaX=7.0,
-                    sigmaY=7.0,
+                    sigmaX=_release_sigma,
+                    sigmaY=_release_sigma,
                 ).astype(np.float32)
 
             composited_bgr = self._composite(

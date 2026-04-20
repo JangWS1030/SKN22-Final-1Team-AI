@@ -125,7 +125,7 @@ def _normalize_generation_backend(value: Any = None) -> str:
     return normalize_generation_backend(
         value
         or os.environ.get("MIRRAI_GENERATION_BACKEND")
-        or "sd15_controlnet"
+        or "sdxl_inpaint"
     )
 
 
