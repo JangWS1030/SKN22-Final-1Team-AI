@@ -1113,11 +1113,19 @@ def _normalize_male_short_hairstyle_prompt_text(hairstyle_text: str) -> str:
                 "balanced side silhouette",
             ])
     elif any(token in lowered for token in ("buzz", "crew", "fade", "taper", "undercut", "crop", "cropped", "short")):
-        base_style = "clean masculine short crop haircut"
-        hints.extend([
-            "textured top",
-            "clean tapered sides",
-        ])
+        if _down_front:
+            # crop/short 어휘는 SD가 upswept로 해석하는 경향이 강해서 down 요청 시 어휘 약화
+            base_style = "clean masculine short layered haircut with lowered front"
+            hints.extend([
+                "softly textured top falling forward",
+                "clean tapered sides",
+            ])
+        else:
+            base_style = "clean masculine short crop haircut"
+            hints.extend([
+                "textured top",
+                "clean tapered sides",
+            ])
     else:
         base_style = "clean masculine short layered haircut"
         hints.extend([
@@ -2605,6 +2613,10 @@ def _build_prompt(
                 "forehead fully exposed, bare forehead, hair slicked completely away from forehead, "
                 "hair swept straight back from forehead, high upswept front revealing hairline, "
                 "forehead hairline fully visible, open bare forehead, "
+                "spiky upswept top, messy upswept crop, lifted top volume, "
+                "hair standing straight up, vertical top hair, textured pompadour, "
+                "front hair flipped upward, quiff, pomp, pompadour style, "
+                "upswept textured crop, raised front hair, top hair pointing up, "
                 + _male_down_front_extra_negative
             )
         elif male_fringe_positive_hint and not explicit_no_bangs_requested:
@@ -2948,9 +2960,14 @@ def _build_prompt(
             pos_suffix += (
                 ", masculine fringe hanging down over forehead"
                 ", front hair draping naturally down, hair covering forehead"
+                ", top hair lying flat forward, lowered top silhouette"
+                ", front strands resting on forehead, no upswept volume on top"
             )
         if male_front_down_requested:
-            pos_suffix += ", controlled crown volume behind the lowered fringe"
+            pos_suffix += (
+                ", controlled crown volume behind the lowered fringe"
+                ", flat low-profile top, hair direction forward and downward"
+            )
             if male_down_front_texture_hint and not structured_payload_used:
                 pos_suffix += f", {male_down_front_texture_hint}"
         neg_prefix = (
