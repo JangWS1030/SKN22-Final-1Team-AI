@@ -236,6 +236,139 @@ def _mask_bbox(mask_image: Any, threshold: float = 0.08) -> Optional[Tuple[int, 
     return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
 
 
+def _collect_final_hair_bbox(
+    pipeline: "MirrAISDPipeline",
+    image_bgr: "np.ndarray",
+    face_bbox: Tuple[int, int, int, int],
+    *,
+    focus_top: int,
+    focus_bottom: int,
+    focus_left: int,
+    focus_right: int,
+    threshold: float = 0.08,
+) -> Optional[Tuple[int, int, int, int]]:
+    h, w = image_bgr.shape[:2]
+    try:
+        final_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        final_hair_mask, _, _ = pipeline._segface_hair_mask(final_rgb, face_bbox)
+        if final_hair_mask is None:
+            return None
+
+        focus_mask = np.zeros((h, w), dtype=np.float32)
+        clipped_top = max(0, int(focus_top))
+        clipped_bottom = min(h, int(focus_bottom))
+        clipped_left = max(0, int(focus_left))
+        clipped_right = min(w, int(focus_right))
+        if clipped_top >= clipped_bottom or clipped_left >= clipped_right:
+            return None
+
+        focus_mask[clipped_top:clipped_bottom, clipped_left:clipped_right] = 1.0
+        return _mask_bbox(
+            np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) * focus_mask,
+            threshold=threshold,
+        )
+    except Exception as exc:
+        logger.warning(f"[handler_sd] output crop analysis failed (ignored): {exc}")
+        return None
+
+
+def _ensure_crop_min_size(
+    *,
+    crop_left: int,
+    crop_top: int,
+    crop_right: int,
+    crop_bottom: int,
+    source_width: int,
+    source_height: int,
+    face_cx: int,
+    face_cy: int,
+    min_width: int,
+    min_height: int,
+) -> Tuple[int, int, int, int]:
+    if crop_right - crop_left < min_width:
+        half_width = max(min_width // 2, 1)
+        crop_left = max(0, face_cx - half_width)
+        crop_right = min(source_width, face_cx + half_width)
+        if crop_right - crop_left < min_width:
+            if crop_left == 0:
+                crop_right = min(source_width, crop_left + min_width)
+            else:
+                crop_left = max(0, crop_right - min_width)
+
+    if crop_bottom - crop_top < min_height:
+        half_height = max(min_height // 2, 1)
+        crop_top = max(0, face_cy - half_height)
+        crop_bottom = min(source_height, face_cy + half_height)
+        if crop_bottom - crop_top < min_height:
+            if crop_top == 0:
+                crop_bottom = min(source_height, crop_top + min_height)
+            else:
+                crop_top = max(0, crop_bottom - min_height)
+
+    return int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)
+
+
+def _build_short_output_crop_box(
+    pipeline: "MirrAISDPipeline",
+    image_bgr: "np.ndarray",
+    face_bbox: Tuple[int, int, int, int],
+) -> Optional[Dict[str, int]]:
+    h, w = image_bgr.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(x2 - x1, 1)
+    face_h = max(y2 - y1, 1)
+    face_cx = int(round((x1 + x2) * 0.5))
+    face_cy = int(round((y1 + y2) * 0.5))
+
+    crop_left = max(0, int(x1 - face_w * 1.25))
+    crop_right = min(w, int(x2 + face_w * 1.25))
+    crop_top = max(0, int(y1 - face_h * 1.00))
+    crop_bottom = min(h, int(y2 + face_h * 0.52))
+
+    hair_bbox = _collect_final_hair_bbox(
+        pipeline,
+        image_bgr,
+        face_bbox,
+        focus_top=int(y1 - face_h * 0.18),
+        focus_bottom=int(y2 + face_h * 0.56),
+        focus_left=int(x1 - face_w * 0.95),
+        focus_right=int(x2 + face_w * 0.95),
+    )
+    if hair_bbox is not None:
+        hx1, hy1, hx2, hy2 = hair_bbox
+        crop_left = max(0, min(crop_left, int(hx1 - face_w * 0.22)))
+        crop_right = min(w, max(crop_right, int(hx2 + face_w * 0.22)))
+        crop_top = max(0, min(crop_top, int(hy1 - face_h * 0.26)))
+        crop_bottom = min(h, max(crop_bottom, int(hy2 + face_h * 0.10)))
+
+    crop_left, crop_top, crop_right, crop_bottom = _ensure_crop_min_size(
+        crop_left=crop_left,
+        crop_top=crop_top,
+        crop_right=crop_right,
+        crop_bottom=crop_bottom,
+        source_width=w,
+        source_height=h,
+        face_cx=face_cx,
+        face_cy=face_cy,
+        min_width=max(224, int(face_w * 3.10)),
+        min_height=max(240, int(face_h * 2.25)),
+    )
+
+    if crop_right - crop_left < 64 or crop_bottom - crop_top < 64:
+        return None
+
+    return {
+        "x1": int(crop_left),
+        "y1": int(crop_top),
+        "x2": int(crop_right),
+        "y2": int(crop_bottom),
+        "width": int(crop_right - crop_left),
+        "height": int(crop_bottom - crop_top),
+        "source_width": int(w),
+        "source_height": int(h),
+    }
+
+
 def _build_medium_output_crop_box(
     pipeline: "MirrAISDPipeline",
     image_bgr: "np.ndarray",
@@ -253,40 +386,34 @@ def _build_medium_output_crop_box(
     crop_top = max(0, int(y1 - face_h * 0.92))
     crop_bottom = min(h, int(y2 + face_h * 1.22))
 
-    try:
-        final_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        final_hair_mask, _, _ = pipeline._segface_hair_mask(final_rgb, face_bbox)
-        if final_hair_mask is not None:
-            focus_mask = np.zeros((h, w), dtype=np.float32)
-            focus_top = max(0, int(y1 - face_h * 0.16))
-            focus_bottom = min(h, int(y2 + face_h * 1.18))
-            focus_left = max(0, int(x1 - face_w * 1.10))
-            focus_right = min(w, int(x2 + face_w * 1.10))
-            if focus_top < focus_bottom and focus_left < focus_right:
-                focus_mask[focus_top:focus_bottom, focus_left:focus_right] = 1.0
-                hair_bbox = _mask_bbox(
-                    np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) * focus_mask,
-                    threshold=0.08,
-                )
-                if hair_bbox is not None:
-                    hx1, hy1, hx2, hy2 = hair_bbox
-                    crop_left = max(0, min(crop_left, int(hx1 - face_w * 0.34)))
-                    crop_right = min(w, max(crop_right, int(hx2 + face_w * 0.34)))
-                    crop_top = max(0, min(crop_top, int(hy1 - face_h * 0.30)))
-                    crop_bottom = min(h, max(crop_bottom, int(hy2 + face_h * 0.24)))
-    except Exception as exc:
-        logger.warning(f"[handler_sd] medium output crop analysis failed (ignored): {exc}")
+    hair_bbox = _collect_final_hair_bbox(
+        pipeline,
+        image_bgr,
+        face_bbox,
+        focus_top=int(y1 - face_h * 0.16),
+        focus_bottom=int(y2 + face_h * 1.18),
+        focus_left=int(x1 - face_w * 1.10),
+        focus_right=int(x2 + face_w * 1.10),
+    )
+    if hair_bbox is not None:
+        hx1, hy1, hx2, hy2 = hair_bbox
+        crop_left = max(0, min(crop_left, int(hx1 - face_w * 0.34)))
+        crop_right = min(w, max(crop_right, int(hx2 + face_w * 0.34)))
+        crop_top = max(0, min(crop_top, int(hy1 - face_h * 0.30)))
+        crop_bottom = min(h, max(crop_bottom, int(hy2 + face_h * 0.24)))
 
-    min_width = max(192, int(face_w * 2.60))
-    min_height = max(256, int(face_h * 2.70))
-    if crop_right - crop_left < min_width:
-        half_width = max(min_width // 2, int(face_w * 1.35))
-        crop_left = max(0, face_cx - half_width)
-        crop_right = min(w, face_cx + half_width)
-    if crop_bottom - crop_top < min_height:
-        half_height = max(min_height // 2, int(face_h * 1.45))
-        crop_top = max(0, face_cy - half_height)
-        crop_bottom = min(h, face_cy + half_height)
+    crop_left, crop_top, crop_right, crop_bottom = _ensure_crop_min_size(
+        crop_left=crop_left,
+        crop_top=crop_top,
+        crop_right=crop_right,
+        crop_bottom=crop_bottom,
+        source_width=w,
+        source_height=h,
+        face_cx=face_cx,
+        face_cy=face_cy,
+        min_width=max(192, int(face_w * 2.60)),
+        min_height=max(256, int(face_h * 2.70)),
+    )
 
     if crop_right - crop_left < 64 or crop_bottom - crop_top < 64:
         return None
@@ -316,11 +443,16 @@ def _apply_output_crop_if_needed(
 
     prompt_meta = prompt_meta if isinstance(prompt_meta, dict) else {}
     hair_length = str(prompt_meta.get("hair_length") or "").strip().lower()
-    if hair_length != "medium":
-        meta["reason"] = "hair_length_not_medium"
+    if hair_length == "short":
+        crop_box = _build_short_output_crop_box(pipeline, image_bgr, face_bbox)
+        crop_mode = "short_generated_region"
+    elif hair_length == "medium":
+        crop_box = _build_medium_output_crop_box(pipeline, image_bgr, face_bbox)
+        crop_mode = "medium_generated_region"
+    else:
+        meta["reason"] = "hair_length_not_cropped"
         return image_bgr, meta
 
-    crop_box = _build_medium_output_crop_box(pipeline, image_bgr, face_bbox)
     if crop_box is None:
         meta["reason"] = "crop_box_unavailable"
         return image_bgr, meta
@@ -333,7 +465,7 @@ def _apply_output_crop_if_needed(
 
     meta.update(crop_box)
     meta["applied"] = True
-    meta["mode"] = "medium_generated_region"
+    meta["mode"] = crop_mode
     return cropped, meta
 
 

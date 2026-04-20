@@ -147,6 +147,7 @@ python -m pip install -r requirements-trends.txt
 
 hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 응답에는 실제로 사용된 positive/negative prompt가 포함됩니다.
+출력 크롭 정책은 `short -> short_generated_region`, `medium -> medium_generated_region`, `long -> 원본 유지(applied=false)` 입니다.
 
 **Request**
 ```json
@@ -227,6 +228,7 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 
 얼굴 분석 데이터 + 사용자 취향 → 스타일 추천 → 추천 스타일별 기본 5장씩 생성합니다.
 `face_ratios`가 있으면 자동으로 추천 모드로 진입합니다.
+추천 결과도 동일하게 `short/medium`은 길이별 출력 크롭이 적용되고, `long`은 원본 프레임을 유지합니다.
 
 **Request (구조화된 취향)**
 ```json
