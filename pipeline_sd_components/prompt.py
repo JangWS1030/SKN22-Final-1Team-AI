@@ -2613,10 +2613,14 @@ def _build_prompt(
                 "forehead fully exposed, bare forehead, hair slicked completely away from forehead, "
                 "hair swept straight back from forehead, high upswept front revealing hairline, "
                 "forehead hairline fully visible, open bare forehead, "
+                "partially exposed forehead, upper forehead visible, hair only covering top of forehead, "
+                "visible hairline, half-covered forehead, "
                 "spiky upswept top, messy upswept crop, lifted top volume, "
                 "hair standing straight up, vertical top hair, textured pompadour, "
                 "front hair flipped upward, quiff, pomp, pompadour style, "
                 "upswept textured crop, raised front hair, top hair pointing up, "
+                "hair growing out of eyebrows, double eyebrow, hair drawn on eyebrows, "
+                "ghost eyebrows, second eyebrow line, hair on eyebrows, "
                 + _male_down_front_extra_negative
             )
         elif male_fringe_positive_hint and not explicit_no_bangs_requested:
@@ -2959,7 +2963,9 @@ def _build_prompt(
         if male_fringe_positive_hint:
             pos_suffix += (
                 ", masculine fringe hanging down over forehead"
-                ", front hair draping naturally down, hair covering forehead"
+                ", front hair draping naturally down, hair fully covering the forehead"
+                ", fringe reaching down to just above the eyebrows"
+                ", forehead fully covered by hair down to near the eyebrow line"
                 ", top hair lying flat forward, lowered top silhouette"
                 ", front strands resting on forehead, no upswept volume on top"
             )
