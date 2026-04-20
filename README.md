@@ -146,6 +146,7 @@ python -m pip install -r requirements-trends.txt
 ### EP1. 직접 지정 생성 (기존)
 
 hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
+응답에는 실제로 사용된 positive/negative prompt가 포함됩니다.
 
 **Request**
 ```json
@@ -184,12 +185,37 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
       "seed": 42,
       "clip_score": 0.312,
       "mask_used": "sam2",
+      "prompt": {
+        "input_hairstyle_text": "wolf cut, layered bangs",
+        "effective_hairstyle_text": "wolf cut, layered bangs",
+        "effective_color_text": "ash brown",
+        "positive_prompt": "professional portrait photo of a woman with ...",
+        "negative_prompt": "ugly, deformed, blurry, ...",
+        "guidance_scale": 8.5,
+        "hair_length": "medium"
+      },
+      "output_crop": {
+        "applied": true,
+        "mode": "medium_generated_region",
+        "x1": 88,
+        "y1": 24,
+        "x2": 412,
+        "y2": 476
+      },
+      "output_image_size": {"width": 324, "height": 452},
       "image_base64": "...",
       "mask_base64": "...",
       "mask_overlay_base64": "...",
       "face_bbox": {"x1": 100, "y1": 50, "x2": 300, "y2": 350}
     }
   ],
+  "request_prompt": {
+    "hairstyle_text": "wolf cut, layered bangs",
+    "color_text": "ash brown",
+    "top_k": 3,
+    "per_style_top_k": 1,
+    "subject_gender": ""
+  },
   "intermediates": {},
   "elapsed_seconds": 12.3
 }
@@ -199,7 +225,7 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 
 ### EP2. 추천 기반 생성 (취향벡터 + RAG)
 
-얼굴 분석 데이터 + 사용자 취향 → 스타일 추천 → 추천 스타일별 1장씩 생성합니다.
+얼굴 분석 데이터 + 사용자 취향 → 스타일 추천 → 추천 스타일별 기본 5장씩 생성합니다.
 `face_ratios`가 있으면 자동으로 추천 모드로 진입합니다.
 
 **Request (구조화된 취향)**
@@ -222,6 +248,7 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
     },
     "color_text": "ash brown",
     "top_k": 5,
+    "per_style_top_k": 5,
     "return_base64": true
   }
 }
@@ -241,6 +268,7 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
     "preference_text": "자연스러운 웨이브 미디엄 길이, 따뜻한 톤",
     "age": 28,
     "top_k": 5,
+    "per_style_top_k": 5,
     "return_base64": true
   }
 }
@@ -255,6 +283,7 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 | `age` | int | | 나이 (분위기 추론에 사용) |
 | `color_text` | string | | 헤어 색상 |
 | `top_k` | int | | 추천 수 (1~5, 기본 5) |
+| `per_style_top_k` | int | | 추천된 스타일당 샘플 수 (1~5, 기본 5) |
 
 `preference` 필드 상세:
 
@@ -275,11 +304,29 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
       "seed": 42,
       "clip_score": 0.298,
       "mask_used": "sam2",
+      "prompt": {
+        "effective_hairstyle_text": "shaggy midi cut, crown texture, airy layers",
+        "positive_prompt": "professional portrait photo of a woman with ...",
+        "negative_prompt": "ugly, deformed, blurry, ...",
+        "guidance_scale": 8.5,
+        "hair_length": "medium"
+      },
+      "output_crop": {
+        "applied": true,
+        "mode": "medium_generated_region",
+        "x1": 92,
+        "y1": 30,
+        "x2": 404,
+        "y2": 468
+      },
       "image_base64": "...",
       "recommended_style": {
         "style_id": "shaggy-midi",
+        "style_rank": 0,
         "style_name": "Shaggy Midi Cut",
-        "recommendation_score": 0.8437
+        "recommendation_score": 0.8437,
+        "style_sample_rank": 0,
+        "style_result_count": 5
       }
     },
     {
@@ -290,11 +337,21 @@ hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
       "image_base64": "...",
       "recommended_style": {
         "style_id": "layered-midi-waves",
+        "style_rank": 1,
         "style_name": "Layered Midi Waves",
-        "recommendation_score": 0.8122
+        "recommendation_score": 0.8122,
+        "style_sample_rank": 0,
+        "style_result_count": 5
       }
     }
   ],
+  "request_prompt": {
+    "hairstyle_text": "",
+    "color_text": "ash brown",
+    "top_k": 5,
+    "per_style_top_k": 5,
+    "subject_gender": ""
+  },
   "recommendations": [
     {
       "rank": 0,
@@ -444,13 +501,13 @@ python handler_sd.py
 헬스체크:
 
 ```bash
-python test_runpod.py --health-check
+python tests/test_runpod.py --health-check
 ```
 
 샘플 요청:
 
 ```bash
-python test_runpod.py \
+python tests/test_runpod.py \
   --image images/1234.jpg \
   --hairstyle "wolf cut, layered bangs" \
   --color "ash brown" \
@@ -466,12 +523,22 @@ python style_recommender.py
 단발/중단발 마스크 비교:
 
 ```bash
-python test_runpod.py \
+python tests/test_runpod.py \
   --image images/1234.jpg \
   --hairstyle "short chin-length bob cut, hush cut" \
   --top-k 1 \
   --bg-fill sd \
   --mask-refine-mode segface_priority
+```
+
+추천 스타일별 5장 출력:
+
+```bash
+python tests/test_runpod.py \
+  --image images/1234.jpg \
+  --hairstyle "shaggy midi cut" \
+  --top-k 3 \
+  --per-style-top-k 5
 ```
 
 마스크 비교 모드:

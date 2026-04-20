@@ -261,6 +261,7 @@ class SDInpaintResult:
     debug_images: Optional[Dict[str, np.ndarray]] = None    # 디버그용 중간 산출물 (BGR)
     debug_data: Optional[Dict[str, Any]] = None             # 디버그용 중간 메타데이터(JSON)
     style_meta: Optional[Dict[str, Any]] = None             # 추천 모드: 스타일 메타데이터
+    prompt_meta: Optional[Dict[str, Any]] = None            # 사용된 프롬프트 메타데이터
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2194,6 +2195,18 @@ class MirrAISDPipeline:
             subject_gender=subject_gender_mode,
             sd_prompt_data=sd_prompt_data,
         )
+        prompt_meta = {
+            "input_hairstyle_text": requested_hairstyle_text,
+            "input_color_text": requested_color_text,
+            "effective_hairstyle_text": effective_hairstyle_text,
+            "effective_color_text": normalized_color_text,
+            "positive_prompt": prompt,
+            "negative_prompt": neg_prompt,
+            "guidance_scale": float(guidance),
+            "hair_length": hair_length,
+            "subject_gender": subject_gender_mode,
+            "used_sd_prompt_data": bool(sd_prompt_data and sd_prompt_data.get("sd_positive")),
+        }
         logger.info(f"[SDPipeline] 프롬프트: {prompt}")
         logger.info(f"[SDPipeline] 네거티브: {neg_prompt}")
         logger.info(f"[SDPipeline] guidance_scale: {guidance}")
@@ -5811,6 +5824,7 @@ class MirrAISDPipeline:
                 face_bbox=face_bbox,
                 debug_images=debug_images_common if (debug_images_common is not None and rank == 0) else None,
                 debug_data=debug_data_common if (debug_data_common is not None and rank == 0) else None,
+                prompt_meta=dict(prompt_meta),
             ))
 
         return results

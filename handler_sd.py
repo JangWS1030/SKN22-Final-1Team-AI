@@ -226,6 +226,117 @@ def _mask_image_to_float(mask_image: Any) -> Optional["np.ndarray"]:
     return np.clip(mask_f, 0.0, 1.0)
 
 
+def _mask_bbox(mask_image: Any, threshold: float = 0.08) -> Optional[Tuple[int, int, int, int]]:
+    mask_f = _mask_image_to_float(mask_image)
+    if mask_f is None:
+        return None
+    ys, xs = np.where(mask_f > float(threshold))
+    if xs.size == 0 or ys.size == 0:
+        return None
+    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+
+def _build_medium_output_crop_box(
+    pipeline: "MirrAISDPipeline",
+    image_bgr: "np.ndarray",
+    face_bbox: Tuple[int, int, int, int],
+) -> Optional[Dict[str, int]]:
+    h, w = image_bgr.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in face_bbox]
+    face_w = max(x2 - x1, 1)
+    face_h = max(y2 - y1, 1)
+    face_cx = int(round((x1 + x2) * 0.5))
+    face_cy = int(round((y1 + y2) * 0.5))
+
+    crop_left = max(0, int(x1 - face_w * 1.35))
+    crop_right = min(w, int(x2 + face_w * 1.35))
+    crop_top = max(0, int(y1 - face_h * 0.92))
+    crop_bottom = min(h, int(y2 + face_h * 1.22))
+
+    try:
+        final_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        final_hair_mask, _, _ = pipeline._segface_hair_mask(final_rgb, face_bbox)
+        if final_hair_mask is not None:
+            focus_mask = np.zeros((h, w), dtype=np.float32)
+            focus_top = max(0, int(y1 - face_h * 0.16))
+            focus_bottom = min(h, int(y2 + face_h * 1.18))
+            focus_left = max(0, int(x1 - face_w * 1.10))
+            focus_right = min(w, int(x2 + face_w * 1.10))
+            if focus_top < focus_bottom and focus_left < focus_right:
+                focus_mask[focus_top:focus_bottom, focus_left:focus_right] = 1.0
+                hair_bbox = _mask_bbox(
+                    np.clip(final_hair_mask.astype(np.float32), 0.0, 1.0) * focus_mask,
+                    threshold=0.08,
+                )
+                if hair_bbox is not None:
+                    hx1, hy1, hx2, hy2 = hair_bbox
+                    crop_left = max(0, min(crop_left, int(hx1 - face_w * 0.34)))
+                    crop_right = min(w, max(crop_right, int(hx2 + face_w * 0.34)))
+                    crop_top = max(0, min(crop_top, int(hy1 - face_h * 0.30)))
+                    crop_bottom = min(h, max(crop_bottom, int(hy2 + face_h * 0.24)))
+    except Exception as exc:
+        logger.warning(f"[handler_sd] medium output crop analysis failed (ignored): {exc}")
+
+    min_width = max(192, int(face_w * 2.60))
+    min_height = max(256, int(face_h * 2.70))
+    if crop_right - crop_left < min_width:
+        half_width = max(min_width // 2, int(face_w * 1.35))
+        crop_left = max(0, face_cx - half_width)
+        crop_right = min(w, face_cx + half_width)
+    if crop_bottom - crop_top < min_height:
+        half_height = max(min_height // 2, int(face_h * 1.45))
+        crop_top = max(0, face_cy - half_height)
+        crop_bottom = min(h, face_cy + half_height)
+
+    if crop_right - crop_left < 64 or crop_bottom - crop_top < 64:
+        return None
+
+    return {
+        "x1": int(crop_left),
+        "y1": int(crop_top),
+        "x2": int(crop_right),
+        "y2": int(crop_bottom),
+        "width": int(crop_right - crop_left),
+        "height": int(crop_bottom - crop_top),
+        "source_width": int(w),
+        "source_height": int(h),
+    }
+
+
+def _apply_output_crop_if_needed(
+    pipeline: "MirrAISDPipeline",
+    image_bgr: "np.ndarray",
+    face_bbox: Optional[Tuple[int, int, int, int]],
+    prompt_meta: Optional[Dict[str, Any]],
+) -> Tuple["np.ndarray", Dict[str, Any]]:
+    meta: Dict[str, Any] = {"applied": False}
+    if face_bbox is None:
+        meta["reason"] = "missing_face_bbox"
+        return image_bgr, meta
+
+    prompt_meta = prompt_meta if isinstance(prompt_meta, dict) else {}
+    hair_length = str(prompt_meta.get("hair_length") or "").strip().lower()
+    if hair_length != "medium":
+        meta["reason"] = "hair_length_not_medium"
+        return image_bgr, meta
+
+    crop_box = _build_medium_output_crop_box(pipeline, image_bgr, face_bbox)
+    if crop_box is None:
+        meta["reason"] = "crop_box_unavailable"
+        return image_bgr, meta
+
+    x1, y1, x2, y2 = crop_box["x1"], crop_box["y1"], crop_box["x2"], crop_box["y2"]
+    cropped = image_bgr[y1:y2, x1:x2].copy()
+    if cropped.size == 0:
+        meta["reason"] = "empty_crop"
+        return image_bgr, meta
+
+    meta.update(crop_box)
+    meta["applied"] = True
+    meta["mode"] = "medium_generated_region"
+    return cropped, meta
+
+
 def _resolve_display_mask(
     pipeline_mask: Optional["np.ndarray"],
     debug_images: Optional[Dict[str, "np.ndarray"]],
@@ -493,9 +604,10 @@ def _fetch_rag_context_for_styles(recommendations) -> Optional[str]:
 def _generate_per_recommendation(
     pipeline, img_bgr, recommendations, color_text,
     return_intermediates, mask_refine_mode, subject_gender, lora_path, lora_scale, rag_context,
+    per_style_top_k=5,
     seed=None,
 ):
-    """추천된 각 스타일마다 1장씩 생성."""
+    """추천된 각 스타일마다 여러 장씩 생성."""
     all_results = []
     for idx, rec in enumerate(recommendations):
         style_name = rec.get("style_name", "")
@@ -527,7 +639,7 @@ def _generate_per_recommendation(
                 image=img_bgr,
                 hairstyle_text=enriched_prompt,
                 color_text=color_text,
-                top_k=1,
+                top_k=per_style_top_k,
                 return_intermediates=return_intermediates if idx == 0 else False,
                 mask_refine_mode=mask_refine_mode,
                 subject_gender=subject_gender,
@@ -536,14 +648,19 @@ def _generate_per_recommendation(
                 lora_scale=lora_scale,
                 sd_prompt_data=sd_prompt_data,
             )
-            for r in results:
-                r.rank = idx
+            style_result_count = len(results)
+            for sample_idx, r in enumerate(results):
+                style_sample_rank = int(getattr(r, "rank", sample_idx))
+                r.rank = len(all_results)
                 r.style_meta = {
                     "style_id": rec.get("style_id"),
+                    "style_rank": idx,
                     "style_name": style_name,
                     "hairstyle_text": hairstyle_text,
                     "trend_name": rec.get("trend_name"),
                     "recommendation_score": rec.get("score"),
+                    "style_sample_rank": style_sample_rank,
+                    "style_result_count": style_result_count,
                 }
                 all_results.append(r)
         except Exception as e:
@@ -641,6 +758,10 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             age = int(age)
 
         is_recommend_mode = face_ratios is not None
+        per_style_top_k = max(
+            1,
+            min(5, int(inp.get("per_style_top_k", 5 if is_recommend_mode else 1))),
+        )
         recommendations_data = None
         rag_context_str = None
 
@@ -669,6 +790,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(
             f"[handler_sd] 입력: {w}×{h}, "
             f"hairstyle='{hairstyle_text}', color='{color_text}', top_k={top_k}, "
+            f"per_style_top_k={per_style_top_k}, "
             f"mask_refine_mode={mask_refine_mode or 'default'}, "
             f"recommend_mode={is_recommend_mode}, subject_gender={subject_gender or 'auto'}, "
             f"seed={request_seed if request_seed is not None else 'random'}"
@@ -692,6 +814,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 lora_path=lora_path,
                 lora_scale=lora_scale,
                 rag_context=rag_context_str,
+                per_style_top_k=per_style_top_k,
                 seed=request_seed,
             )
         else:
@@ -711,15 +834,29 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         # ── 결과 직렬화 ───────────────────────────────────────────────────────
         output_results = []
         for r in results:
+            prompt_meta = getattr(r, "prompt_meta", None)
+            output_image_bgr, output_crop_meta = _apply_output_crop_if_needed(
+                pipeline=pipeline,
+                image_bgr=r.image,
+                face_bbox=r.face_bbox,
+                prompt_meta=prompt_meta,
+            )
             item: Dict[str, Any] = {
                 "rank":       r.rank,
                 "seed":       r.seed,
                 "clip_score": round(float(r.clip_score), 4),
                 "mask_used":  r.mask_used,
                 "mask_refine_mode": r.mask_refine_mode,
+                "output_crop": output_crop_meta,
+                "output_image_size": {
+                    "width": int(output_image_bgr.shape[1]),
+                    "height": int(output_image_bgr.shape[0]),
+                },
             }
+            if isinstance(prompt_meta, dict) and prompt_meta:
+                item["prompt"] = prompt_meta
             if return_base64:
-                item["image_base64"] = _image_to_base64(r.image)
+                item["image_base64"] = _image_to_base64(output_image_bgr)
                 debug_images_for_overlay = r.debug_images or {}
                 display_mask, display_mask_name = _resolve_display_mask(
                     pipeline_mask=r.mask,
@@ -764,6 +901,13 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 if r.face_bbox is not None:
                     x1, y1, x2, y2 = r.face_bbox
                     item["face_bbox"] = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+                    if output_crop_meta.get("applied"):
+                        item["output_face_bbox"] = {
+                            "x1": int(x1 - output_crop_meta["x1"]),
+                            "y1": int(y1 - output_crop_meta["y1"]),
+                            "x2": int(x2 - output_crop_meta["x1"]),
+                            "y2": int(y2 - output_crop_meta["y1"]),
+                        }
 
             # 추천 모드: 스타일 메타데이터 추가
             if hasattr(r, "style_meta") and r.style_meta:
@@ -794,6 +938,13 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             "elapsed_seconds": round(elapsed, 2),
             "build_tag":       runtime_meta["build_tag"],
             "runpod":          runtime_meta["runpod"],
+            "request_prompt": {
+                "hairstyle_text": str(inp.get("hairstyle_text", "")).strip(),
+                "color_text": str(inp.get("color_text", "")).strip(),
+                "top_k": top_k,
+                "per_style_top_k": per_style_top_k if is_recommend_mode else 1,
+                "subject_gender": subject_gender or "",
+            },
         }
         if recommendations_data:
             response["recommendations"] = recommendations_data
