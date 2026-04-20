@@ -31,6 +31,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hairstyle", default="", help="Hairstyle text")
     parser.add_argument("--color", default="", help="Color text")
     parser.add_argument("--gender", default="", help="Optional subject gender hint: male/female")
+    parser.add_argument(
+        "--generation-backend",
+        default="",
+        help="Generation backend: sd15_controlnet, sdxl_inpaint, flux_fill, powerpaint",
+    )
     parser.add_argument("--top-k", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     mode = parser.add_mutually_exclusive_group()
@@ -163,6 +168,8 @@ def build_payload(args: argparse.Namespace) -> dict:
     }
     if args.gender:
         payload["subject_gender"] = args.gender
+    if args.generation_backend:
+        payload["generation_backend"] = args.generation_backend
     if args.image:
         payload["image"] = image_to_base64(args.image)
     elif args.image_url:

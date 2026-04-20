@@ -60,6 +60,7 @@ DOWNLOAD_TIMEOUT   = 30
 
 # ── 파이프라인 싱글톤 ───────────────────────────────────────────────────────────
 _PIPELINE = None
+_PIPELINE_BACKEND_KEY: Optional[str] = None
 _ANALYZER_PIPELINE = None
 
 MASK_DEBUG_KEYWORDS = (
@@ -118,24 +119,68 @@ def _ensure_pipeline_module_imported() -> None:
     )
 
 
-def _get_pipeline() -> "MirrAISDPipeline":
-    global _PIPELINE
+def _normalize_generation_backend(value: Any = None) -> str:
+    from pipeline_sd_components.generation_backends import normalize_generation_backend
+
+    return normalize_generation_backend(
+        value
+        or os.environ.get("MIRRAI_GENERATION_BACKEND")
+        or "sd15_controlnet"
+    )
+
+
+def _get_pipeline(generation_backend: Any = None) -> "MirrAISDPipeline":
+    global _PIPELINE, _PIPELINE_BACKEND_KEY
+    backend_key = _normalize_generation_backend(generation_backend)
+    if _PIPELINE is not None and _PIPELINE_BACKEND_KEY != backend_key:
+        logger.info(
+            "[handler_sd] generation backend switch: %s -> %s",
+            _PIPELINE_BACKEND_KEY,
+            backend_key,
+        )
+        try:
+            _PIPELINE.unload()
+        except Exception as exc:
+            logger.warning("[handler_sd] previous pipeline unload failed: %s", exc)
+        _PIPELINE = None
+        _PIPELINE_BACKEND_KEY = None
+
     if _PIPELINE is None:
         _ensure_pipeline_module_imported()
         logger.info("[handler_sd] 모델 다운로드 확인 중 (cold start)...")
         try:
             from runtime_download import ensure_models_cached
-            ensure_models_cached()
+            ensure_models_cached(generation_backends=[backend_key])
         except Exception as e:
             logger.warning(f"[handler_sd] runtime_download 실패 (계속 진행): {e}")
 
-        logger.info("[handler_sd] 파이프라인 초기화...")
+        logger.info("[handler_sd] 파이프라인 초기화... generation_backend=%s", backend_key)
 
         # SDInpaintConfig에 실제 존재하는 필드만 전달
         # (구 버전 이미지와 실행시 호환성 보장)
         import dataclasses
         _cfg_fields = {f.name for f in dataclasses.fields(SDInpaintConfig)}
         _cfg_kwargs = {
+            "generation_backend": backend_key,
+            "generation_size": (
+                int(os.environ["MIRRAI_GENERATION_SIZE"])
+                if os.environ.get("MIRRAI_GENERATION_SIZE")
+                else None
+            ),
+            "generation_backend_steps": (
+                int(os.environ["MIRRAI_GENERATION_STEPS"])
+                if os.environ.get("MIRRAI_GENERATION_STEPS")
+                else None
+            ),
+            "generation_backend_guidance_scale": (
+                float(os.environ["MIRRAI_GENERATION_GUIDANCE_SCALE"])
+                if os.environ.get("MIRRAI_GENERATION_GUIDANCE_SCALE")
+                else None
+            ),
+            "generation_backend_cpu_offload": os.environ.get(
+                "MIRRAI_GENERATION_CPU_OFFLOAD", "0"
+            ).strip().lower()
+            in {"1", "true", "yes", "on"},
             "use_sam2":            os.environ.get("ENABLE_SAM2", "1") in {"1", "true", "yes"},
             "use_clip_ranking":    True,
             "use_color_match":     True,
@@ -147,6 +192,7 @@ def _get_pipeline() -> "MirrAISDPipeline":
 
         _PIPELINE = MirrAISDPipeline(cfg)
         _PIPELINE.load()
+        _PIPELINE_BACKEND_KEY = backend_key
 
         # segface hair threshold override (환경변수로 빌드 없이 조정 가능)
         _hair_thresh = os.environ.get("SEGFACE_HAIR_THRESHOLD")
@@ -843,6 +889,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "status": "ok",
             "build_tag": runtime_meta["build_tag"],
+            "generation_backend": _normalize_generation_backend(None),
             "runpod": runtime_meta["runpod"],
             "cuda": {
                 "available": torch.cuda.is_available(),
@@ -889,6 +936,11 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         white_tshirt_experiment = _coerce_bool(inp.get("white_tshirt_experiment"), default=False)
         lora_path = str(inp.get("lora_path", "")).strip() or None
         lora_scale = float(inp.get("lora_scale", 1.0))
+        generation_backend = _normalize_generation_backend(
+            inp.get("generation_backend")
+            or inp.get("model_backend")
+            or inp.get("inpaint_backend")
+        )
 
         deprecated_recommend_keys = ("face_ratios", "age", "weights")
         deprecated_inputs = [key for key in deprecated_recommend_keys if inp.get(key) not in (None, "", {}, [])]
@@ -910,7 +962,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             f"mask_refine_mode={mask_refine_mode or 'default'}, "
             f"subject_gender={subject_gender or 'auto'}, "
             f"sd_prompt_data={'yes' if sd_prompt_data else 'no'}, "
-            f"white_tshirt_experiment={white_tshirt_experiment}"
+            f"white_tshirt_experiment={white_tshirt_experiment}, "
+            f"generation_backend={generation_backend}"
         )
         logger.info(
             "[handler_sd] request_resolution: gender_branch=%s canonical=%s structured=%s fallback=%s",
@@ -921,7 +974,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         )
 
         # ── 파이프라인 실행 ───────────────────────────────────────────────────
-        pipeline = _get_pipeline()
+        pipeline = _get_pipeline(generation_backend)
         pipeline.config.bg_fill_mode = bg_fill_mode
         logger.info(f"[handler_sd] bg_fill_mode={bg_fill_mode}")
         logger.info(f"[handler_sd] mask_debug_only={mask_debug_only}")
@@ -950,6 +1003,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 "clip_score": round(float(r.clip_score), 4),
                 "mask_used":  r.mask_used,
                 "mask_refine_mode": r.mask_refine_mode,
+                "generation_backend": generation_backend,
             }
             if return_base64:
                 item["image_base64"] = _image_to_base64(r.image)
@@ -1038,6 +1092,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             request_resolution = {
                 "resolved_gender_branch": request_context["resolved_gender_branch"] or "legacy",
                 "resolved_canonical_preferences": request_context["resolved_canonical_preferences"],
+                "generation_backend": generation_backend,
                 "blocked_vocabulary": [],
                 "fallback_mode": request_context["fallback_mode"],
                 "structured_payload_used": request_context["structured_payload_used"],
@@ -1051,6 +1106,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             "elapsed_seconds": round(elapsed, 2),
             "build_tag":       runtime_meta["build_tag"],
             "runpod":          runtime_meta["runpod"],
+            "generation_backend": generation_backend,
             "request_resolution": request_resolution,
         }
         if intermediates:

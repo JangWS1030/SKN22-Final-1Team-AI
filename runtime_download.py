@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
 
-def ensure_models_cached() -> None:
+def ensure_models_cached(generation_backends: Optional[Iterable[str]] = None) -> None:
     """
     Warm the Hugging Face cache for models required by `handler_sd.py`.
 
@@ -21,21 +22,67 @@ def ensure_models_cached() -> None:
     returns quickly without downloading it again.
     """
     from huggingface_hub import hf_hub_download, snapshot_download
+    from pipeline_sd_components.config import (
+        CONTROLNET_MODEL_ID,
+        FLUX_FILL_MODEL_ID,
+        IP_ADAPTER_REPO_ID,
+        IP_ADAPTER_WEIGHT,
+        POWERPAINT_MODEL_ID,
+        SDXL_INPAINT_MODEL_ID,
+        SD_INPAINT_MODEL_ID,
+    )
+    from pipeline_sd_components.generation_backends import normalize_generation_backend
 
     token = os.environ.get("HF_TOKEN") or None
+    requested_backends = list(generation_backends or [])
+    preload_env = os.environ.get("MIRRAI_PRELOAD_GENERATION_BACKENDS", "")
+    if preload_env.strip():
+        requested_backends.extend(part.strip() for part in preload_env.split(","))
+    if not requested_backends:
+        requested_backends = [os.environ.get("MIRRAI_GENERATION_BACKEND", "sd15_controlnet")]
+    backend_keys = sorted({normalize_generation_backend(key) for key in requested_backends})
 
-    models = [
-        (
-            "SD Inpainting",
-            "runwayml/stable-diffusion-inpainting",
-            ["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*"],
-        ),
-        (
-            "ControlNet Canny",
-            "lllyasviel/control_v11p_sd15_canny",
-            ["*.msgpack", "*.h5"],
-        ),
-    ]
+    models = []
+    for backend_key in backend_keys:
+        if backend_key == "sd15_controlnet":
+            models.extend(
+                [
+                    (
+                        "SD 1.5 Inpainting",
+                        os.environ.get("MIRRAI_SD15_INPAINT_MODEL_ID") or SD_INPAINT_MODEL_ID,
+                        ["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*", "*.onnx", "*.pb"],
+                    ),
+                    (
+                        "ControlNet Canny",
+                        os.environ.get("MIRRAI_CONTROLNET_MODEL_ID") or CONTROLNET_MODEL_ID,
+                        ["*.msgpack", "*.h5", "*.onnx"],
+                    ),
+                ]
+            )
+        elif backend_key == "sdxl_inpaint":
+            models.append(
+                (
+                    "SDXL Inpainting",
+                    os.environ.get("MIRRAI_SDXL_INPAINT_MODEL_ID") or SDXL_INPAINT_MODEL_ID,
+                    ["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*", "*.onnx", "*.pb"],
+                )
+            )
+        elif backend_key == "flux_fill":
+            models.append(
+                (
+                    "FLUX.1 Fill dev",
+                    os.environ.get("MIRRAI_FLUX_FILL_MODEL_ID") or FLUX_FILL_MODEL_ID,
+                    ["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*", "*.onnx", "*.pb"],
+                )
+            )
+        elif backend_key == "powerpaint":
+            models.append(
+                (
+                    "PowerPaint Inpainting",
+                    os.environ.get("MIRRAI_POWERPAINT_MODEL_ID") or POWERPAINT_MODEL_ID,
+                    ["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*", "*.onnx", "*.pb"],
+                )
+            )
 
     for name, repo_id, ignore_patterns in models:
         logger.info("[models] %s cache check...", name)
@@ -56,13 +103,14 @@ def ensure_models_cached() -> None:
             )
             logger.info("[models] %s ready", name)
 
-    _ensure_file(
-        "IP-Adapter weight",
-        "h94/IP-Adapter",
-        "ip-adapter-plus-face_sd15.bin",
-        "models",
-        token,
-    )
+    if "sd15_controlnet" in backend_keys:
+        _ensure_file(
+            "IP-Adapter weight",
+            IP_ADAPTER_REPO_ID,
+            IP_ADAPTER_WEIGHT,
+            "models",
+            token,
+        )
     _ensure_file(
         "SAM2 checkpoint",
         "facebook/sam2-hiera-large",

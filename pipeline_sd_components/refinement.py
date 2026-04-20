@@ -17,13 +17,100 @@ import torch
 from PIL import Image
 
 from .config import (
-    SD_SIZE,
     _COMMON_STYLE_BLOCK_NEGATIVE,
     _WHITE_TSHIRT_NEGATIVE_HINTS,
     _WHITE_TSHIRT_POSITIVE_HINTS,
 )
+from .generation_backends import (
+    get_generation_backend_spec,
+    resolve_generation_canvas_size,
+    resolve_generation_guidance_scale,
+    resolve_generation_steps,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _active_generation_backend_spec(self):
+    spec = getattr(self, "_generation_backend_spec", None)
+    if spec is None:
+        spec = get_generation_backend_spec(self.config)
+        self._generation_backend_spec = spec
+    return spec
+
+
+def _make_backend_generator(self, spec, seed: int) -> torch.Generator:
+    if getattr(spec, "generator_device", "pipeline") == "cpu":
+        return torch.Generator(device="cpu").manual_seed(int(seed))
+    return torch.Generator(device=self.device).manual_seed(int(seed))
+
+
+def _run_inpaint_backend(
+    self,
+    *,
+    image: Image.Image,
+    mask_image: Image.Image,
+    control_image: Image.Image,
+    face_crop_pil: Image.Image,
+    prompt: str,
+    negative_prompt: str,
+    guidance_scale: float,
+    controlnet_conditioning_scale: float,
+    seeds: List[int],
+    strength: float,
+) -> List[Image.Image]:
+    spec = _active_generation_backend_spec(self)
+    if self._sd_pipe is None:
+        raise RuntimeError("Generation pipeline is not loaded.")
+
+    steps = resolve_generation_steps(self.config)
+    guidance = resolve_generation_guidance_scale(self.config, guidance_scale)
+    height = int(image.height)
+    width = int(image.width)
+
+    def build_kwargs(seed_or_generators, n: int) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "prompt": prompt,
+            "image": image,
+            "mask_image": mask_image,
+            "height": height,
+            "width": width,
+            "num_inference_steps": steps,
+            "generator": seed_or_generators,
+        }
+        if spec.supports_negative_prompt:
+            kwargs["negative_prompt"] = negative_prompt
+        if spec.supports_controlnet:
+            kwargs["control_image"] = control_image
+            kwargs["controlnet_conditioning_scale"] = float(controlnet_conditioning_scale)
+        if spec.supports_ip_adapter:
+            kwargs["ip_adapter_image"] = [face_crop_pil]
+        if spec.supports_strength:
+            kwargs["strength"] = float(strength)
+        if n > 1:
+            kwargs["num_images_per_prompt"] = int(n)
+        if spec.pipeline_kind == "flux_fill":
+            kwargs["guidance_scale"] = float(guidance)
+            kwargs["max_sequence_length"] = 512
+        else:
+            kwargs["guidance_scale"] = float(guidance)
+        return kwargs
+
+    if spec.batchable:
+        if len(seeds) == 1:
+            generator = _make_backend_generator(self, spec, int(seeds[0]))
+            out = self._sd_pipe(**build_kwargs(generator, 1))
+            return list(out.images)
+        generators = [_make_backend_generator(self, spec, seed) for seed in seeds]
+        out = self._sd_pipe(**build_kwargs(generators, len(generators)))
+        return list(out.images)
+
+    images: List[Image.Image] = []
+    for seed in seeds:
+        generator = _make_backend_generator(self, spec, seed)
+        out = self._sd_pipe(**build_kwargs(generator, 1))
+        images.extend(list(out.images))
+    return images
 
 
 def _resolve_generation_conditioning(
@@ -95,6 +182,7 @@ def _generate(
     diffusers는 generator를 리스트로 받으면 num_images_per_prompt 개의
     이미지를 각자 다른 seed로 한 번의 파이프라인 실행에 처리함.
     """
+    spec = _active_generation_backend_spec(self)
     # 숏컷/중단발 변환 시 IP-Adapter / ControlNet 비중을 낮춰
     # 원본 긴머리 실루엣 고착을 줄인다.
     subject_profile = self._resolve_subject_pipeline_profile(subject_gender)
@@ -102,17 +190,19 @@ def _generate(
         hair_length,
         subject_gender=subject_gender,
     )
-    self._sd_pipe.set_ip_adapter_scale(ip_scale)
+    if spec.supports_ip_adapter and hasattr(self._sd_pipe, "set_ip_adapter_scale"):
+        self._sd_pipe.set_ip_adapter_scale(ip_scale)
     logger.info(
-        f"[SDPipeline] ip_adapter_scale={ip_scale}, "
-        f"controlnet_scale={control_scale} "
-        f"(hair_length={hair_length}, subject_branch={subject_profile.key})"
+        "[SDPipeline] generation backend=%s ip_adapter_scale=%.4f controlnet_scale=%.4f "
+        "(hair_length=%s, subject_branch=%s)",
+        spec.key,
+        ip_scale if spec.supports_ip_adapter else 0.0,
+        control_scale if spec.supports_controlnet else 0.0,
+        hair_length,
+        subject_profile.key,
     )
 
     n = len(seeds)
-    generators = [
-        torch.Generator(device=self.device).manual_seed(s) for s in seeds
-    ]
     logger.info(f"[SDPipeline] 배치 생성 시작 (n={n}, seeds={seeds})")
     diffusion_started = time.time()
     try:
@@ -124,9 +214,9 @@ def _generate(
             total_gb = total_mem / (1024 ** 3)
         logger.info(
             "[SDPipeline] diffusion forward dispatch: steps=%d size=%dx%d free_gpu_gb=%s total_gpu_gb=%s",
-            int(self.config.num_inference_steps),
-            int(SD_SIZE),
-            int(SD_SIZE),
+            int(resolve_generation_steps(self.config)),
+            int(img_512.width),
+            int(img_512.height),
             "n/a" if free_gb is None else f"{free_gb:.2f}",
             "n/a" if total_gb is None else f"{total_gb:.2f}",
         )
@@ -134,29 +224,26 @@ def _generate(
         logger.warning(f"[SDPipeline] diffusion dispatch stats failed (ignored): {e}")
 
     with torch.inference_mode():
-        out = self._sd_pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
+        images = _run_inpaint_backend(
+            self,
             image=img_512,
             mask_image=mask_512,
             control_image=canny_512,
-            ip_adapter_image=[face_crop_pil],
-            height=SD_SIZE,
-            width=SD_SIZE,
-            num_inference_steps=self.config.num_inference_steps,
+            face_crop_pil=face_crop_pil,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
             guidance_scale=guidance_scale,
             controlnet_conditioning_scale=control_scale,
-            num_images_per_prompt=n,
-            generator=generators,
-            strength=1.0,
+            seeds=seeds,
+            strength=float(getattr(spec, "default_strength", 1.0)),
         )
 
     logger.info(
         "[SDPipeline] 배치 생성 완료 → %d장 (%.2fs)",
-        len(out.images),
+        len(images),
         time.time() - diffusion_started,
     )
-    return out.images
+    return images
 
 def _cv2_refine_cloth_region(
     base_rgb: np.ndarray,
@@ -313,6 +400,7 @@ def _sd_refine_removed_region(
         base_rgb,
         fill_mask,
         mask_edge_suppression=0.45,
+        target_size=resolve_generation_canvas_size(self.config),
     )
     white_tshirt_positive = ", ".join(_WHITE_TSHIRT_POSITIVE_HINTS[:2])
     white_tshirt_negative = ", ".join(_WHITE_TSHIRT_NEGATIVE_HINTS)
@@ -440,8 +528,9 @@ def _sd_refine_removed_region(
         )
 
     # 배경 복원은 identity 영향이 과하면 긴머리가 다시 생길 수 있어 scale을 낮춘다.
-    self._sd_pipe.set_ip_adapter_scale(0.0)
-    generator = torch.Generator(device=self.device).manual_seed(int(seed))
+    spec = _active_generation_backend_spec(self)
+    if spec.supports_ip_adapter and hasattr(self._sd_pipe, "set_ip_adapter_scale"):
+        self._sd_pipe.set_ip_adapter_scale(0.0)
     if refine_mode == "garment":
         fill_control = float(np.clip(max(self.config.controlnet_conditioning_scale, 0.36), 0.32, 0.52))
         fill_steps = max(24, self.config.num_inference_steps - 4)
@@ -459,25 +548,27 @@ def _sd_refine_removed_region(
         fill_steps = max(24, self.config.num_inference_steps - 4)
         fill_strength = 0.88
 
-    with torch.inference_mode():
-        out = self._sd_pipe(
-            prompt=fill_prompt,
-            negative_prompt=fill_negative,
-            image=img_512,
-            mask_image=mask_512,
-            control_image=canny_512,
-            ip_adapter_image=[face_crop_pil],
-            height=SD_SIZE,
-            width=SD_SIZE,
-            num_inference_steps=fill_steps,
-            guidance_scale=fill_guidance,
-            controlnet_conditioning_scale=fill_control,
-            num_images_per_prompt=1,
-            generator=generator,
-            strength=fill_strength,
-        )
+    previous_backend_steps = getattr(self.config, "generation_backend_steps", None)
+    self.config.generation_backend_steps = fill_steps
+    try:
+        with torch.inference_mode():
+            images = _run_inpaint_backend(
+                self,
+                image=img_512,
+                mask_image=mask_512,
+                control_image=canny_512,
+                face_crop_pil=face_crop_pil,
+                prompt=fill_prompt,
+                negative_prompt=fill_negative,
+                guidance_scale=fill_guidance,
+                controlnet_conditioning_scale=fill_control,
+                seeds=[int(seed)],
+                strength=fill_strength,
+            )
+    finally:
+        self.config.generation_backend_steps = previous_backend_steps
 
-    gen_np = np.array(out.images[0])  # 512×512 RGB
+    gen_np = np.array(images[0])  # square RGB
 
     # letterbox 역변환
     pad_l, pad_t = pad
@@ -1479,6 +1570,7 @@ def unload(self) -> None:
     """VRAM 해제"""
     import gc
     self._sd_pipe = None
+    self._generation_backend_spec = None
     self._sam2_factory = None
     if self._mp_face:
         self._mp_face.close()

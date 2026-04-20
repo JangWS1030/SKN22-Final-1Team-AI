@@ -84,6 +84,11 @@ from pipeline_sd_components.config import (
     SDInpaintConfig,
     SDInpaintResult,
 )
+from pipeline_sd_components.generation_backends import (
+    get_generation_backend_spec,
+    resolve_generation_canvas_size,
+    resolve_generation_steps,
+)
 
 try:
     from utils.env_loader import load_project_dotenv
@@ -118,6 +123,7 @@ class MirrAISDPipeline:
         self._segface_base = None  # SegFace (Swin-B) base parsing for face/cloth
         self._sam2_factory = None  # SAM2 predictor factory (callable)
         self._sd_pipe = None  # StableDiffusionControlNetInpaintPipeline
+        self._generation_backend_spec = None
         self._mp_face = None  # MediaPipe FaceDetection
         self._mp_face_mesh = None  # MediaPipe FaceMesh
         self._lama = None  # LaMa large mask inpainting
@@ -247,6 +253,17 @@ class MirrAISDPipeline:
         elif target_hair_lab is None:
             logger.info("[SDPipeline] color_text 파싱 실패 → 색상 재정렬은 스킵")
 
+        generation_spec = get_generation_backend_spec(self.config)
+        generation_canvas_size = resolve_generation_canvas_size(self.config)
+        generation_steps = resolve_generation_steps(self.config)
+        logger.info(
+            "[SDPipeline] generation backend=%s model=%s canvas=%d steps=%d",
+            generation_spec.key,
+            generation_spec.model_id,
+            generation_canvas_size,
+            generation_steps,
+        )
+
         H, W = image_bgr.shape[:2]
         debug_images_common: Optional[Dict[str, np.ndarray]] = (
             {} if return_intermediates else None
@@ -255,6 +272,13 @@ class MirrAISDPipeline:
             {} if return_intermediates else None
         )
         if debug_data_common is not None:
+            debug_data_common["generation_backend"] = {
+                "key": generation_spec.key,
+                "label": generation_spec.label,
+                "model_id": generation_spec.model_id,
+                "canvas_size": int(generation_canvas_size),
+                "steps": int(generation_steps),
+            }
             debug_data_common["subject_gender"] = subject_gender_mode
             debug_data_common["subject_pipeline_branch"] = subject_profile.key
             debug_data_common["prompt_input"] = {
@@ -4918,17 +4942,28 @@ class MirrAISDPipeline:
             hair_mask_for_sd,
             canny_suppress_mask=canny_suppress,
             debug_outputs=sd_input_debug,
+            target_size=generation_canvas_size,
         )
         if debug_images_common is not None:
-            debug_images_common["sd_input_512"] = cv2.cvtColor(
+            debug_images_common[f"sd_input_{generation_canvas_size}"] = cv2.cvtColor(
                 np.array(img_512), cv2.COLOR_RGB2BGR
             )
-            debug_images_common["sd_inpaint_mask_512"] = cv2.cvtColor(
+            debug_images_common[f"sd_inpaint_mask_{generation_canvas_size}"] = cv2.cvtColor(
                 np.array(mask_512).astype(np.uint8), cv2.COLOR_GRAY2BGR
             )
-            debug_images_common["controlnet_canny_512"] = cv2.cvtColor(
+            debug_images_common[f"controlnet_canny_{generation_canvas_size}"] = cv2.cvtColor(
                 np.array(canny_512), cv2.COLOR_RGB2BGR
             )
+            if generation_canvas_size == SD_SIZE:
+                debug_images_common["sd_input_512"] = debug_images_common[
+                    f"sd_input_{generation_canvas_size}"
+                ]
+                debug_images_common["sd_inpaint_mask_512"] = debug_images_common[
+                    f"sd_inpaint_mask_{generation_canvas_size}"
+                ]
+                debug_images_common["controlnet_canny_512"] = debug_images_common[
+                    f"controlnet_canny_{generation_canvas_size}"
+                ]
             if isinstance(sd_input_debug, dict):
                 if isinstance(sd_input_debug.get("source_canny_raw"), np.ndarray):
                     debug_images_common["controlnet_canny_source_raw"] = cv2.cvtColor(
@@ -5113,6 +5148,9 @@ class MirrAISDPipeline:
             "resolved_canonical_preferences": prompt_meta.get(
                 "canonical_preferences", {}
             ),
+            "generation_backend": generation_spec.key,
+            "generation_model_id": generation_spec.model_id,
+            "generation_canvas_size": int(generation_canvas_size),
             "final_internal_prompt": prompt,
             "negative_prompt": neg_prompt,
             "blocked_vocabulary": prompt_meta.get("blocked_vocabulary", []),
@@ -5145,6 +5183,9 @@ class MirrAISDPipeline:
             }
             debug_data_common["request_resolution"] = request_resolution
             debug_data_common["generation_conditioning"] = {
+                "backend": generation_spec.key,
+                "canvas_size": int(generation_canvas_size),
+                "steps": int(generation_steps),
                 "ip_adapter_scale": float(generation_ip_scale),
                 "controlnet_scale": float(generation_control_scale),
                 "internal_candidate_count": int(len(seeds)),
@@ -5922,7 +5963,11 @@ class MirrAISDPipeline:
         results: List[SDInpaintResult] = []
         for rank, cand in enumerate(selected_candidates):
             if debug_images_common is not None and rank == 0:
-                debug_images_common["sd_generated_rank0_512"] = cand["preview_bgr"]
+                debug_images_common[
+                    f"sd_generated_rank0_{generation_canvas_size}"
+                ] = cand["preview_bgr"]
+                if generation_canvas_size == SD_SIZE:
+                    debug_images_common["sd_generated_rank0_512"] = cand["preview_bgr"]
                 if isinstance(cand.get("generated_resized_rgb"), np.ndarray):
                     debug_images_common["pipeline_generated_rank0_resized_rgb"] = (
                         cv2.cvtColor(
