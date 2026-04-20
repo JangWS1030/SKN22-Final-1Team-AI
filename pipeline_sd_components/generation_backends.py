@@ -17,10 +17,8 @@ import torch
 
 from .config import (
     CONTROLNET_MODEL_ID,
-    FLUX_FILL_MODEL_ID,
     IP_ADAPTER_REPO_ID,
     IP_ADAPTER_WEIGHT,
-    POWERPAINT_MODEL_ID,
     SDXL_INPAINT_MODEL_ID,
     SD_INPAINT_MODEL_ID,
 )
@@ -60,13 +58,6 @@ _BACKEND_ALIASES = {
     "sdxl": "sdxl_inpaint",
     "sdxl_inpainting": "sdxl_inpaint",
     "sdxl_inpaint": "sdxl_inpaint",
-    "flux": "flux_fill",
-    "flux_fill": "flux_fill",
-    "flux.1_fill_[dev]": "flux_fill",
-    "flux.1_fill_dev": "flux_fill",
-    "flux1_fill_dev": "flux_fill",
-    "powerpaint": "powerpaint",
-    "powerpaint_v1": "powerpaint",
 }
 
 _BASE_SPECS: Dict[str, GenerationBackendSpec] = {
@@ -100,33 +91,6 @@ _BASE_SPECS: Dict[str, GenerationBackendSpec] = {
         default_strength=0.99,
         variant="fp16",
     ),
-    "flux_fill": GenerationBackendSpec(
-        key="flux_fill",
-        label="FLUX.1 Fill [dev]",
-        model_id=FLUX_FILL_MODEL_ID,
-        default_size=1024,
-        default_steps=32,
-        pipeline_kind="flux_fill",
-        supports_negative_prompt=False,
-        supports_strength=False,
-        batchable=False,
-        generator_device="cpu",
-        default_guidance_scale=30.0,
-        default_strength=1.0,
-    ),
-    "powerpaint": GenerationBackendSpec(
-        key="powerpaint",
-        label="PowerPaint Inpainting",
-        model_id=POWERPAINT_MODEL_ID,
-        default_size=512,
-        default_steps=30,
-        pipeline_kind="powerpaint",
-        supports_negative_prompt=True,
-        supports_strength=True,
-        batchable=True,
-        generator_device="pipeline",
-        default_strength=1.0,
-    ),
 }
 
 
@@ -157,18 +121,6 @@ def get_generation_backend_spec(config: Any) -> GenerationBackendSpec:
         model_id = (
             os.environ.get("MIRRAI_SDXL_INPAINT_MODEL_ID", "").strip()
             or str(getattr(config, "sdxl_inpaint_model_id", "") or "").strip()
-            or model_id
-        )
-    elif key == "flux_fill":
-        model_id = (
-            os.environ.get("MIRRAI_FLUX_FILL_MODEL_ID", "").strip()
-            or str(getattr(config, "flux_fill_model_id", "") or "").strip()
-            or model_id
-        )
-    elif key == "powerpaint":
-        model_id = (
-            os.environ.get("MIRRAI_POWERPAINT_MODEL_ID", "").strip()
-            or str(getattr(config, "powerpaint_model_id", "") or "").strip()
             or model_id
         )
 
@@ -289,41 +241,6 @@ def load_generation_backend(config: Any, device: torch.device, dtype: torch.dtyp
             pipe.enable_vae_slicing()
         if hasattr(pipe, "enable_vae_tiling"):
             pipe.enable_vae_tiling()
-        pipe.to(device)
-        return pipe, spec
-
-    if spec.pipeline_kind == "flux_fill":
-        from diffusers import FluxFillPipeline
-
-        flux_dtype = torch.bfloat16 if device.type == "cuda" else dtype
-        pipe = FluxFillPipeline.from_pretrained(spec.model_id, torch_dtype=flux_dtype)
-        use_offload = bool(
-            getattr(config, "generation_backend_cpu_offload", False)
-            or str(os.environ.get("MIRRAI_GENERATION_CPU_OFFLOAD", "")).strip().lower()
-            in {"1", "true", "yes", "on"}
-        )
-        if use_offload and device.type == "cuda" and hasattr(pipe, "enable_model_cpu_offload"):
-            pipe.enable_model_cpu_offload()
-        else:
-            pipe.to(device)
-        if hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_tiling"):
-            pipe.vae.enable_tiling()
-        return pipe, spec
-
-    if spec.pipeline_kind == "powerpaint":
-        from diffusers import StableDiffusionInpaintPipeline
-        from diffusers.schedulers import DPMSolverMultistepScheduler
-
-        pipe = StableDiffusionInpaintPipeline.from_pretrained(
-            spec.model_id,
-            torch_dtype=dtype,
-            safety_checker=None,
-            requires_safety_checker=False,
-        )
-        pipe.scheduler = DPMSolverMultistepScheduler.from_config(
-            pipe.scheduler.config,
-            use_karras_sigmas=True,
-        )
         pipe.to(device)
         return pipe, spec
 

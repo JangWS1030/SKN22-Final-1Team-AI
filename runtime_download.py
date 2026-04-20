@@ -24,10 +24,8 @@ def ensure_models_cached(generation_backends: Optional[Iterable[str]] = None) ->
     from huggingface_hub import hf_hub_download, snapshot_download
     from pipeline_sd_components.config import (
         CONTROLNET_MODEL_ID,
-        FLUX_FILL_MODEL_ID,
         IP_ADAPTER_REPO_ID,
         IP_ADAPTER_WEIGHT,
-        POWERPAINT_MODEL_ID,
         SDXL_INPAINT_MODEL_ID,
         SD_INPAINT_MODEL_ID,
     )
@@ -39,7 +37,7 @@ def ensure_models_cached(generation_backends: Optional[Iterable[str]] = None) ->
     if preload_env.strip():
         requested_backends.extend(part.strip() for part in preload_env.split(","))
     if not requested_backends:
-        requested_backends = [os.environ.get("MIRRAI_GENERATION_BACKEND", "sd15_controlnet")]
+        requested_backends = [os.environ.get("MIRRAI_GENERATION_BACKEND", "sdxl_inpaint")]
     backend_keys = sorted({normalize_generation_backend(key) for key in requested_backends})
 
     models = []
@@ -67,23 +65,6 @@ def ensure_models_cached(generation_backends: Optional[Iterable[str]] = None) ->
                     ["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*", "*.onnx", "*.pb"],
                 )
             )
-        elif backend_key == "flux_fill":
-            models.append(
-                (
-                    "FLUX.1 Fill dev",
-                    os.environ.get("MIRRAI_FLUX_FILL_MODEL_ID") or FLUX_FILL_MODEL_ID,
-                    ["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*", "*.onnx", "*.pb"],
-                )
-            )
-        elif backend_key == "powerpaint":
-            models.append(
-                (
-                    "PowerPaint Inpainting",
-                    os.environ.get("MIRRAI_POWERPAINT_MODEL_ID") or POWERPAINT_MODEL_ID,
-                    ["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*", "*.onnx", "*.pb"],
-                )
-            )
-
     for name, repo_id, ignore_patterns in models:
         logger.info("[models] %s cache check...", name)
         try:

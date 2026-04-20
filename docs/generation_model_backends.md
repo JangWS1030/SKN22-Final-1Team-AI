@@ -9,8 +9,6 @@ prompt, face-protection, and compositing logic.
 | --- | --- | ---: | --- |
 | `sd15_controlnet` | `runwayml/stable-diffusion-inpainting` + `lllyasviel/control_v11p_sd15_canny` | 512 | Existing baseline with IP-Adapter and runtime LoRA |
 | `sdxl_inpaint` | `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` | 1024 | SDXL inpainting candidate |
-| `flux_fill` | `black-forest-labs/FLUX.1-Fill-dev` | 1024 | FLUX.1 Fill candidate; ignores negative prompt and strength |
-| `powerpaint` | `Sanster/PowerPaint-V1-stable-diffusion-inpainting` | 512 | Diffusers-compatible PowerPaint candidate |
 
 ## RunPod Request
 
@@ -31,7 +29,7 @@ prompt, face-protection, and compositing logic.
 
 ```bash
 python scripts/run_runpod_inpaint_backend_matrix.py \
-  --backends sdxl_inpaint,flux_fill,powerpaint \
+  --backends sdxl_inpaint \
   --images-dir images \
   --top-k 1
 ```

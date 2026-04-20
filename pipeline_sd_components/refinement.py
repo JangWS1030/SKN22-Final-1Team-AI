@@ -89,11 +89,7 @@ def _run_inpaint_backend(
             kwargs["strength"] = float(strength)
         if n > 1:
             kwargs["num_images_per_prompt"] = int(n)
-        if spec.pipeline_kind == "flux_fill":
-            kwargs["guidance_scale"] = float(guidance)
-            kwargs["max_sequence_length"] = 512
-        else:
-            kwargs["guidance_scale"] = float(guidance)
+        kwargs["guidance_scale"] = float(guidance)
         return kwargs
 
     if spec.batchable:
