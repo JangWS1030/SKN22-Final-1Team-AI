@@ -110,6 +110,17 @@ _EXPLICIT_SHORT_HAIR_KEYWORDS = (
     "crop",
     "cropped",
     "bowl",
+    "regent cut",
+    "regent",
+    "down perm",
+    "front hair down",
+    "forehead covered",
+    "dandy cut",
+    "dandy",
+    "comma hair",
+    "comma",
+    "two block",
+    "two-block",
 )
 
 _MALE_OPEN_FOREHEAD_KEYWORDS = (
