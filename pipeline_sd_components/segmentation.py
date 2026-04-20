@@ -929,35 +929,38 @@ def _prepare_sd_inputs(
     mask_edge_suppression: float = 1.0,  # 0.0=엣지 보존, 1.0=마스크 내부 엣지 완전 제거
     canny_suppress_mask: Optional[np.ndarray] = None,  # H×W float32 — 이 영역의 canny edge도 제거
     debug_outputs: Optional[Dict[str, np.ndarray]] = None,
+    target_size: Optional[int] = None,
 ) -> Tuple[Image.Image, Image.Image, Image.Image, float, Tuple[int, int]]:
     """
-    Letter-box resize → 512×512.
+    Letter-box resize → square diffusion canvas.
 
     Args:
         canny_suppress_mask: short/medium에서 사용. 기존 long-hair 영역의 canny edge를
                              추가로 제거하여 ControlNet이 원본 긴머리 윤곽을 따라가지 않게 함.
 
     Returns:
-        img_512:    PIL RGB 512×512 (full image)
-        mask_512:   PIL L  512×512 (흰색=inpaint)
-        canny_512:  PIL RGB 512×512 (ControlNet conditioning)
+        img_512:    PIL RGB square canvas (full image)
+        mask_512:   PIL L  square canvas (흰색=inpaint)
+        canny_512:  PIL RGB square canvas (ControlNet conditioning)
         scale:      resize 비율
         pad:        (pad_left, pad_top) pixels
     """
     H, W = img_rgb.shape[:2]
-    scale = SD_SIZE / max(H, W)
+    canvas_size = int(target_size or SD_SIZE)
+    canvas_size = max(256, int(round(canvas_size / 8)) * 8)
+    scale = canvas_size / max(H, W)
     new_w, new_h = int(W * scale), int(H * scale)
-    pad_l = (SD_SIZE - new_w) // 2
-    pad_t = (SD_SIZE - new_h) // 2
+    pad_l = (canvas_size - new_w) // 2
+    pad_t = (canvas_size - new_h) // 2
 
     # ── image letterbox
     img_rs = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    canvas = np.zeros((SD_SIZE, SD_SIZE, 3), dtype=np.uint8)
+    canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
     canvas[pad_t:pad_t + new_h, pad_l:pad_l + new_w] = img_rs
 
     # ── mask letterbox
     msk_rs = cv2.resize(hair_mask, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    msk_canvas = np.zeros((SD_SIZE, SD_SIZE), dtype=np.float32)
+    msk_canvas = np.zeros((canvas_size, canvas_size), dtype=np.float32)
     msk_canvas[pad_t:pad_t + new_h, pad_l:pad_l + new_w] = msk_rs
 
     # ── Canny edge
@@ -975,7 +978,7 @@ def _prepare_sd_inputs(
     # → LaMa 잔여 블러 윤곽이 ControlNet에 전달되지 않음
     if canny_suppress_mask is not None:
         sup_rs = cv2.resize(canny_suppress_mask, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        sup_canvas = np.zeros((SD_SIZE, SD_SIZE), dtype=np.float32)
+        sup_canvas = np.zeros((canvas_size, canvas_size), dtype=np.float32)
         sup_canvas[pad_t:pad_t + new_h, pad_l:pad_l + new_w] = sup_rs
         # dilate: 경계 blur 잔여물까지 제거
         k_sup = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))

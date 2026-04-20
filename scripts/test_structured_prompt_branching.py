@@ -26,6 +26,7 @@ def _build_from_payload(payload: dict) -> dict:
         hair_length,
         subject_gender=request["subject_gender"],
         prompt_context=request["prompt_context"],
+        sd_prompt_data=payload.get("sd_prompt_data"),
     )
     return {
         "request": request,
@@ -95,9 +96,10 @@ def main() -> int:
         _assert_not_contains(normalized_male_style, blocked)
         _assert_not_contains(positive_male, blocked)
     _assert_contains(normalized_male_style, "soft two-block")
-    _assert_contains(normalized_male_style, "down style")
+    _assert_contains(normalized_male_style, "lowered masculine fringe")
     _assert_contains(normalized_male_style, "non-parted front")
     _assert_contains(normalized_male_style, "curly texture")
+    _assert_contains(normalized_male_style, "controlled crown volume")
     _assert_contains(negative_male, "mini bob")
     _assert_contains(negative_male, "baseball cap")
     _assert_contains(negative_male, "earbuds")
@@ -262,6 +264,67 @@ def main() -> int:
     _assert_contains(legacy_alias_style, "parted front")
     _assert_contains(legacy_alias_positive, "open forehead")
     _assert_contains(legacy_alias_positive, "no bangs")
+    exact_front_down_payload = {
+        "hairstyle_text": (
+            "male haircut, masculine salon style, short crop, soft two-block, "
+            "down fringe, non-parted crop, soft volume, natural mood"
+        ),
+        "color_text": "brown",
+        "preference_text": (
+            "gender=male, length=short, mood=natural, texture=waved, color=brown, "
+            "budget=low, two_block=soft, front=down, parting=non_parted, "
+            "short crop, down fringe, non-parted crop, male salon vocabulary only"
+        ),
+    }
+    exact_front_down_result = _build_from_payload(exact_front_down_payload)
+    exact_front_down_style = str(
+        exact_front_down_result["meta"]["normalized_style"]
+    ).lower()
+    exact_front_down_positive = exact_front_down_result["positive"].lower()
+    assert exact_front_down_result["request"]["structured_payload_used"] is True, exact_front_down_result
+    assert exact_front_down_result["meta"]["style_source"] == "structured_male", exact_front_down_result
+    assert exact_front_down_result["meta"]["resolved_gender_branch"] == "male", exact_front_down_result
+    _assert_contains(exact_front_down_style, "soft two-block")
+    _assert_contains(exact_front_down_style, "lowered masculine fringe")
+    _assert_contains(exact_front_down_style, "non-parted front")
+    _assert_contains(exact_front_down_style, "soft wave texture")
+    _assert_contains(exact_front_down_positive, "controlled crown volume behind the lowered fringe")
+    legacy_plain_text_payload = {
+        "hairstyle_text": (
+            "male haircut, short crop, soft two-block, down fringe, "
+            "non-parted crop, wavy texture"
+        ),
+        "color_text": "brown",
+    }
+    legacy_plain_text_result = _build_from_payload(legacy_plain_text_payload)
+    legacy_plain_text_style = str(
+        legacy_plain_text_result["meta"]["normalized_style"]
+    ).lower()
+    assert legacy_plain_text_result["meta"]["style_source"] == "legacy_text", legacy_plain_text_result
+    _assert_contains(legacy_plain_text_style, "soft two-block")
+    _assert_contains(legacy_plain_text_style, "lowered masculine fringe")
+    _assert_contains(legacy_plain_text_style, "non-parted front")
+    straight_front_down_payload = {
+        "hairstyle_text": (
+            "male haircut, masculine salon style, short crop, soft two-block, "
+            "down fringe, non-parted crop, clean straight texture, no perm, no curl, natural mood"
+        ),
+        "color_text": "brown",
+        "preference_text": (
+            "gender=male, length=short, mood=natural, texture=straight, color=brown, "
+            "budget=low, two_block=soft, front=down, parting=non_parted, "
+            "short crop, down fringe, non-parted crop, no perm, no curl, male salon vocabulary only"
+        ),
+    }
+    straight_front_down_result = _build_from_payload(straight_front_down_payload)
+    straight_front_down_style = str(
+        straight_front_down_result["meta"]["normalized_style"]
+    ).lower()
+    straight_front_down_positive = straight_front_down_result["positive"].lower()
+    assert straight_front_down_result["meta"]["style_source"] == "structured_male", straight_front_down_result
+    _assert_contains(straight_front_down_style, "clean straight texture")
+    _assert_contains(straight_front_down_style, "straight fringe softly covering the forehead")
+    _assert_contains(straight_front_down_positive, "straight fringe softly covering the forehead")
     requested_front_mask = mask_builders_module._build_requested_front_coverage_mask(
         (512, 512),
         (156, 132, 356, 348),
@@ -272,6 +335,39 @@ def main() -> int:
     )
     if int((requested_front_mask > 0.05).sum()) <= 0:
         raise AssertionError("Expected synthetic front coverage mask for structured male down/non-parted request")
+    lower_center_band = requested_front_mask[210:270, 220:292]
+    lower_side_band = requested_front_mask[210:270, 150:202]
+    if float(lower_center_band.sum()) <= float(lower_side_band.sum()):
+        raise AssertionError("Expected front coverage mask to emphasize lower center fringe corridor")
+    straight_front_mask = mask_builders_module._build_requested_front_coverage_mask(
+        (512, 512),
+        (156, 132, 356, 348),
+        straight_front_down_result["request"]["prompt_context"],
+        hair_length="short",
+        subject_gender=straight_front_down_result["request"]["subject_gender"] or "male",
+        fringe_requested=True,
+    )
+    straight_lower_center = straight_front_mask[218:276, 226:286]
+    straight_lower_left = straight_front_mask[218:276, 136:188]
+    straight_lower_right = straight_front_mask[218:276, 324:376]
+    if float(straight_lower_center.sum()) <= max(
+        float(straight_lower_left.sum()),
+        float(straight_lower_right.sum()),
+    ):
+        raise AssertionError("Expected straight front-down mask to taper lower corners and keep center coverage")
+
+    conflicting_sd_payload = {
+        "survey_data": male_payload["survey_data"],
+        "sd_prompt_data": {
+            "sd_positive": "quiff, airy lifted top, open forehead, natural curl two-block",
+        },
+    }
+    conflicting_result = _build_from_payload(conflicting_sd_payload)
+    conflicting_style = str(conflicting_result["meta"]["normalized_style"]).lower()
+    _assert_not_contains(conflicting_style, "quiff")
+    _assert_not_contains(conflicting_style, "open forehead")
+    _assert_contains(conflicting_style, "airy crown volume")
+    _assert_contains(conflicting_result["positive"].lower(), "controlled crown volume")
 
     print(
         json.dumps(
@@ -281,6 +377,10 @@ def main() -> int:
                     "negative_has_block": "mini bob" in negative_male,
                     "normalized_style": male_result["meta"]["normalized_style"],
                     "front_coverage_mask_px": int((requested_front_mask > 0.05).sum()),
+                },
+                "conflicting_sd_prompt": {
+                    "normalized_style": conflicting_result["meta"]["normalized_style"],
+                    "positive": conflicting_result["positive"],
                 },
                 "female_prompt": {
                     "positive": female_result["positive"],
@@ -298,6 +398,18 @@ def main() -> int:
                 "legacy_alias_prompt": {
                     "positive": legacy_alias_result["positive"],
                     "normalized_style": legacy_alias_result["meta"]["normalized_style"],
+                },
+                "exact_front_down_prompt": {
+                    "positive": exact_front_down_result["positive"],
+                    "normalized_style": exact_front_down_result["meta"]["normalized_style"],
+                },
+                "legacy_plain_text_prompt": {
+                    "positive": legacy_plain_text_result["positive"],
+                    "normalized_style": legacy_plain_text_result["meta"]["normalized_style"],
+                },
+                "straight_front_down_prompt": {
+                    "positive": straight_front_down_result["positive"],
+                    "normalized_style": straight_front_down_result["meta"]["normalized_style"],
                 },
             },
             ensure_ascii=False,

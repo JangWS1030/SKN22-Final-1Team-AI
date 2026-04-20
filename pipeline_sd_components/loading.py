@@ -16,7 +16,6 @@ from PIL import Image
 
 from .config import (
     CLOTH_CLASS_IDX,
-    CONTROLNET_MODEL_ID,
     _clean_optional_env_text,
     DEFAULT_RUNTIME_LORA_HF_FILENAME,
     DEFAULT_RUNTIME_LORA_HF_REPO_ID,
@@ -32,12 +31,8 @@ from .config import (
     FACE_CLASS_IDXS,
     GLASS_CLASS_IDX,
     HAIR_CLASS_IDX,
-    IP_ADAPTER_REPO_ID,
-    IP_ADAPTER_WEIGHT,
     NECKLACE_CLASS_IDX,
     PROJECT_ROOT,
-    SD_INPAINT_MODEL_ID,
-    SD_SIZE,
     _COMMON_STYLE_BLOCK_NEGATIVE,
     _FEMALE_STYLE_HINTS,
     _FEMALE_SUBJECT_HINTS,
@@ -49,6 +44,7 @@ from .config import (
     _NO_COLOR_HINTS,
     _SHORT_HAIR_KEYWORDS,
 )
+from .generation_backends import load_generation_backend
 
 logger = logging.getLogger(__name__)
 
@@ -102,47 +98,16 @@ def _load_mediapipe(self) -> None:
     logger.info("[SDPipeline] MediaPipe FaceDetection/FaceMesh 로드 완료")
 
 def _load_sd_pipeline(self) -> None:
-    from diffusers import (
-        ControlNetModel,
-        StableDiffusionControlNetInpaintPipeline,
-    )
-    from diffusers.schedulers import DPMSolverMultistepScheduler
-
-    logger.info(f"[SDPipeline] ControlNet 로드: {CONTROLNET_MODEL_ID}")
-    controlnet = ControlNetModel.from_pretrained(
-        CONTROLNET_MODEL_ID, torch_dtype=self.dtype
-    )
-
-    logger.info(f"[SDPipeline] SD Inpainting 로드: {SD_INPAINT_MODEL_ID}")
-    pipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(
-        SD_INPAINT_MODEL_ID,
-        controlnet=controlnet,
-        torch_dtype=self.dtype,
-        safety_checker=None,
-        requires_safety_checker=False,
-    )
-
-    # DPM-Solver++ 스케줄러 (20~30 steps로 고품질)
-    pipe.scheduler = DPMSolverMultistepScheduler.from_config(
-        pipe.scheduler.config, use_karras_sigmas=True
-    )
-
-    # IP-Adapter face
-    logger.info(f"[SDPipeline] IP-Adapter 로드: {IP_ADAPTER_WEIGHT}")
-    pipe.load_ip_adapter(
-        IP_ADAPTER_REPO_ID,
-        subfolder="models",
-        weight_name=IP_ADAPTER_WEIGHT,
-    )
-    pipe.set_ip_adapter_scale(self.config.ip_adapter_scale)
-
-    # PyTorch 2.0+ 기본 SDPA 사용.
-    # xformers 강제 활성화는 IP-Adapter attention processor와 충돌한 전력이 있어 비활성 상태로 둔다.
-
-    pipe.to(self.device)
+    pipe, spec = load_generation_backend(self.config, self.device, self.dtype)
     self._sd_pipe = pipe
+    self._generation_backend_spec = spec
     self._apply_runtime_lora()
-    logger.info("[SDPipeline] SD Pipeline 로드 완료")
+    logger.info(
+        "[SDPipeline] generation backend loaded: key=%s label=%s size=%d",
+        spec.key,
+        spec.label,
+        int(getattr(self.config, "generation_size", 0) or spec.default_size),
+    )
 
 def _discover_default_lora_path(self) -> Optional[str]:
     default_hf_repo_id = (
@@ -226,6 +191,17 @@ def _apply_runtime_lora(
     lora_scale: Optional[float] = None,
 ) -> None:
     if self._sd_pipe is None:
+        return
+    backend_spec = getattr(self, "_generation_backend_spec", None)
+    if backend_spec is not None and not bool(getattr(backend_spec, "supports_lora", False)):
+        if lora_path or self.config.lora_path:
+            logger.info(
+                "[SDPipeline] LoRA skipped for generation_backend=%s",
+                getattr(backend_spec, "key", "unknown"),
+            )
+        self._active_lora_path = None
+        self._active_lora_scale = 1.0
+        self._active_lora_adapter_name = None
         return
 
     requested_path, requested_weight_name, requested_cache_key = self._resolve_lora_source(
