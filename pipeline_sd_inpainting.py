@@ -1091,8 +1091,9 @@ class MirrAISDPipeline:
             normalized_prompt_context.get("style_axes", {}),
         )
         no_bangs_forehead_lama_preclean_seed_mask = np.zeros((H, W), dtype=np.float32)
-        if (short_no_bangs_target or explicit_no_bangs_requested) and bool(
-            getattr(self.config, "short_no_bangs_disable_bangs_recovery", True)
+        if explicit_no_bangs_requested or (
+            short_no_bangs_target
+            and bool(getattr(self.config, "short_no_bangs_disable_bangs_recovery", True))
         ):
             no_bangs_forehead_lama_preclean_seed_mask = np.maximum(
                 np.clip(bangs_restore_for_removal.astype(np.float32), 0.0, 1.0),
@@ -4347,12 +4348,15 @@ class MirrAISDPipeline:
                                 short_generation_white_tshirt_conditioning_fill_px,
                             )
                     if (
-                        short_no_bangs_target
-                        and bool(
-                            getattr(
-                                self.config,
-                                "short_no_bangs_forehead_lama_preclean",
-                                True,
+                        (
+                            explicit_no_bangs_requested
+                            or short_no_bangs_target
+                            and bool(
+                                getattr(
+                                    self.config,
+                                    "short_no_bangs_forehead_lama_preclean",
+                                    True,
+                                )
                             )
                         )
                         and no_bangs_forehead_lama_preclean_seed_mask.shape == (H, W)
@@ -4462,9 +4466,6 @@ class MirrAISDPipeline:
             img_rgb_cleaned = img_rgb
             if (
                 explicit_no_bangs_requested
-                and bool(
-                    getattr(self.config, "short_no_bangs_forehead_lama_preclean", True)
-                )
                 and no_bangs_forehead_lama_preclean_seed_mask.shape == (H, W)
             ):
                 dilate_kernel = (9, 13) if hair_length == "medium" else (11, 15)

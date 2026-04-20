@@ -251,8 +251,8 @@ class SDInpaintConfig:
     short_generation_freeze_skip_side_column_restore: bool = True
     short_generation_white_tshirt_conditioning_fill: bool = True
     short_generation_white_tshirt_fill_strength: float = 0.992
-    short_no_bangs_disable_bangs_recovery: bool = True
-    short_no_bangs_forehead_lama_preclean: bool = True
+    short_no_bangs_disable_bangs_recovery: bool = False
+    short_no_bangs_forehead_lama_preclean: bool = False
 
     # Canny edge 파라미터
     canny_low: int  = 80
