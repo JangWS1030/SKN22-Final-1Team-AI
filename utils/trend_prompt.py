@@ -83,6 +83,31 @@ COLOR_ALIASES = {
     "베이지": ("beige", "ash beige"),
 }
 
+_PRESERVE_REQUEST_CUE_KEYWORDS = (
+    "long",
+    "below shoulder",
+    "below shoulders",
+    "wave",
+    "waves",
+    "wavy",
+    "curl",
+    "curly",
+    "perm",
+    "bob",
+    "lob",
+    "chin-length",
+    "jaw-length",
+    "shoulder-length",
+    "open forehead",
+    "exposed forehead",
+    "covered forehead",
+    "front hair down",
+    "no bangs",
+    "lifted front",
+    "no bob",
+    "no lob",
+)
+
 
 @dataclass(frozen=True)
 class TrendMatch:
@@ -329,10 +354,27 @@ def _build_resolved_hairstyle_text(requested: str, matches: Sequence[TrendMatch]
         return requested_clean
 
     if requested_clean:
+        requested_parts = [
+            _normalize_space(part)
+            for part in re.split(r"[,/;|]+", requested_clean)
+            if _normalize_space(part)
+        ]
         requested_norm = _normalize_text(requested_clean)
         if requested_norm and not any(requested_norm in _normalize_text(phrase) for phrase in phrases):
             if all(ord(char) < 128 for char in requested_clean) and len(requested_clean) <= 64:
                 phrases.insert(0, requested_clean)
+        preserved_parts: list[str] = []
+        for part in requested_parts:
+            part_norm = _normalize_text(part)
+            if not part_norm:
+                continue
+            if not any(keyword in part_norm for keyword in _PRESERVE_REQUEST_CUE_KEYWORDS):
+                continue
+            if any(part_norm in _normalize_text(phrase) for phrase in phrases):
+                continue
+            preserved_parts.append(part)
+        if preserved_parts:
+            phrases = preserved_parts + phrases
 
     if not phrases and matches:
         fallback = _first_non_empty([matches[0].trend_name, matches[0].hairstyle_text])

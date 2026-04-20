@@ -147,7 +147,8 @@ python -m pip install -r requirements-trends.txt
 
 hairstyle/color 텍스트를 직접 지정하여 이미지를 생성합니다.
 응답에는 실제로 사용된 positive/negative prompt가 포함됩니다.
-출력 크롭 정책은 `short -> short_generated_region`, `medium -> medium_generated_region`, `long -> 원본 유지(applied=false)` 입니다.
+출력 크롭 정책은 `short -> 얼굴 중심 타이트 크롭(short_generated_region)`, `medium -> 어깨선 직전까지 보이는 크롭(medium_generated_region)`, `long -> 원본 유지(applied=false)` 입니다.
+명시적으로 넣은 `long waves`, `open forehead`, `covered forehead`, `front hair down`, `no bangs` 같은 스타일 키워드는 트렌드 해석 뒤에도 우선 보존하도록 조정했습니다.
 
 **Request**
 ```json

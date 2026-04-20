@@ -320,10 +320,10 @@ def _build_short_output_crop_box(
     face_cx = int(round((x1 + x2) * 0.5))
     face_cy = int(round((y1 + y2) * 0.5))
 
-    crop_left = max(0, int(x1 - face_w * 1.25))
-    crop_right = min(w, int(x2 + face_w * 1.25))
-    crop_top = max(0, int(y1 - face_h * 1.00))
-    crop_bottom = min(h, int(y2 + face_h * 0.52))
+    crop_left = max(0, int(x1 - face_w * 1.02))
+    crop_right = min(w, int(x2 + face_w * 1.02))
+    crop_top = max(0, int(y1 - face_h * 0.94))
+    crop_bottom = min(h, int(y2 + face_h * 0.38))
 
     hair_bbox = _collect_final_hair_bbox(
         pipeline,
@@ -336,10 +336,10 @@ def _build_short_output_crop_box(
     )
     if hair_bbox is not None:
         hx1, hy1, hx2, hy2 = hair_bbox
-        crop_left = max(0, min(crop_left, int(hx1 - face_w * 0.22)))
-        crop_right = min(w, max(crop_right, int(hx2 + face_w * 0.22)))
-        crop_top = max(0, min(crop_top, int(hy1 - face_h * 0.26)))
-        crop_bottom = min(h, max(crop_bottom, int(hy2 + face_h * 0.10)))
+        crop_left = max(0, min(crop_left, int(hx1 - face_w * 0.16)))
+        crop_right = min(w, max(crop_right, int(hx2 + face_w * 0.16)))
+        crop_top = max(0, min(crop_top, int(hy1 - face_h * 0.20)))
+        crop_bottom = min(h, max(crop_bottom, int(hy2 + face_h * 0.04)))
 
     crop_left, crop_top, crop_right, crop_bottom = _ensure_crop_min_size(
         crop_left=crop_left,
@@ -350,8 +350,8 @@ def _build_short_output_crop_box(
         source_height=h,
         face_cx=face_cx,
         face_cy=face_cy,
-        min_width=max(224, int(face_w * 3.10)),
-        min_height=max(240, int(face_h * 2.25)),
+        min_width=max(208, int(face_w * 2.55)),
+        min_height=max(216, int(face_h * 1.92)),
     )
 
     if crop_right - crop_left < 64 or crop_bottom - crop_top < 64:
@@ -381,10 +381,10 @@ def _build_medium_output_crop_box(
     face_cx = int(round((x1 + x2) * 0.5))
     face_cy = int(round((y1 + y2) * 0.5))
 
-    crop_left = max(0, int(x1 - face_w * 1.35))
-    crop_right = min(w, int(x2 + face_w * 1.35))
-    crop_top = max(0, int(y1 - face_h * 0.92))
-    crop_bottom = min(h, int(y2 + face_h * 1.22))
+    crop_left = max(0, int(x1 - face_w * 1.20))
+    crop_right = min(w, int(x2 + face_w * 1.20))
+    crop_top = max(0, int(y1 - face_h * 0.88))
+    crop_bottom = min(h, int(y2 + face_h * 0.98))
 
     hair_bbox = _collect_final_hair_bbox(
         pipeline,
@@ -397,10 +397,10 @@ def _build_medium_output_crop_box(
     )
     if hair_bbox is not None:
         hx1, hy1, hx2, hy2 = hair_bbox
-        crop_left = max(0, min(crop_left, int(hx1 - face_w * 0.34)))
-        crop_right = min(w, max(crop_right, int(hx2 + face_w * 0.34)))
-        crop_top = max(0, min(crop_top, int(hy1 - face_h * 0.30)))
-        crop_bottom = min(h, max(crop_bottom, int(hy2 + face_h * 0.24)))
+        crop_left = max(0, min(crop_left, int(hx1 - face_w * 0.26)))
+        crop_right = min(w, max(crop_right, int(hx2 + face_w * 0.26)))
+        crop_top = max(0, min(crop_top, int(hy1 - face_h * 0.24)))
+        crop_bottom = min(h, max(crop_bottom, int(hy2 + face_h * 0.14)))
 
     crop_left, crop_top, crop_right, crop_bottom = _ensure_crop_min_size(
         crop_left=crop_left,
@@ -411,8 +411,8 @@ def _build_medium_output_crop_box(
         source_height=h,
         face_cx=face_cx,
         face_cy=face_cy,
-        min_width=max(192, int(face_w * 2.60)),
-        min_height=max(256, int(face_h * 2.70)),
+        min_width=max(188, int(face_w * 2.42)),
+        min_height=max(236, int(face_h * 2.42)),
     )
 
     if crop_right - crop_left < 64 or crop_bottom - crop_top < 64:
