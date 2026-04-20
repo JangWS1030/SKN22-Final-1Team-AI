@@ -2788,8 +2788,10 @@ class MirrAISDPipeline:
                     _rel_cap[:_rel_y_limit, :] = 1.0
                     if _bangs_release_extended:
                         # soft vertical fade near y_limit so the composite doesn't
-                        # show a hard horizontal line at the eyebrow cap.
-                        _rel_fade_h = max(8, int(_rface_h * 0.05))
+                        # show a hard horizontal band at the eyebrow cap.
+                        # 기존 5% fade는 너무 짧아 갈색 사각형 띠 artifact가 남았음.
+                        # 12%로 확장하여 release mask 강도가 충분히 점진적으로 떨어지게 함.
+                        _rel_fade_h = max(20, int(_rface_h * 0.12))
                         _rel_fade_bot = min(
                             composite_bangs_release_mask.shape[0],
                             _rel_y_limit + _rel_fade_h,
@@ -2880,11 +2882,14 @@ class MirrAISDPipeline:
                 ):
                     _gm_rx1, _gm_ry1, _gm_rx2, _gm_ry2 = face_bbox
                     _gm_face_h = max(int(_gm_ry2 - _gm_ry1), 1)
+                    # rel_cap과 정렬: rel은 0.30에서 시작해 0.42까지 fade.
+                    # gen_cap은 SD inpaint 범위 → 약간 더 위/아래로 넓혀 두 mask
+                    # 경계가 동일 위치에서 갑자기 끝나지 않도록 함 (사각 띠 방지).
                     _gm_top_ratio = (
-                        0.28 if hair_length == "short" else 0.25
+                        0.27 if hair_length == "short" else 0.24
                     )
                     _gm_bot_ratio = (
-                        0.36 if hair_length == "short" else 0.33
+                        0.42 if hair_length == "short" else 0.38
                     )
                     _gm_y_top = int(_gm_ry1 + _gm_face_h * _gm_top_ratio)
                     _gm_y_bot = int(_gm_ry1 + _gm_face_h * _gm_bot_ratio)
